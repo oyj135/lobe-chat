@@ -1,18 +1,26 @@
-import { DiscoverAssistantItem } from './assistants';
+import type { DiscoverAssistantItem } from './assistants';
+import type { DiscoverGroupAgentItem } from './groupAgents';
+import type { DiscoverPluginItem } from './plugins';
+import type { DiscoverSkillItem } from './skills';
 
 export * from './assistants';
+export * from './fork';
+export * from './groupAgents';
 export * from './mcp';
 export * from './models';
 export * from './plugins';
 export * from './providers';
+export * from './skills';
 
 export enum DiscoverTab {
-  Assistants = 'assistant',
+  Assistants = 'agent',
+  GroupAgents = 'group_agent',
   Home = 'home',
   Mcp = 'mcp',
   Models = 'model',
   Plugins = 'plugin',
   Providers = 'provider',
+  Skills = 'skill',
   User = 'user',
 }
 
@@ -28,6 +36,7 @@ export enum CacheTag {
   Models = 'models',
   Plugins = 'plugins',
   Providers = 'providers',
+  Skills = 'skills',
 }
 
 export enum CacheRevalidate {
@@ -58,9 +67,34 @@ export interface DiscoverUserInfo {
 }
 
 /**
- * User profile with their published agents
+ * User profile with their published agents and groups
  */
 export interface DiscoverUserProfile {
+  agentGroups?: DiscoverGroupAgentItem[];
   agents: DiscoverAssistantItem[];
+  /**
+   * Agent groups favorited by the user
+   */
+  favoriteAgentGroups?: DiscoverGroupAgentItem[];
+  /**
+   * Agents favorited by the user
+   */
+  favoriteAgents?: DiscoverAssistantItem[];
+  /**
+   * Agent groups forked by the user
+   */
+  forkedAgentGroups?: DiscoverGroupAgentItem[];
+  /**
+   * Agents forked by the user
+   */
+  forkedAgents?: DiscoverAssistantItem[];
+  /**
+   * Plugins owned by the user
+   */
+  plugins?: DiscoverPluginItem[];
+  /**
+   * Skills owned by the user
+   */
+  skills?: DiscoverSkillItem[];
   user: DiscoverUserInfo;
 }

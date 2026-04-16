@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { GenerationTopicModel } from '@/database/models/generationTopic';
-import { GenerationTopicItem } from '@/database/schemas/generation';
+import { type GenerationTopicItem } from '@/database/schemas/generation';
 import { FileService } from '@/server/services/file';
 import { GenerationService } from '@/server/services/generation';
 
@@ -45,7 +45,7 @@ describe('generationTopicRouter', () => {
     const result = await caller.createTopic();
 
     expect(result).toBe(mockTopicId);
-    expect(mockCreate).toHaveBeenCalledWith('');
+    expect(mockCreate).toHaveBeenCalledWith('', undefined);
   });
 
   it('should get all generation topics', async () => {
@@ -55,6 +55,7 @@ describe('generationTopicRouter', () => {
         title: 'Test Topic 1',
         userId: 'test-user',
         coverUrl: 'cover-url-1',
+        type: 'image',
         accessedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -64,6 +65,7 @@ describe('generationTopicRouter', () => {
         title: 'Test Topic 2',
         userId: 'test-user',
         coverUrl: null,
+        type: 'image',
         accessedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -172,10 +174,10 @@ describe('generationTopicRouter', () => {
       updatedAt: new Date(),
     };
 
-    // 修复 Mock 返回结构以匹配新的实现
+    // Fix Mock return structure to match the new implementation
     const mockDelete = vi.fn().mockResolvedValue({
       deletedTopic: mockDeletedTopic,
-      filesToDelete: [], // 没有封面时，文件列表为空
+      filesToDelete: [], // No cover, so the file list is empty
     });
     const mockDeleteFiles = vi.fn();
 
@@ -198,7 +200,7 @@ describe('generationTopicRouter', () => {
 
     expect(result).toEqual(mockDeletedTopic);
     expect(mockDelete).toHaveBeenCalledWith(mockTopicId);
-    expect(mockDeleteFiles).not.toHaveBeenCalled(); // 没有文件要删除
+    expect(mockDeleteFiles).not.toHaveBeenCalled(); // no files to delete
   });
 
   it('should delete a topic with cover and remove the cover file', async () => {
@@ -214,10 +216,10 @@ describe('generationTopicRouter', () => {
       updatedAt: new Date(),
     };
 
-    // 修复 Mock 返回结构以匹配新的实现
+    // Fix Mock return structure to match the new implementation
     const mockDelete = vi.fn().mockResolvedValue({
       deletedTopic: mockDeletedTopic,
-      filesToDelete: [mockCoverUrl], // 包含需要删除的封面文件
+      filesToDelete: [mockCoverUrl], // includes the cover file to delete
     });
     const mockDeleteFiles = vi.fn().mockResolvedValue(true);
 
@@ -240,7 +242,7 @@ describe('generationTopicRouter', () => {
 
     expect(result).toEqual(mockDeletedTopic);
     expect(mockDelete).toHaveBeenCalledWith(mockTopicId);
-    expect(mockDeleteFiles).toHaveBeenCalledWith([mockCoverUrl]); // 验证文件删除调用
+    expect(mockDeleteFiles).toHaveBeenCalledWith([mockCoverUrl]); // verify file deletion was called
   });
 
   it('should still return deleted topic when file deletion fails', async () => {
@@ -307,7 +309,7 @@ describe('generationTopicRouter', () => {
 
     const mockDelete = vi.fn().mockResolvedValue({
       deletedTopic: mockDeletedTopic,
-      filesToDelete: [mockCoverUrl, ...mockThumbnailUrls], // 包含封面和缩略图
+      filesToDelete: [mockCoverUrl, ...mockThumbnailUrls], // includes cover and thumbnails
     });
     const mockDeleteFiles = vi.fn().mockResolvedValue(true);
 
@@ -412,7 +414,7 @@ describe('generationTopicRouter', () => {
     expect(result).toBeUndefined();
 
     expect(mockDelete).toHaveBeenCalledWith(mockTopicId);
-    expect(mockDeleteFiles).not.toHaveBeenCalled(); // 没有文件要删除
+    expect(mockDeleteFiles).not.toHaveBeenCalled(); // no files to delete
   });
 
   it('should handle edge cases for update with partial data', async () => {

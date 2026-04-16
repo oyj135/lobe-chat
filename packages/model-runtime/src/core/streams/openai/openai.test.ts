@@ -762,7 +762,7 @@ describe('OpenAIStream', () => {
                 content: '',
                 tool_calls: [
                   {
-                    function: { arguments: '{"city": "\u676d\u5dde"}' },
+                    function: { arguments: '{"city": "\u676D\u5DDE"}' },
                     type: 'function',
                     index: 0,
                   },
@@ -1203,9 +1203,238 @@ describe('OpenAIStream', () => {
         'thoughtSignature',
       );
     });
+
+    it('should handle GPT-5.2 parallel tool calls with correct id mapping', async () => {
+      // GPT-5.2 returns multiple tool calls in parallel with different indices
+      // Each tool call starts with id+name, followed by arguments-only chunks
+      // The key issue is that subsequent chunks without id should use the correct id
+      // based on their index, not the first tool's id
+      const streamData = [
+        // Tool 0: first chunk with id
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    id: 'call_tool0',
+                    type: 'function',
+                    function: { name: 'search', arguments: '' },
+                    index: 0,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        // Tool 0: arguments chunk
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ function: { arguments: '{"query":' }, index: 0 }],
+              },
+            },
+          ],
+        },
+        // Tool 1: first chunk with id (parallel tool call starts)
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    id: 'call_tool1',
+                    type: 'function',
+                    function: { name: 'search', arguments: '' },
+                    index: 1,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        // Tool 0: more arguments (continuing tool 0)
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ function: { arguments: ' "test0"}' }, index: 0 }],
+              },
+            },
+          ],
+        },
+        // Tool 1: arguments chunk
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ function: { arguments: '{"query": "test1"}' }, index: 1 }],
+              },
+            },
+          ],
+        },
+        // Tool 2: first chunk with id
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    id: 'call_tool2',
+                    type: 'function',
+                    function: { name: 'search', arguments: '' },
+                    index: 2,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        // Tool 2: arguments chunk
+        {
+          id: 'chatcmpl-test',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ function: { arguments: '{"query": "test2"}' }, index: 2 }],
+              },
+            },
+          ],
+        },
+        // Finish
+        {
+          id: 'chatcmpl-test',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        },
+      ];
+
+      const mockOpenAIStream = new ReadableStream({
+        start(controller) {
+          streamData.forEach((data) => {
+            controller.enqueue(data);
+          });
+          controller.close();
+        },
+      });
+
+      const protocolStream = OpenAIStream(mockOpenAIStream);
+      const decoder = new TextDecoder();
+      const chunks: string[] = [];
+
+      // @ts-ignore
+      for await (const chunk of protocolStream) {
+        chunks.push(decoder.decode(chunk, { stream: true }));
+      }
+
+      // Verify the exact output - each tool call chunk should have the correct id based on index
+      expect(chunks).toEqual(
+        [
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":"","name":"search"},"id":"call_tool0","index":0,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":"{\\"query\\":","name":null},"id":"call_tool0","index":0,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":"","name":"search"},"id":"call_tool1","index":1,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":" \\"test0\\"}","name":null},"id":"call_tool0","index":0,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":"{\\"query\\": \\"test1\\"}","name":null},"id":"call_tool1","index":1,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":"","name":"search"},"id":"call_tool2","index":2,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: tool_calls',
+          `data: [{"function":{"arguments":"{\\"query\\": \\"test2\\"}","name":null},"id":"call_tool2","index":2,"type":"function"}]\n`,
+          'id: chatcmpl-test',
+          'event: stop',
+          `data: "tool_calls"\n`,
+        ].map((i) => `${i}\n`),
+      );
+    });
   });
 
   describe('Reasoning', () => {
+    it('should handle GitHub Copilot reasoning_text in delta chunks', async () => {
+      const data = [
+        {
+          id: 'reasoning-text-1',
+          object: 'chat.completion.chunk',
+          created: 1774512975,
+          model: 'gemini-3.1-pro-preview',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                content: null,
+                role: 'assistant',
+                reasoning_text: '这是 reasoning_text 内容',
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          id: 'reasoning-text-1',
+          object: 'chat.completion.chunk',
+          created: 1774512976,
+          model: 'gemini-3.1-pro-preview',
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: 'stop',
+            },
+          ],
+        },
+      ];
+
+      const mockOpenAIStream = new ReadableStream({
+        start(controller) {
+          data.forEach((chunk) => controller.enqueue(chunk));
+          controller.close();
+        },
+      });
+
+      const protocolStream = OpenAIStream(mockOpenAIStream);
+      const decoder = new TextDecoder();
+      const chunks: string[] = [];
+
+      // @ts-ignore
+      for await (const chunk of protocolStream) {
+        chunks.push(decoder.decode(chunk, { stream: true }));
+      }
+
+      expect(chunks).toEqual(
+        [
+          'id: reasoning-text-1',
+          'event: reasoning',
+          `data: "这是 reasoning_text 内容"\n`,
+          'id: reasoning-text-1',
+          'event: stop',
+          `data: "stop"\n`,
+        ].map((i) => `${i}\n`),
+      );
+    });
+
     it('should handle <think></think> tags in streaming content', async () => {
       const data = [
         {
@@ -3142,6 +3371,98 @@ describe('OpenAIStream', () => {
       'id: openai-search\n',
       'event: grounding\n',
       `data: {"citations":[{"title":"Example","url":"https://example.com"}]}\n\n`,
+    ]);
+  });
+
+  it('should handle XiaomiMiMo annotations', async () => {
+    const mockOpenAIStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          id: 'mimo-v2-omni',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                content: '',
+                annotations: [
+                  {
+                    type: 'url_citation',
+                    url: 'https://biz.finance.sina.com.cn/usstock/usstock_news.php?symbol=ZNH',
+                    title: '南方航空相关新闻_美股 - 新浪财经',
+                    site_name: 'biz.finance.sina.com.cn',
+                    summary:
+                      '(ZNH) · 格隆汇 APP | 2026 年 03 月 19 日 11:09 港股异动丨航空股跌势不止成本压力巨大国内航司集体上调燃油附加费',
+                  },
+                ],
+              },
+            },
+          ],
+        });
+
+        // Second chunk with finish_reason
+        controller.enqueue({
+          id: 'mimo-v2-omni',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                content: 'Some response text with annotations, should has no annotations',
+                annotations: [
+                  {
+                    type: 'url_citation',
+                    url: 'https://biz.finance.sina.com.cn/usstock/usstock_news.php?symbol=ZNH',
+                    title: '南方航空相关新闻_美股 - 新浪财经',
+                    site_name: 'biz.finance.sina.com.cn',
+                    summary:
+                      '(ZNH) · 格隆汇 APP | 2026 年 03 月 19 日 11:09 港股异动丨航空股跌势不止成本压力巨大国内航司集体上调燃油附加费',
+                  },
+                ],
+              },
+            },
+          ],
+        });
+
+        // Third chunk with finish_reason
+        controller.enqueue({
+          id: 'mimo-v2-omni',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                content: 'Some response text',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        });
+
+        controller.close();
+      },
+    });
+
+    const protocolStream = OpenAIStream(mockOpenAIStream);
+
+    const decoder = new TextDecoder();
+    const chunks = [];
+
+    // @ts-ignore
+    for await (const chunk of protocolStream) {
+      chunks.push(decoder.decode(chunk, { stream: true }));
+    }
+
+    // Should emit grounding event from first chunk, then text from second chunk
+    expect(chunks).toEqual([
+      'id: mimo-v2-omni\n',
+      'event: grounding\n',
+      `data: {"citations":[{"title":"南方航空相关新闻_美股 - 新浪财经","url":"https://biz.finance.sina.com.cn/usstock/usstock_news.php?symbol=ZNH"}]}\n\n`,
+      'id: mimo-v2-omni\n',
+      'event: text\n',
+      `data: "Some response text with annotations, should has no annotations"\n\n`,
+      'id: mimo-v2-omni\n',
+      'event: text\n',
+      `data: "Some response text"\n\n`,
     ]);
   });
 

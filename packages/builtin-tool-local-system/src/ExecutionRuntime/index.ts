@@ -1,427 +1,293 @@
-import {
-  EditLocalFileParams,
-  EditLocalFileResult,
-  GetCommandOutputParams,
-  GetCommandOutputResult,
-  GlobFilesParams,
-  GlobFilesResult,
-  GrepContentParams,
-  GrepContentResult,
-  KillCommandParams,
-  KillCommandResult,
-  ListLocalFileParams,
-  LocalFileItem,
-  LocalMoveFilesResultItem,
-  LocalReadFileParams,
-  LocalReadFileResult,
-  LocalReadFilesParams,
-  LocalSearchFilesParams,
-  MoveLocalFilesParams,
-  RenameLocalFileParams,
-  RenameLocalFileResult,
-  RunCommandParams,
-  RunCommandResult,
-  WriteLocalFileParams,
-} from '@lobechat/electron-client-ipc';
-import { BuiltinServerRuntimeOutput } from '@lobechat/types';
+import type { ServiceResult } from '@lobechat/tool-runtime';
+import { ComputerRuntime } from '@lobechat/tool-runtime';
+import type { BuiltinServerRuntimeOutput } from '@lobechat/types';
 
-import type {
-  EditLocalFileState,
-  GetCommandOutputState,
-  GlobFilesState,
-  GrepContentState,
-  KillCommandState,
-  LocalFileListState,
-  LocalFileSearchState,
-  LocalMoveFilesState,
-  LocalReadFileState,
-  LocalReadFilesState,
-  LocalRenameFileState,
-  RunCommandState,
-} from '../types';
-
-interface LocalFileService {
-  editLocalFile: (params: EditLocalFileParams) => Promise<EditLocalFileResult>;
-  getCommandOutput: (params: GetCommandOutputParams) => Promise<GetCommandOutputResult>;
-  globFiles: (params: GlobFilesParams) => Promise<GlobFilesResult>;
-  grepContent: (params: GrepContentParams) => Promise<GrepContentResult>;
-  killCommand: (params: KillCommandParams) => Promise<KillCommandResult>;
-  listLocalFiles: (params: ListLocalFileParams) => Promise<LocalFileItem[]>;
-  moveLocalFiles: (params: MoveLocalFilesParams) => Promise<LocalMoveFilesResultItem[]>;
-  readLocalFile: (params: LocalReadFileParams) => Promise<LocalReadFileResult>;
-  readLocalFiles: (params: LocalReadFilesParams) => Promise<LocalReadFileResult[]>;
-  renameLocalFile: (params: RenameLocalFileParams) => Promise<RenameLocalFileResult>;
-  runCommand: (params: RunCommandParams) => Promise<RunCommandResult>;
-  searchLocalFiles: (params: LocalSearchFilesParams) => Promise<LocalFileItem[]>;
-  writeFile: (params: WriteLocalFileParams) => Promise<{ error?: string; success: boolean }>;
+/**
+ * Service interface for local system operations.
+ * Abstracts the Electron IPC layer so the runtime is testable and decoupled.
+ */
+export interface ILocalSystemService {
+  editLocalFile: (params: any) => Promise<any>;
+  getCommandOutput: (params: any) => Promise<any>;
+  globFiles: (params: any) => Promise<any>;
+  grepContent: (params: any) => Promise<any>;
+  killCommand: (params: any) => Promise<any>;
+  listLocalFiles: (params: any) => Promise<any>;
+  moveLocalFiles: (params: any) => Promise<any>;
+  readLocalFile: (params: any) => Promise<any>;
+  readLocalFiles: (params: any) => Promise<any>;
+  renameLocalFile: (params: any) => Promise<any>;
+  runCommand: (params: any) => Promise<any>;
+  searchLocalFiles: (params: any) => Promise<any>;
+  writeFile: (params: any) => Promise<any>;
 }
 
-export class LocalSystemExecutionRuntime {
-  private localFileService: LocalFileService;
+/**
+ * Maps IPC tool names to localFileService method names.
+ * IPC service uses different method names than the standard tool names.
+ */
+const SERVICE_METHOD_MAP: Record<string, keyof ILocalSystemService> = {
+  editLocalFile: 'editLocalFile',
+  getCommandOutput: 'getCommandOutput',
+  globLocalFiles: 'globFiles',
+  grepContent: 'grepContent',
+  killCommand: 'killCommand',
+  listLocalFiles: 'listLocalFiles',
+  moveLocalFiles: 'moveLocalFiles',
+  readLocalFile: 'readLocalFile',
+  renameLocalFile: 'renameLocalFile',
+  runCommand: 'runCommand',
+  searchLocalFiles: 'searchLocalFiles',
+  writeLocalFile: 'writeFile',
+};
 
-  constructor(localFileService: LocalFileService) {
-    this.localFileService = localFileService;
+/**
+ * Local System Execution Runtime
+ *
+ * Extends ComputerRuntime for standard computer operations via Electron IPC.
+ * Normalizes snake_case IPC results (exit_code, shell_id, total_matches)
+ * into the camelCase format expected by ComputerRuntime.
+ */
+export class LocalSystemExecutionRuntime extends ComputerRuntime {
+  private service: ILocalSystemService;
+
+  constructor(service: ILocalSystemService) {
+    super();
+    this.service = service;
   }
 
-  // ==================== File Operations ====================
-
-  async listLocalFiles(args: ListLocalFileParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: LocalFileItem[] = await this.localFileService.listLocalFiles(args);
-
-      const state: LocalFileListState = { listResults: result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
+  protected async callService(
+    toolName: string,
+    params: Record<string, any>,
+  ): Promise<ServiceResult> {
+    const methodName = SERVICE_METHOD_MAP[toolName];
+    if (!methodName) {
+      return { error: { message: `Unknown tool: ${toolName}` }, result: null, success: false };
     }
+
+    // Map ComputerRuntime params back to IPC-expected shapes
+    const ipcParams = this.denormalizeParams(toolName, params);
+
+    const method = this.service[methodName] as (params: any) => Promise<any>;
+    const result = await method(ipcParams);
+
+    return this.normalizeResult(toolName, result);
   }
 
-  async readLocalFile(args: LocalReadFileParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: LocalReadFileResult = await this.localFileService.readLocalFile(args);
-
-      const state: LocalReadFileState = { fileContent: result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async readLocalFiles(args: LocalReadFilesParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const results: LocalReadFileResult[] = await this.localFileService.readLocalFiles(args);
-
-      const state: LocalReadFilesState = { filesContent: results };
-
-      return {
-        content: JSON.stringify(results),
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async searchLocalFiles(args: LocalSearchFilesParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: LocalFileItem[] = await this.localFileService.searchLocalFiles(args);
-
-      const state: LocalFileSearchState = { searchResults: result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async moveLocalFiles(args: MoveLocalFilesParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const results: LocalMoveFilesResultItem[] = await this.localFileService.moveLocalFiles(args);
-
-      const allSucceeded = results.every((r) => r.success);
-      const someFailed = results.some((r) => !r.success);
-      const successCount = results.filter((r) => r.success).length;
-      const failedCount = results.length - successCount;
-
-      let message = '';
-
-      if (allSucceeded) {
-        message = `Successfully moved ${results.length} item(s).`;
-      } else if (someFailed) {
-        message = `Moved ${successCount} item(s) successfully. Failed to move ${failedCount} item(s).`;
-      } else {
-        message = `Failed to move all ${results.length} item(s).`;
-      }
-
-      const state: LocalMoveFilesState = {
-        results,
-        successCount,
-        totalCount: results.length,
-      };
-
-      return {
-        content: JSON.stringify({ message, results }),
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async renameLocalFile(args: RenameLocalFileParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: RenameLocalFileResult = await this.localFileService.renameLocalFile(args);
-
-      if (!result.success) {
-        const state: LocalRenameFileState = {
-          error: result.error,
-          newPath: '',
-          oldPath: args.path,
-          success: false,
-        };
-
+  /**
+   * Map ComputerRuntime normalized params back to IPC field names.
+   */
+  private denormalizeParams(toolName: string, params: Record<string, any>): any {
+    switch (toolName) {
+      case 'editLocalFile': {
         return {
-          content: JSON.stringify({ message: result.error, success: false }),
-          state,
-          success: false,
+          file_path: params.path,
+          new_string: params.replace,
+          old_string: params.search,
+          replace_all: params.all,
         };
       }
 
-      const state: LocalRenameFileState = {
-        newPath: result.newPath!,
-        oldPath: args.path,
-        success: true,
-      };
+      case 'listLocalFiles': {
+        return {
+          path: params.directoryPath,
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+        };
+      }
+
+      case 'moveLocalFiles': {
+        return {
+          items: params.operations?.map((op: any) => ({
+            newPath: op.destination,
+            oldPath: op.source,
+          })),
+        };
+      }
+
+      case 'renameLocalFile': {
+        return {
+          newName: params.newName,
+          path: params.oldPath,
+        };
+      }
+
+      case 'getCommandOutput': {
+        return { shell_id: params.commandId };
+      }
+
+      case 'killCommand': {
+        return { shell_id: params.commandId };
+      }
+
+      case 'readLocalFile': {
+        const loc: [number, number] | undefined =
+          params.startLine !== undefined || params.endLine !== undefined
+            ? [params.startLine ?? 0, params.endLine ?? 200]
+            : undefined;
+        return { fullContent: params.fullContent, loc, path: params.path };
+      }
+
+      default: {
+        return params;
+      }
+    }
+  }
+
+  /**
+   * Batch read multiple files — unique to local system.
+   */
+  async readFiles(params: any): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      const { formatMultipleFiles } = await import('@lobechat/prompts');
+      const results = await this.service.readLocalFiles(params);
 
       return {
-        content: JSON.stringify({
-          message: `Successfully renamed file ${args.path} to ${args.newName}.`,
+        content: formatMultipleFiles(results),
+        state: { filesContent: results },
+        success: true,
+      };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Normalize raw IPC results into the ServiceResult format.
+   * IPC methods return domain objects directly; we wrap them appropriately.
+   */
+  private normalizeResult(toolName: string, raw: any): ServiceResult {
+    switch (toolName) {
+      case 'runCommand': {
+        // RunCommandResult has snake_case fields from local-file-shell
+        return {
+          result: {
+            error: raw.error,
+            exitCode: raw.exit_code,
+            output: raw.output,
+            commandId: raw.shell_id,
+            stderr: raw.stderr,
+            stdout: raw.stdout,
+            success: raw.success,
+          },
+          success: raw.success,
+        };
+      }
+
+      case 'getCommandOutput': {
+        return {
+          result: {
+            error: raw.error,
+            newOutput: raw.output,
+            running: raw.running,
+            success: raw.success,
+          },
+          success: raw.success,
+        };
+      }
+
+      case 'killCommand': {
+        return {
+          result: { error: raw.error, success: raw.success },
+          success: raw.success,
+        };
+      }
+
+      case 'grepContent': {
+        return {
+          result: {
+            matches: raw.matches,
+            totalMatches: raw.total_matches,
+          },
+          success: raw.success,
+        };
+      }
+
+      case 'globLocalFiles': {
+        return {
+          result: {
+            files: raw.files,
+            totalCount: raw.total_files,
+          },
+          success: raw.success,
+        };
+      }
+
+      case 'listLocalFiles': {
+        return {
+          result: { files: raw.files, totalCount: raw.totalCount },
           success: true,
-        }),
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async writeLocalFile(args: WriteLocalFileParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result = await this.localFileService.writeFile(args);
-
-      if (!result.success) {
-        return {
-          content: JSON.stringify({
-            message: result.error || '写入文件失败',
-            success: false,
-          }),
-          error: result.error,
-          success: false,
         };
       }
 
-      return {
-        content: JSON.stringify({
-          message: `成功写入文件 ${args.path}`,
+      case 'readLocalFile': {
+        // Pass through all IPC fields for render compatibility
+        return {
+          result: {
+            charCount: raw.charCount,
+            content: raw.content,
+            fileType: raw.fileType,
+            filename: raw.filename,
+            loc: raw.loc,
+            totalCharCount: raw.totalCharCount,
+            totalLineCount: raw.totalLineCount,
+          },
           success: true,
-        }),
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async editLocalFile(args: EditLocalFileParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: EditLocalFileResult = await this.localFileService.editLocalFile(args);
-
-      if (!result.success) {
-        return {
-          content: `Edit failed: ${result.error}`,
-          success: false,
         };
       }
 
-      const statsText =
-        result.linesAdded || result.linesDeleted
-          ? ` (+${result.linesAdded || 0} -${result.linesDeleted || 0})`
-          : '';
-      const message = `Successfully replaced ${result.replacements} occurrence(s) in ${args.file_path}${statsText}`;
-
-      const state: EditLocalFileState = {
-        diffText: result.diffText,
-        linesAdded: result.linesAdded,
-        linesDeleted: result.linesDeleted,
-        replacements: result.replacements,
-      };
-
-      return {
-        content: message,
-        state,
-        success: true,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  // ==================== Shell Commands ====================
-
-  async runCommand(args: RunCommandParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: RunCommandResult = await this.localFileService.runCommand(args);
-
-      let message: string;
-
-      if (result.success) {
-        if (result.shell_id) {
-          message = `Command started in background with shell_id: ${result.shell_id}`;
-        } else {
-          message = `Command completed successfully.`;
-        }
-      } else {
-        message = `Command failed: ${result.error}`;
+      case 'writeLocalFile': {
+        return {
+          result: { bytesWritten: raw.bytesWritten, success: raw.success },
+          success: raw.success ?? true,
+        };
       }
 
-      const state: RunCommandState = { message, result };
+      case 'editLocalFile': {
+        return {
+          result: {
+            diffText: raw.diffText,
+            error: raw.error,
+            linesAdded: raw.linesAdded,
+            linesDeleted: raw.linesDeleted,
+            replacements: raw.replacements,
+          },
+          success: raw.success,
+        };
+      }
 
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: result.success,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
+      case 'searchLocalFiles': {
+        // Returns LocalFileItem[] directly
+        const results = Array.isArray(raw) ? raw : [];
+        return {
+          result: { results, totalCount: results.length },
+          success: true,
+        };
+      }
 
-  async getCommandOutput(args: GetCommandOutputParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: GetCommandOutputResult = await this.localFileService.getCommandOutput(args);
+      case 'moveLocalFiles': {
+        // Returns LocalMoveFilesResultItem[] directly
+        const results = Array.isArray(raw) ? raw : [];
+        return {
+          result: {
+            results,
+            successCount: results.filter((r: any) => r.success).length,
+          },
+          success: true,
+        };
+      }
 
-      const message = result.success
-        ? `Output retrieved. Running: ${result.running}`
-        : `Failed: ${result.error}`;
+      case 'renameLocalFile': {
+        return {
+          result: { error: raw.error, newPath: raw.newPath, success: raw.success },
+          success: raw.success,
+        };
+      }
 
-      const state: GetCommandOutputState = { message, result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: result.success,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async killCommand(args: KillCommandParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: KillCommandResult = await this.localFileService.killCommand(args);
-
-      const message = result.success
-        ? `Successfully killed shell: ${args.shell_id}`
-        : `Failed to kill shell: ${result.error}`;
-
-      const state: KillCommandState = { message, result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: result.success,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  // ==================== Search & Find ====================
-
-  async grepContent(args: GrepContentParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: GrepContentResult = await this.localFileService.grepContent(args);
-
-      const message = result.success
-        ? `Found ${result.total_matches} matches in ${result.matches.length} locations`
-        : 'Search failed';
-
-      const state: GrepContentState = { message, result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: result.success,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
-    }
-  }
-
-  async globLocalFiles(args: GlobFilesParams): Promise<BuiltinServerRuntimeOutput> {
-    try {
-      const result: GlobFilesResult = await this.localFileService.globFiles(args);
-
-      const message = result.success ? `Found ${result.total_files} files` : 'Glob search failed';
-
-      const state: GlobFilesState = { message, result };
-
-      return {
-        content: JSON.stringify(result),
-        state,
-        success: result.success,
-      };
-    } catch (error) {
-      return {
-        content: (error as Error).message,
-        error,
-        success: false,
-      };
+      default: {
+        // Generic passthrough
+        return { result: raw, success: true };
+      }
     }
   }
 }

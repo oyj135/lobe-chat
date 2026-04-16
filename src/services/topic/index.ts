@@ -37,6 +37,7 @@ export class TopicService {
     return lambdaClient.topic.getTopics.query({
       agentId: params.agentId,
       current: params.current,
+      excludeTriggers: params.excludeTriggers,
       groupId: params.groupId,
       isInbox: params.isInbox,
       pageSize: params.pageSize,
@@ -79,9 +80,31 @@ export class TopicService {
 
   updateTopicMetadata = (
     id: string,
-    metadata: { model?: string; provider?: string; workingDirectory?: string },
+    metadata: {
+      boundDeviceId?: string;
+      model?: string;
+      provider?: string;
+      runningOperation?: { assistantMessageId: string; operationId: string } | null;
+      workingDirectory?: string;
+    },
   ) => {
     return lambdaClient.topic.updateTopicMetadata.mutate({ id, metadata });
+  };
+
+  getShareInfo = (topicId: string) => {
+    return lambdaClient.topic.getShareInfo.query({ topicId });
+  };
+
+  enableSharing = (topicId: string, visibility?: 'private' | 'link') => {
+    return lambdaClient.topic.enableSharing.mutate({ topicId, visibility });
+  };
+
+  updateShareVisibility = (topicId: string, visibility: 'private' | 'link') => {
+    return lambdaClient.topic.updateShareVisibility.mutate({ topicId, visibility });
+  };
+
+  disableSharing = (topicId: string) => {
+    return lambdaClient.topic.disableSharing.mutate({ topicId });
   };
 
   removeTopic = (id: string) => {
@@ -90,6 +113,10 @@ export class TopicService {
 
   removeTopics = (sessionId: string) => {
     return lambdaClient.topic.batchDeleteBySessionId.mutate({ id: this.toDbSessionId(sessionId) });
+  };
+
+  removeTopicsByAgentId = (agentId: string) => {
+    return lambdaClient.topic.batchDeleteByAgentId.mutate({ agentId });
   };
 
   batchRemoveTopics = (topics: string[]) => {

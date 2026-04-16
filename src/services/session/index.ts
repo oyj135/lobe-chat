@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import type { PartialDeep } from 'type-fest';
+import { type PartialDeep } from 'type-fest';
 
 import { lambdaClient } from '@/libs/trpc/client';
 import { type LobeAgentChatConfig, type LobeAgentConfig } from '@/types/agent';
@@ -7,19 +6,24 @@ import { type MetaData } from '@/types/meta';
 import {
   type ChatSessionList,
   type LobeAgentSession,
-  type LobeSessionType,
   type LobeSessions,
+  type LobeSessionType,
   type SessionGroupItem,
   type SessionRankItem,
   type UpdateSessionParams,
 } from '@/types/session';
 
+/**
+ * @deprecated Session service is legacy. Use agentService for agent CRUD operations.
+ * Mobile still uses this, but should migrate to agentService.
+ */
 export class SessionService {
   hasSessions = async (): Promise<boolean> => {
     const result = await this.countSessions();
     return result === 0;
   };
 
+  /** @deprecated Use agentService.createAgent instead */
   createSession = async (
     type: LobeSessionType,
     data: Partial<LobeAgentSession>,

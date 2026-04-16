@@ -3,6 +3,12 @@ import debug from 'debug';
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { PipelineContext, ProcessorOptions } from '../types';
 
+declare module '../types' {
+  interface PipelineContextMetadataOverrides {
+    taskMessagesProcessed?: number;
+  }
+}
+
 const log = debug('context-engine:processor:TaskMessageProcessor');
 
 /**
@@ -63,7 +69,7 @@ export class TaskMessageProcessor extends BaseProcessor {
       if (!instruction) {
         clonedContext.messages[i] = {
           ...message,
-          content: content,
+          content,
           role: 'assistant',
         };
         processedCount++;

@@ -1,7 +1,10 @@
-import { ActionIcon, Input, type InputProps } from '@lobehub/ui';
+import { type InputProps } from '@lobehub/ui';
+import { ActionIcon, Input } from '@lobehub/ui';
 import { Wand2 } from 'lucide-react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { useIMECompositionEvent } from '@/hooks/useIMECompositionEvent';
 
 export interface AutoGenerateInputProps extends Omit<InputProps, 'onChange'> {
   canAutoGenerate?: boolean;
@@ -17,7 +20,7 @@ const AutoGenerateInput = memo<AutoGenerateInputProps>(
 
     const [input, setInput] = useState<string>(value || '');
 
-    const isChineseInput = useRef(false);
+    const { compositionProps, isComposingRef } = useIMECompositionEvent();
     const isFocusing = useRef(false);
 
     const updateValue = useCallback(() => {
@@ -36,16 +39,17 @@ const AutoGenerateInput = memo<AutoGenerateInputProps>(
               disabled={!canAutoGenerate}
               icon={Wand2}
               loading={loading}
-              onClick={onGenerate}
               size="small"
+              title={!canAutoGenerate ? t('autoGenerateTooltipDisabled') : t('autoGenerate')}
               style={{
                 marginRight: -4,
               }}
-              title={!canAutoGenerate ? t('autoGenerateTooltipDisabled') : t('autoGenerate')}
+              onClick={onGenerate}
             />
           )
         }
         {...props}
+        value={input}
         onBlur={() => {
           updateValue();
           isFocusing.current = false;
@@ -53,23 +57,17 @@ const AutoGenerateInput = memo<AutoGenerateInputProps>(
         onChange={(e) => {
           setInput(e.target.value);
         }}
-        onCompositionEnd={() => {
-          isChineseInput.current = false;
-        }}
-        onCompositionStart={() => {
-          isChineseInput.current = true;
-        }}
+        {...compositionProps}
         onFocus={() => {
           isFocusing.current = true;
         }}
         onPressEnter={(e) => {
-          if (!e.shiftKey && !isChineseInput.current) {
+          if (!e.shiftKey && !isComposingRef.current) {
             e.preventDefault();
             updateValue();
             isFocusing.current = false;
           }
         }}
-        value={input}
       />
     );
   },

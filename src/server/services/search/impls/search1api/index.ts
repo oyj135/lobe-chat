@@ -1,10 +1,21 @@
-import { type SearchParams, type UniformSearchResponse, type UniformSearchResult } from '@lobechat/types';
+import {
+  type SearchParams,
+  type UniformSearchResponse,
+  type UniformSearchResult,
+} from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 import urlJoin from 'url-join';
 
 import { type SearchServiceImpl } from '../type';
-import { type Search1ApiResponse } from './type';
+import { type Search1ApiRawResponse, type TimeRange } from './type';
+
+const timeRangeMapping: Record<string, TimeRange | undefined> = {
+  day: 'day',
+  month: 'month',
+  week: 'month', // Search1API doesn't support 'week', map to closest
+  year: 'year',
+};
 
 interface Search1APIQueryParams {
   crawl_results?: 0 | 1;
@@ -41,7 +52,7 @@ export class Search1APIImpl implements SearchServiceImpl {
     const { searchEngines } = params;
 
     const defaultQueryParams: Search1APIQueryParams = {
-      crawl_results: 0, // 默认不做抓取
+      crawl_results: 0, // Default is no crawling
       image: false,
       max_results: 15, // Default max results
       query,
@@ -52,7 +63,7 @@ export class Search1APIImpl implements SearchServiceImpl {
         ...defaultQueryParams,
         time_range:
           params?.searchTimeRange && params.searchTimeRange !== 'anytime'
-            ? params.searchTimeRange
+            ? timeRangeMapping[params.searchTimeRange]
             : undefined,
       },
     ];
@@ -65,7 +76,7 @@ export class Search1APIImpl implements SearchServiceImpl {
         search_service: searchEngine,
         time_range:
           params?.searchTimeRange && params.searchTimeRange !== 'anytime'
-            ? params.searchTimeRange
+            ? timeRangeMapping[params.searchTimeRange]
             : undefined,
       }));
     }
@@ -78,7 +89,7 @@ export class Search1APIImpl implements SearchServiceImpl {
 
     let response: Response;
     const startAt = Date.now();
-    let costTime = 0;
+    let costTime: number;
     try {
       log('Sending request to endpoint: %s', endpoint);
       response = await fetch(endpoint, {
@@ -114,19 +125,20 @@ export class Search1APIImpl implements SearchServiceImpl {
     }
 
     try {
-      const search1ApiResponse = (await response.json()) as Search1ApiResponse[]; // Use a specific type if defined elsewhere
+      const rawResponse = (await response.json()) as Search1ApiRawResponse;
 
-      log('Parsed Search1API response: %o', search1ApiResponse);
+      log('Parsed Search1API response: %o', rawResponse);
 
-      const mappedResults = search1ApiResponse.flatMap((response) => {
-        // Map Search1API response to SearchResponse
-        return (response.results || []).map(
+      const mappedResults = (rawResponse.results || []).flatMap((item) => {
+        if (!item.success || !item.data) return [];
+        const { results = [], searchParameters } = item.data;
+        return results.map(
           (result): UniformSearchResult => ({
-            category: 'general', // Default category
-            content: result.content || result.snippet || '', // Prioritize content, fallback to snippet
-            engines: [response.searchParameters?.search_service || ''],
-            parsedUrl: result.link ? new URL(result.link).hostname : '', // Basic URL parsing
-            score: 1, // Default score
+            category: 'general',
+            content: result.content || result.snippet || '',
+            engines: [searchParameters?.search_service || ''],
+            parsedUrl: result.link ? new URL(result.link).hostname : '',
+            score: 1,
             title: result.title || '',
             url: result.link,
           }),
@@ -137,7 +149,7 @@ export class Search1APIImpl implements SearchServiceImpl {
 
       return {
         costTime,
-        query: query,
+        query,
         resultNumbers: mappedResults.length,
         results: mappedResults,
       };

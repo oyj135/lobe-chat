@@ -1,9 +1,8 @@
 import { type UIChatMessage } from '@lobechat/types';
-import { Button, Form, type FormItemProps } from '@lobehub/ui';
-import { Flexbox } from '@lobehub/ui';
+import { type FormItemProps } from '@lobehub/ui';
+import { Button, Flexbox, Form } from '@lobehub/ui';
 import { App, Switch } from 'antd';
 import { cx } from 'antd-style';
-import isEqual from 'fast-deep-equal';
 import { DownloadIcon, FileText } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,8 +12,8 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
-import { chatSelectors, topicSelectors } from '@/store/chat/selectors';
 
+import { useShareData } from '../ShareDataProvider';
 import { generateMarkdown } from '../ShareText/template';
 import { type FieldType } from '../ShareText/type';
 import { containerStyles, styles } from '../style';
@@ -73,21 +72,17 @@ const SharePdf = memo((props: { message?: UIChatMessage }) => {
 
   // Use the same data gathering logic as ShareText
   const [systemRole] = useAgentStore((s) => [agentSelectors.currentAgentSystemRole(s)]);
-  const messages = useChatStore(chatSelectors.activeBaseChats, isEqual);
-  const topic = useChatStore(topicSelectors.currentActiveTopic, isEqual);
-  const activeId = useChatStore((s) => s.activeId);
-  const topicId = useChatStore((s) => s.activeTopicId);
-
-  const title = topic?.title || t('shareModal.exportTitle');
+  const activeId = useChatStore((s) => s.activeAgentId);
+  const { context, displayMessages, title } = useShareData();
 
   const { generatePdf, downloadPdf, pdfData, loading, error } = usePdfGeneration();
 
   const handleGeneratePdf = async () => {
-    if (activeId && messages.length > 0) {
+    if (activeId && displayMessages.length > 0) {
       // Generate markdown with current field values
       const currentMarkdownContent = generateMarkdown({
         ...fieldValue,
-        messages: outerMessage ? [outerMessage] : messages,
+        messages: outerMessage ? [outerMessage] : displayMessages,
         systemRole,
         title,
       }).replaceAll('\n\n\n', '\n');
@@ -97,7 +92,7 @@ const SharePdf = memo((props: { message?: UIChatMessage }) => {
           content: currentMarkdownContent,
           sessionId: activeId,
           title,
-          topicId: topicId || undefined,
+          topicId: context.topicId || undefined,
         });
       }
     }
@@ -125,9 +120,9 @@ const SharePdf = memo((props: { message?: UIChatMessage }) => {
       disabled={loading}
       icon={loading ? undefined : FileText}
       loading={loading}
-      onClick={handleGeneratePdf}
       size={isMobile ? undefined : 'large'}
       type="primary"
+      onClick={handleGeneratePdf}
     >
       {loading
         ? t('shareModal.generatingPdf')
@@ -141,9 +136,9 @@ const SharePdf = memo((props: { message?: UIChatMessage }) => {
     <Button
       block
       icon={DownloadIcon}
-      onClick={handleDownload}
       size={isMobile ? undefined : 'large'}
       type="default"
+      onClick={handleDownload}
     >
       {t('shareModal.downloadPdf')}
     </Button>
@@ -177,7 +172,7 @@ const SharePdf = memo((props: { message?: UIChatMessage }) => {
 
   return (
     <Flexbox className={styles.body} gap={16} horizontal={!isMobile}>
-      <PdfPreview loading={loading} onGeneratePdf={handleGeneratePdf} pdfData={pdfData} />
+      <PdfPreview loading={loading} pdfData={pdfData} onGeneratePdf={handleGeneratePdf} />
       <Flexbox className={styles.sidebar} gap={12}>
         <Form
           initialValues={DEFAULT_FIELD_VALUE}

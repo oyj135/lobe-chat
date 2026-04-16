@@ -1,17 +1,21 @@
-import { ProxyTRPCStreamRequestParams } from '@lobechat/electron-client-ipc';
-import { IpcMainEvent, WebContents, ipcMain } from 'electron';
-import { HttpProxyAgent } from 'http-proxy-agent';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import { Buffer } from 'node:buffer';
-import http, { IncomingMessage, OutgoingHttpHeaders } from 'node:http';
+import type { IncomingMessage, OutgoingHttpHeaders } from 'node:http';
+import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
 
+import type { ProxyTRPCStreamRequestParams } from '@lobechat/electron-client-ipc';
+import type {IpcMainEvent, WebContents } from 'electron';
+import { ipcMain } from 'electron';
+import { HttpProxyAgent } from 'http-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+
 import { defaultProxySettings } from '@/const/store';
+import { appendVercelCookie } from '@/utils/http-headers';
 import { createLogger } from '@/utils/logger';
 
-import RemoteServerConfigCtr from './RemoteServerConfigCtr';
 import { ControllerModule } from './index';
+import RemoteServerConfigCtr from './RemoteServerConfigCtr';
 
 // Create logger
 const logger = createLogger('controllers:RemoteServerSyncCtr');
@@ -47,7 +51,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
   }
 
   /**
-   * 处理流式请求的 IPC 调用
+   * Handle IPC calls for streaming requests
    */
   private handleStreamRequest = async (event: IpcMainEvent, args: ProxyTRPCStreamRequestParams) => {
     const { requestId } = args;
@@ -55,8 +59,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
     logger.debug(`${logPrefix} Received stream:start IPC call`);
 
     try {
-      const config = await this.remoteServerConfigCtr.getRemoteServerConfig();
-      if (!config.active || (config.storageMode === 'selfHost' && !config.remoteServerUrl)) {
+      if (!(await this.remoteServerConfigCtr.isRemoteServerConfigured())) {
         logger.warn(`${logPrefix} Remote server sync not active or configured.`);
         event.sender.send(
           `stream:error:${requestId}`,
@@ -79,7 +82,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
         return;
       }
 
-      // 调用新的流式转发方法
+      // Call new streaming forwarding method
       await this.forwardStreamRequest(event.sender, {
         ...args,
         accessToken: token,
@@ -95,7 +98,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
   };
 
   /**
-   * 执行实际的流式请求转发
+   * Execute actual streaming request forwarding
    */
   private async forwardStreamRequest(
     sender: WebContents,
@@ -123,14 +126,14 @@ export default class RemoteServerSyncCtr extends ControllerModule {
     const clientReq = requester.request(requestOptions, (clientRes: IncomingMessage) => {
       logger.debug(`${logPrefix} Received response with status ${clientRes.statusCode}`);
 
-      // 添加调试信息
+      // Add debug information
       logger.debug(`${logPrefix} Response details:`, {
         headers: clientRes.headers,
         statusCode: clientRes.statusCode,
         statusMessage: clientRes.statusMessage,
       });
 
-      // 1. 立刻发送响应头和状态码
+      // 1. Immediately send response headers and status code
       const responseData = {
         headers: clientRes.headers || {},
         status: clientRes.statusCode || 500,
@@ -140,21 +143,21 @@ export default class RemoteServerSyncCtr extends ControllerModule {
       logger.debug(`${logPrefix} Sending response data:`, responseData);
       sender.send(`stream:response:${requestId}`, responseData);
 
-      // 2. 监听数据块并转发
+      // 2. Listen for data chunks and forward
       clientRes.on('data', (chunk: Buffer) => {
         if (sender.isDestroyed()) return;
         logger.debug(`${logPrefix} Received data chunk, size: ${chunk.length}. Forwarding...`);
         sender.send(`stream:data:${requestId}`, chunk);
       });
 
-      // 3. 监听结束信号并转发
+      // 3. Listen for end signal and forward
       clientRes.on('end', () => {
         logger.debug(`${logPrefix} Stream ended. Forwarding end signal...`);
         if (sender.isDestroyed()) return;
         sender.send(`stream:end:${requestId}`);
       });
 
-      // 4. 监听响应流错误并转发
+      // 4. Listen for response stream errors and forward
       clientRes.on('error', (error) => {
         logger.error(`${logPrefix} Error reading response stream:`, error);
         if (sender.isDestroyed()) return;
@@ -162,7 +165,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
       });
     });
 
-    // 5. 监听请求本身的错误（如 DNS 解析失败）
+    // 5. Listen for request errors (e.g., DNS resolution failure)
     clientReq.on('error', (error) => {
       logger.error(`${logPrefix} Error forwarding request:`, error);
       if (sender.isDestroyed()) return;
@@ -188,15 +191,15 @@ export default class RemoteServerSyncCtr extends ControllerModule {
     url: URL;
   }) {
     // Prepare headers, cloning and adding Oidc-Auth
-    const requestHeaders: OutgoingHttpHeaders = { ...headers }; // Use OutgoingHttpHeaders
-    requestHeaders['Oidc-Auth'] = accessToken;
+    const requestHeaders: OutgoingHttpHeaders = { ...headers , ['Oidc-Auth']: accessToken,}; // Use OutgoingHttpHeaders
+    appendVercelCookie(requestHeaders);
 
     // Let node handle Host, Content-Length etc. Remove potentially problematic headers
     delete requestHeaders['host'];
     delete requestHeaders['connection']; // Often causes issues
     // delete requestHeaders['content-length']; // Let node handle it based on body
 
-    // 读取代理配置
+    // Read proxy configuration
     const proxyConfig = this.app.storeManager.get('networkProxy', defaultProxySettings);
 
     let agent;
@@ -211,7 +214,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
       // Use union type
       headers: requestHeaders,
       hostname: url.hostname,
-      method: method,
+      method,
       path: url.pathname + url.search,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
       protocol: url.protocol,

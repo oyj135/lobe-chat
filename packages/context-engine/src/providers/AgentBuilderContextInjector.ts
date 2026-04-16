@@ -1,21 +1,16 @@
+import { escapeXml } from '@lobechat/prompts';
 import debug from 'debug';
 
-import { BaseProvider } from '../base/BaseProvider';
+import { BaseFirstUserContentProvider } from '../base/BaseFirstUserContentProvider';
 import type { PipelineContext, ProcessorOptions } from '../types';
 
-const log = debug('context-engine:provider:AgentBuilderContextInjector');
+declare module '../types' {
+  interface PipelineContextMetadataOverrides {
+    agentBuilderContextInjected?: boolean;
+  }
+}
 
-/**
- * Escape XML special characters
- */
-const escapeXml = (str: string): string => {
-  return str
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
-};
+const log = debug('context-engine:provider:AgentBuilderContextInjector');
 
 /**
  * Official tool item for Agent Builder context
@@ -31,8 +26,8 @@ export interface OfficialToolItem {
   installed?: boolean;
   /** Tool display name */
   name: string;
-  /** Tool type: 'builtin' for built-in tools, 'klavis' for LobeHub Mcp servers */
-  type: 'builtin' | 'klavis';
+  /** Tool type: 'builtin' for built-in tools, 'klavis' for LobeHub Mcp servers, 'lobehub-skill' for LobeHub Skill providers */
+  type: 'builtin' | 'klavis' | 'lobehub-skill';
 }
 
 /**
@@ -58,7 +53,7 @@ export interface AgentBuilderContext {
     tags?: string[];
     title?: string;
   };
-  /** Available official tools (builtin tools and Klavis integrations) */
+  /** Available official tools (builtin tools, Klavis integrations, and LobehubSkill providers) */
   officialTools?: OfficialToolItem[];
 }
 
@@ -136,6 +131,7 @@ const defaultFormatAgentContext = (context: AgentBuilderContext): string => {
   if (context.officialTools && context.officialTools.length > 0) {
     const builtinTools = context.officialTools.filter((t) => t.type === 'builtin');
     const klavisTools = context.officialTools.filter((t) => t.type === 'klavis');
+    const lobehubSkillTools = context.officialTools.filter((t) => t.type === 'lobehub-skill');
 
     const toolsSections: string[] = [];
 
@@ -167,6 +163,21 @@ const defaultFormatAgentContext = (context: AgentBuilderContext): string => {
       toolsSections.push(`  <klavis_tools>\n${klavisItems}\n  </klavis_tools>`);
     }
 
+    if (lobehubSkillTools.length > 0) {
+      const lobehubSkillItems = lobehubSkillTools
+        .map((t) => {
+          const attrs = [
+            `id="${t.identifier}"`,
+            `installed="${t.installed ? 'true' : 'false'}"`,
+            `enabled="${t.enabled ? 'true' : 'false'}"`,
+          ].join(' ');
+          const desc = t.description ? ` - ${escapeXml(t.description)}` : '';
+          return `    <tool ${attrs}>${escapeXml(t.name)}${desc}</tool>`;
+        })
+        .join('\n');
+      toolsSections.push(`  <lobehub_skill_tools>\n${lobehubSkillItems}\n  </lobehub_skill_tools>`);
+    }
+
     if (toolsSections.length > 0) {
       parts.push(
         `<available_official_tools>\n${toolsSections.join('\n')}\n</available_official_tools>`,
@@ -179,16 +190,21 @@ const defaultFormatAgentContext = (context: AgentBuilderContext): string => {
   }
 
   return `<current_agent_context>
-<instruction>This is the current agent's configuration context. Use this information when the user asks about or wants to modify agent settings. Use togglePlugin to enable/disable tools, or installPlugin to install new tools.</instruction>
+<instruction>This is the current agent's configuration context. Use this information when the user asks about or wants to modify agent settings. Use togglePlugin to enable/disable tools, or installPlugin to install new tools (including builtin tools, Klavis servers, and LobehubSkill providers).</instruction>
 ${parts.join('\n')}
 </current_agent_context>`;
 };
 
 /**
  * Agent Builder Context Injector
- * Responsible for injecting current agent context when Agent Builder tool is enabled
+ * Responsible for injecting current agent context when Agent Builder tool is enabled.
+ *
+ * Extends BaseFirstUserContentProvider so the injected XML is consolidated
+ * into the shared `systemInjection` message together with other before-first-user
+ * providers (UserMemory, Knowledge, AgentManagement, ...). This keeps Phase 3
+ * ordering intact and preserves prefix-cache friendliness.
  */
-export class AgentBuilderContextInjector extends BaseProvider {
+export class AgentBuilderContextInjector extends BaseFirstUserContentProvider {
   readonly name = 'AgentBuilderContextInjector';
 
   constructor(
@@ -198,56 +214,34 @@ export class AgentBuilderContextInjector extends BaseProvider {
     super(options);
   }
 
-  protected async doProcess(context: PipelineContext): Promise<PipelineContext> {
-    const clonedContext = this.cloneContext(context);
-
-    // Skip if Agent Builder is not enabled
+  protected buildContent(_context: PipelineContext): string | null {
     if (!this.config.enabled) {
       log('Agent Builder not enabled, skipping injection');
-      return this.markAsExecuted(clonedContext);
+      return null;
     }
 
-    // Skip if no agent context
     if (!this.config.agentContext) {
       log('No agent context provided, skipping injection');
-      return this.markAsExecuted(clonedContext);
+      return null;
     }
 
-    // Format agent context
     const formatFn = this.config.formatAgentContext || defaultFormatAgentContext;
     const formattedContent = formatFn(this.config.agentContext);
 
-    // Skip if no content to inject
     if (!formattedContent) {
       log('No content to inject after formatting');
-      return this.markAsExecuted(clonedContext);
+      return null;
     }
 
-    // Find the first user message index
-    const firstUserIndex = clonedContext.messages.findIndex((msg) => msg.role === 'user');
+    log('Agent Builder context prepared');
+    return formattedContent;
+  }
 
-    if (firstUserIndex === -1) {
-      log('No user messages found, skipping injection');
-      return this.markAsExecuted(clonedContext);
+  protected async doProcess(context: PipelineContext): Promise<PipelineContext> {
+    const result = await super.doProcess(context);
+    if (this.config.enabled && this.config.agentContext) {
+      result.metadata.agentBuilderContextInjected = true;
     }
-
-    // Insert a new user message with agent context before the first user message
-    const agentContextMessage = {
-      content: formattedContent,
-      createdAt: Date.now(),
-      id: `agent-builder-context-${Date.now()}`,
-      meta: { injectType: 'agent-builder-context', systemInjection: true },
-      role: 'user' as const,
-      updatedAt: Date.now(),
-    };
-
-    clonedContext.messages.splice(firstUserIndex, 0, agentContextMessage);
-
-    // Update metadata
-    clonedContext.metadata.agentBuilderContextInjected = true;
-
-    log('Agent Builder context injected as new user message');
-
-    return this.markAsExecuted(clonedContext);
+    return result;
   }
 }

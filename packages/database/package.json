@@ -14,7 +14,10 @@
     "test:server-db": "vitest run --config vitest.config.server.mts"
   },
   "dependencies": {
+    "@lobechat/agent-templates": "workspace:*",
+    "@lobechat/business-const": "workspace:*",
     "@lobechat/const": "workspace:*",
+    "@lobechat/conversation-flow": "workspace:*",
     "@lobechat/types": "workspace:*",
     "@lobechat/utils": "workspace:*",
     "random-words": "^2.0.1",
@@ -28,9 +31,11 @@
     "fake-indexeddb": "^6.2.5"
   },
   "peerDependencies": {
-    "dayjs": ">=1.11.19",
-    "drizzle-orm": ">=0.44.7",
-    "nanoid": ">=5.1.6",
-    "pg": ">=8.16.3"
+    "dayjs": "*",
+    "drizzle-orm": "*",
+    "drizzle-zod": "*",
+    "nanoid": "*",
+    "pg": "*",
+    "zod": "*"
   }
 }

@@ -1,6 +1,94 @@
-import { AIChatModelCard } from '../types/aiModel';
+import { type AIChatModelCard } from '../types/aiModel';
 
 const ollamaCloudModels: AIChatModelCard[] = [
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 204_800,
+    description:
+      'MiniMax M2.7 is an efficient large language model built specifically for coding and agent workflows.',
+    displayName: 'MiniMax M2.7',
+    enabled: true,
+    id: 'minimax-m2.7',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'Qwen3.5 is a unified vision–language foundation model with a hybrid architecture (Mixture-of-Experts + linear attention), offering strong multimodal reasoning, coding, and long-context capabilities with a 256K context window.',
+    displayName: 'Qwen3.5 397B A17B',
+    id: 'qwen3.5:397b',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      "Qwen3-Coder-Next is a coding-focused language model from Alibaba's Qwen team, optimized for agentic coding workflows and local development. Built on top of Qwen3-Next-80B-A3B-Base with hybrid attention and MoE architecture, trained on large-scale executable tasks with environment interaction and reinforcement learning.",
+    displayName: 'Qwen3 Coder Next',
+    id: 'qwen3-coder-next',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 204_800,
+    description:
+      'MiniMax-M2.5 is a state-of-the-art large language model designed for real-world productivity and coding tasks.',
+    displayName: 'MiniMax M2.5',
+    id: 'minimax-m2.5',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'K2 long thinking model supports 256k contexts, supports multi-step tool calling and thinking, and is good at solving more complex problems.',
+    displayName: 'Kimi K2 Thinking',
+    id: 'kimi-k2-thinking',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 200_000,
+    description:
+      'A strong reasoning and agentic model from Z.ai with 744B total parameters (40B active), built for complex systems engineering and long-horizon tasks.',
+    displayName: 'GLM-5',
+    enabled: true,
+    id: 'glm-5',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'Kimi K2.5 is an open-source, native multimodal agentic model that seamlessly integrates vision and language understanding with advanced agentic capabilities, instant and thinking modes, as well as conversational and agentic paradigms.',
+    displayName: 'Kimi K2.5',
+    enabled: true,
+    id: 'kimi-k2.5',
+    type: 'chat',
+  },
   {
     abilities: {
       functionCall: true,
@@ -32,20 +120,7 @@ const ollamaCloudModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 1_048_576,
     description:
-      'Gemini 3 Pro is Google’s most intelligent model, with state-of-the-art reasoning, multimodal understanding, and strong agent and vibe-coding capabilities.',
-    displayName: 'Gemini 3 Pro Preview',
-    id: 'gemini-3-pro-preview',
-    releasedAt: '2025-11-20',
-    type: 'chat',
-  },
-  {
-    abilities: {
-      functionCall: true,
-      reasoning: true,
-      vision: true,
-    },
-    contextWindowTokens: 1_048_576,
-    description: 'Gemini 3 Flash 是为速度而打造的最智能的模型，将前沿智能与卓越的搜索接地相结合。',
+      'Gemini 3 Flash is the smartest model built for speed, combining cutting-edge intelligence with excellent search grounding.',
     displayName: 'Gemini 3 Flash Preview',
     id: 'gemini-3-flash-preview',
     releasedAt: '2025-12-17',
@@ -58,7 +133,6 @@ const ollamaCloudModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 204_800,
     displayName: 'MiniMax M2.1',
-    enabled: true,
     id: 'minimax-m2.1',
     type: 'chat',
   },
@@ -68,7 +142,8 @@ const ollamaCloudModels: AIChatModelCard[] = [
       reasoning: true,
     },
     contextWindowTokens: 204_800,
-    description: 'MiniMax M2 是专为编码和代理工作流程构建的高效大型语言模型。',
+    description:
+      'MiniMax M2 is an efficient large language model built specifically for coding and agent workflows.',
     displayName: 'MiniMax M2',
     id: 'minimax-m2',
     type: 'chat',
@@ -80,9 +155,8 @@ const ollamaCloudModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      'GLM-4.7 是智谱最新旗舰模型，面向 Agentic Coding 场景强化了编码能力、长程任务规划与工具协同，并在多个公开基准的当期榜单中取得开源模型中的领先表现。通用能力提升，回复更简洁自然，写作更具沉浸感。在执行复杂智能体任务，在工具调用时指令遵循更强，Artifacts 与 Agentic Coding 的前端美感和长程任务完成效率进一步提升。',
+      "GLM-4.7 is Zhipu's latest flagship model, enhanced for Agentic Coding scenarios with improved coding capabilities, long-term task planning, and tool collaboration. It achieves leading performance among open-source models on multiple public benchmarks. General capabilities are improved with more concise and natural responses and more immersive writing. For complex agent tasks, instruction following during tool calls is stronger, and the frontend aesthetics and long-term task completion efficiency of Artifacts and Agentic Coding are further enhanced.",
     displayName: 'GLM-4.7',
-    enabled: true,
     id: 'glm-4.7',
     type: 'chat',
   },
@@ -93,7 +167,7 @@ const ollamaCloudModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      '智谱旗舰模型 GLM-4.6 (355B) 在高级编码、长文本处理、推理与智能体能力上全面超越前代，尤其在编程能力上对齐 Claude Sonnet 4，成为国内顶尖的 Coding 模型。',
+      "Zhipu's flagship model GLM-4.6 (355B) fully surpasses its predecessors in advanced coding, long-text processing, reasoning, and agent capabilities. It particularly aligns with Claude Sonnet 4 in programming ability, becoming China's top Coding model.",
     displayName: 'GLM-4.6',
     id: 'glm-4.6',
     type: 'chat',
@@ -177,6 +251,58 @@ const ollamaCloudModels: AIChatModelCard[] = [
     contextWindowTokens: 262_144,
     displayName: 'Qwen3 VL 235B',
     id: 'qwen3-vl:235b',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      vision: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'Ministral 3 3B is the smallest and most efficient model in the Ministral 3 series, offering strong language and vision capabilities in a compact package. Designed for edge deployment, it delivers high performance on various hardware including local setups.',
+    displayName: 'Ministral 3 3B',
+    id: 'ministral-3:3b',
+    releasedAt: '2025-12-02',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      vision: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'Ministral 3 8B is a powerful and efficient model in the Ministral 3 series, delivering top-tier text and vision capabilities. Built for edge deployment, it delivers high performance on various hardware including local setups.',
+    displayName: 'Ministral 3 8B',
+    id: 'ministral-3:8b',
+    releasedAt: '2025-12-02',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      vision: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'Ministral 3 14B is the largest model in the Ministral 3 series, delivering state-of-the-art performance comparable to the larger Mistral Small 3.2 24B counterpart. Optimized for local deployment, it delivers high performance on various hardware including local setups.',
+    displayName: 'Ministral 3 14B',
+    id: 'ministral-3:14b',
+    releasedAt: '2025-12-02',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      vision: true,
+    },
+    contextWindowTokens: 262_144,
+    description:
+      'Mistral Large 3 is a state-of-the-art open-weight general-purpose multimodal model with a refined Mixture of Experts architecture. It has 41B active parameters and 675B total parameters.',
+    displayName: 'Mistral Large 3',
+    id: 'mistral-large-3:675b',
+    releasedAt: '2025-12-02',
     type: 'chat',
   },
 ];

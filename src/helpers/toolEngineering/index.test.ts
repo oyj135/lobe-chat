@@ -1,5 +1,5 @@
-import { LobeChatPluginManifest } from '@lobehub/chat-plugin-sdk';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type ToolManifest } from '@lobechat/types';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAgentToolsEngine, createToolsEngine, getEnabledTools } from './index';
 
@@ -30,7 +30,7 @@ vi.mock('@/store/tool', () => ({
             avatar: '🔍',
           },
           type: 'builtin',
-        } as unknown as LobeChatPluginManifest,
+        } as unknown as ToolManifest,
         type: 'builtin' as const,
       },
       {
@@ -56,19 +56,26 @@ vi.mock('@/store/tool', () => ({
             avatar: '🌐',
           },
           type: 'builtin',
-        } as unknown as LobeChatPluginManifest,
+        } as unknown as ToolManifest,
         type: 'builtin' as const,
       },
     ],
   }),
 }));
 
+let mockGetInstalledPluginById: (id: string) => () => any = () => () => undefined;
+let mockInstalledPluginManifestList: () => ToolManifest[] = () => [];
+
 vi.mock('@/store/tool/selectors', () => ({
   pluginSelectors: {
-    installedPluginManifestList: () => [],
+    getInstalledPluginById: (id: string) => mockGetInstalledPluginById(id),
+    installedPluginManifestList: () => mockInstalledPluginManifestList(),
   },
   klavisStoreSelectors: {
     klavisAsLobeTools: () => [],
+  },
+  lobehubSkillStoreSelectors: {
+    lobehubSkillAsLobeTools: () => [],
   },
 }));
 
@@ -76,13 +83,53 @@ vi.mock('../isCanUseFC', () => ({
   isCanUseFC: () => true,
 }));
 
+let mockCurrentAgentPlugins: string[] = [];
+
+vi.mock('@/store/agent', () => ({
+  getAgentStoreState: () => ({}),
+}));
+
+vi.mock('@/store/agent/selectors', () => ({
+  agentSelectors: {
+    currentAgentPlugins: () => mockCurrentAgentPlugins,
+    hasEnabledKnowledgeBases: () => false,
+  },
+  agentChatConfigSelectors: {
+    currentChatConfig: () => ({}),
+    isCloudSandboxEnabled: () => false,
+    isLocalSystemEnabled: () => false,
+    isMemoryToolEnabled: () => false,
+  },
+}));
+
+vi.mock('@/store/user', () => ({
+  useUserStore: { getState: () => ({}) },
+}));
+
+vi.mock('@/store/user/selectors', () => ({
+  settingsSelectors: {
+    memoryEnabled: () => false,
+  },
+}));
+
+let mockUseApplicationBuiltinSearchTool = true;
+
 vi.mock('@/helpers/getSearchConfig', () => ({
   getSearchConfig: () => ({
-    useApplicationBuiltinSearchTool: true,
+    get useApplicationBuiltinSearchTool() {
+      return mockUseApplicationBuiltinSearchTool;
+    },
   }),
 }));
 
 describe('toolEngineering', () => {
+  afterEach(() => {
+    mockGetInstalledPluginById = () => () => undefined;
+    mockInstalledPluginManifestList = () => [];
+    mockUseApplicationBuiltinSearchTool = true;
+    mockCurrentAgentPlugins = [];
+  });
+
   describe('createToolsEngine', () => {
     it('should generate tools array for enabled plugins', () => {
       const toolsEngine = createToolsEngine();
@@ -155,6 +202,8 @@ describe('toolEngineering', () => {
     });
 
     it('should include web browsing tool alongside user-provided tools', () => {
+      mockCurrentAgentPlugins = ['search'];
+
       const toolsEngine = createAgentToolsEngine({
         model: 'gpt-4',
         provider: 'openai',
@@ -168,6 +217,143 @@ describe('toolEngineering', () => {
 
       expect(result.enabledToolIds).toEqual(['search', 'lobe-web-browsing']);
       expect(result.enabledToolIds).toHaveLength(2);
+    });
+  });
+
+  describe('isExplicitActivation bypass', () => {
+    it('should disable web browsing when useApplicationBuiltinSearchTool is false', () => {
+      mockUseApplicationBuiltinSearchTool = false;
+
+      const toolsEngine = createAgentToolsEngine({ model: 'gpt-4', provider: 'openai' });
+      const result = toolsEngine.generateToolsDetailed({
+        toolIds: ['lobe-web-browsing'],
+        model: 'gpt-4',
+        provider: 'openai',
+        skipDefaultTools: true,
+      });
+
+      expect(result.enabledToolIds).not.toContain('lobe-web-browsing');
+      expect(result.filteredTools).toContainEqual({
+        id: 'lobe-web-browsing',
+        reason: 'disabled',
+      });
+    });
+
+    it('should enable web browsing with isExplicitActivation even when useApplicationBuiltinSearchTool is false', () => {
+      mockUseApplicationBuiltinSearchTool = false;
+
+      const toolsEngine = createAgentToolsEngine({ model: 'gpt-4', provider: 'openai' });
+      const result = toolsEngine.generateToolsDetailed({
+        context: { isExplicitActivation: true },
+        toolIds: ['lobe-web-browsing'],
+        model: 'gpt-4',
+        provider: 'openai',
+        skipDefaultTools: true,
+      });
+
+      expect(result.enabledToolIds).toContain('lobe-web-browsing');
+      expect(result.filteredTools).toEqual([]);
+      expect(result.tools).toHaveLength(1);
+    });
+
+    it('should bypass all enableChecker filters with isExplicitActivation', () => {
+      mockUseApplicationBuiltinSearchTool = false;
+      mockInstalledPluginManifestList = () => [
+        {
+          api: [
+            {
+              description: 'Run stdio tool',
+              name: 'run',
+              parameters: { properties: {}, required: [], type: 'object' },
+            },
+          ],
+          identifier: 'stdio-mcp-plugin',
+          meta: { title: 'Stdio MCP', avatar: '🔧' },
+          type: 'default',
+        } as unknown as ToolManifest,
+      ];
+      mockGetInstalledPluginById = (id: string) => () =>
+        id === 'stdio-mcp-plugin'
+          ? { customParams: { mcp: { type: 'stdio' } }, identifier: id }
+          : undefined;
+      mockCurrentAgentPlugins = ['stdio-mcp-plugin'];
+
+      const toolsEngine = createAgentToolsEngine({ model: 'gpt-4', provider: 'openai' });
+      const result = toolsEngine.generateToolsDetailed({
+        context: { isExplicitActivation: true },
+        toolIds: ['stdio-mcp-plugin', 'lobe-web-browsing'],
+        model: 'gpt-4',
+        provider: 'openai',
+        skipDefaultTools: true,
+      });
+
+      // Both should be enabled despite their normal filters
+      expect(result.enabledToolIds).toContain('stdio-mcp-plugin');
+      expect(result.enabledToolIds).toContain('lobe-web-browsing');
+    });
+  });
+
+  describe('stdio MCP filtering on web', () => {
+    const stdioMcpManifest = {
+      api: [
+        {
+          description: 'Run stdio tool',
+          name: 'run',
+          parameters: { properties: {}, required: [], type: 'object' },
+        },
+      ],
+      identifier: 'stdio-mcp-plugin',
+      meta: { title: 'Stdio MCP', avatar: '🔧' },
+      type: 'default',
+    } as unknown as ToolManifest;
+
+    const httpMcpManifest = {
+      api: [
+        {
+          description: 'Run http tool',
+          name: 'run',
+          parameters: { properties: {}, required: [], type: 'object' },
+        },
+      ],
+      identifier: 'http-mcp-plugin',
+      meta: { title: 'HTTP MCP', avatar: '🌐' },
+      type: 'default',
+    } as unknown as ToolManifest;
+
+    it('should filter stdio MCP tools in non-desktop environment', () => {
+      mockInstalledPluginManifestList = () => [stdioMcpManifest];
+      mockGetInstalledPluginById = (id: string) => () =>
+        id === 'stdio-mcp-plugin'
+          ? { customParams: { mcp: { type: 'stdio' } }, identifier: id }
+          : undefined;
+      mockCurrentAgentPlugins = ['stdio-mcp-plugin'];
+
+      const toolsEngine = createAgentToolsEngine({ model: 'gpt-4', provider: 'openai' });
+      const result = toolsEngine.generateToolsDetailed({
+        toolIds: ['stdio-mcp-plugin'],
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      expect(result.enabledToolIds).not.toContain('stdio-mcp-plugin');
+    });
+
+    it('should NOT filter http MCP tools in non-desktop environment', () => {
+      mockInstalledPluginManifestList = () => [httpMcpManifest];
+      mockGetInstalledPluginById = (id: string) => () =>
+        id === 'http-mcp-plugin'
+          ? { customParams: { mcp: { type: 'http' } }, identifier: id }
+          : undefined;
+      mockCurrentAgentPlugins = ['http-mcp-plugin'];
+
+      const toolsEngine = createAgentToolsEngine({ model: 'gpt-4', provider: 'openai' });
+      const result = toolsEngine.generateToolsDetailed({
+        toolIds: ['http-mcp-plugin'],
+        model: 'gpt-4',
+        provider: 'openai',
+      });
+
+      expect(result.enabledToolIds).toContain('http-mcp-plugin');
     });
   });
 

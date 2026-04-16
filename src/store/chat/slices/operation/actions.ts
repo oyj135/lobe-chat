@@ -1,145 +1,52 @@
-/* eslint-disable sort-keys-fix/sort-keys-fix */
 import { nanoid } from '@lobechat/utils';
 import debug from 'debug';
 import { produce } from 'immer';
-import { type StateCreator } from 'zustand/vanilla';
 
 import { type ChatStore } from '@/store/chat/store';
-import { type MessageMapKeyInput, messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { type MessageMapKeyInput } from '@/store/chat/utils/messageMapKey';
+import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
-import type {
-  AfterCompletionCallback,
-  Operation,
-  OperationCancelContext,
-  OperationContext,
-  OperationFilter,
-  OperationMetadata,
-  OperationStatus,
-  OperationType,
+import {
+  type AfterCompletionCallback,
+  type Operation,
+  type OperationCancelContext,
+  type OperationContext,
+  type OperationFilter,
+  type OperationMetadata,
+  type OperationStatus,
+  type OperationType,
+  type QueuedMessage,
 } from './types';
 
 const n = setNamespace('operation');
 const log = debug('lobe-store:operation');
 
+const isSameNullableContextValue = (left?: string | null, right?: string | null): boolean =>
+  (left ?? null) === (right ?? null);
+
 /**
  * Operation Actions
  */
-export interface OperationActions {
-  /**
-   * Associate message with operation (for automatic context retrieval)
-   */
-  associateMessageWithOperation: (messageId: string, operationId: string) => void;
 
-  /**
-   * Cancel all operations
-   */
-  cancelAllOperations: (reason?: string) => void;
+type Setter = StoreSetter<ChatStore>;
+export const operationActions = (set: Setter, get: () => ChatStore, _api?: unknown) =>
+  new OperationActionsImpl(set, get, _api);
 
-  /**
-   * Cancel operation (recursively cancel all child operations)
-   */
-  cancelOperation: (operationId: string, reason?: string) => void;
+export class OperationActionsImpl {
+  readonly #get: () => ChatStore;
+  readonly #set: Setter;
 
-  /**
-   * Cancel operations by filter
-   */
-  cancelOperations: (filter: OperationFilter, reason?: string) => string[];
+  constructor(set: Setter, get: () => ChatStore, _api?: unknown) {
+    void _api;
+    this.#set = set;
+    this.#get = get;
+  }
 
-  /**
-   * Clean up completed or cancelled operations
-   * Removes operations that are older than the specified age (default: 30 seconds)
-   */
-  cleanupCompletedOperations: (maxAgeMs?: number) => number;
-
-  /**
-   * Complete operation
-   */
-  completeOperation: (operationId: string, metadata?: Partial<OperationMetadata>) => void;
-
-  /**
-   * Mark operation as failed
-   */
-  failOperation: (
-    operationId: string,
-    error: { code?: string; details?: any; message: string; type: string },
-  ) => void;
-
-  /**
-   * Get operation's AbortSignal (for passing to async operations like fetch)
-   */
-  getOperationAbortSignal: (operationId: string) => AbortSignal;
-
-  /**
-   * Get conversation context from operation or fallback to global state
-   * This is a helper method that can be used by other slices
-   *
-   * Returns full MessageMapKeyInput for consistent key generation
-   *
-   * Migration Note (LOBE-1086):
-   * - Only agentId is used for message association
-   * - Backend handles sessionId mapping internally based on agentId
-   */
-  internal_getConversationContext: (context?: { operationId?: string }) => MessageMapKeyInput;
-
-  /**
-   * Register cancel handler for an operation
-   * The handler will be called when the operation is cancelled
-   */
-  onOperationCancel: (
-    operationId: string,
-    handler: (context: OperationCancelContext) => void | Promise<void>,
-  ) => void;
-
-  /**
-   * Register an afterCompletion callback for an operation
-   * The callback will be executed after the AgentRuntime completes
-   * Used to avoid race conditions with message updates
-   */
-  registerAfterCompletionCallback: (operationId: string, callback: AfterCompletionCallback) => void;
-
-  /**
-   * Start an operation (supports auto-inheriting context from parent operation)
-   */
-  startOperation: (params: {
-    context?: Partial<OperationContext>;
-    description?: string;
-    label?: string;
-    metadata?: Partial<OperationMetadata>;
-    operationId?: string;
-    parentOperationId?: string;
-    type: OperationType;
-  }) => { abortController: AbortController; operationId: string };
-
-  /**
-   * Update operation metadata
-   */
-  updateOperationMetadata: (operationId: string, metadata: Partial<OperationMetadata>) => void;
-
-  /**
-   * Update operation progress
-   */
-  updateOperationProgress: (operationId: string, current: number, total?: number) => void;
-
-  /**
-   * Update operation status
-   */
-  updateOperationStatus: (
-    operationId: string,
-    status: OperationStatus,
-    metadata?: Partial<OperationMetadata>,
-  ) => void;
-}
-
-export const operationActions: StateCreator<
-  ChatStore,
-  [['zustand/devtools', never]],
-  [],
-  OperationActions
-> = (set, get) => ({
-  internal_getConversationContext: (context) => {
+  internal_getConversationContext = (context?: { operationId?: string }): MessageMapKeyInput => {
     if (context?.operationId) {
-      const operation = get().operations[context.operationId];
+      const operation = this.#get().operations[context.operationId];
       if (!operation) {
         log(
           '[internal_getConversationContext] ERROR: Operation not found: %s',
@@ -161,10 +68,10 @@ export const operationActions: StateCreator<
     }
 
     // Fallback to global state
-    const agentId = get().activeAgentId;
-    const groupId = get().activeGroupId;
-    const topicId = get().activeTopicId;
-    const threadId = get().activeThreadId;
+    const agentId = this.#get().activeAgentId;
+    const groupId = this.#get().activeGroupId;
+    const topicId = this.#get().activeTopicId;
+    const threadId = this.#get().activeThreadId;
     log('[internal_getConversationContext] use global state: ', {
       agentId,
       topicId,
@@ -172,9 +79,17 @@ export const operationActions: StateCreator<
       groupId,
     });
     return { agentId, topicId, threadId, groupId };
-  },
+  };
 
-  startOperation: (params) => {
+  startOperation = (params: {
+    context?: Partial<OperationContext>;
+    description?: string;
+    label?: string;
+    metadata?: Partial<OperationMetadata>;
+    operationId?: string;
+    parentOperationId?: string;
+    type: OperationType;
+  }): { abortController: AbortController; operationId: string } => {
     const {
       type,
       context: partialContext,
@@ -191,7 +106,7 @@ export const operationActions: StateCreator<
     let context: OperationContext = partialContext || {};
 
     if (parentOperationId) {
-      const parentOp = get().operations[parentOperationId];
+      const parentOp = this.#get().operations[parentOperationId];
       if (parentOp) {
         // Inherit parent's context, allow partial override
         context = { ...parentOp.context, ...partialContext };
@@ -220,7 +135,7 @@ export const operationActions: StateCreator<
       description,
     };
 
-    set(
+    this.#set(
       produce((state: ChatStore) => {
         // Add to operations map
         state.operations[operationId] = operation;
@@ -245,11 +160,7 @@ export const operationActions: StateCreator<
 
         // Update context index (if agentId exists)
         if (context.agentId) {
-          const contextKey = messageMapKey({
-            agentId: context.agentId,
-            groupId: context.groupId,
-            topicId: context.topicId !== undefined ? context.topicId : null,
-          });
+          const contextKey = messageMapKey(context as MessageMapKeyInput);
           if (!state.operationsByContext[contextKey]) {
             state.operationsByContext[contextKey] = [];
           }
@@ -272,14 +183,14 @@ export const operationActions: StateCreator<
     // Only cleanup for top-level operations (no parent) to avoid excessive cleanup calls
     if (!parentOperationId) {
       // Clean up operations completed more than 30 seconds ago
-      get().cleanupCompletedOperations(30_000);
+      this.#get().cleanupCompletedOperations(30_000);
     }
 
     return { operationId, abortController };
-  },
+  };
 
-  updateOperationMetadata: (operationId, metadata) => {
-    const operation = get().operations[operationId];
+  updateOperationMetadata = (operationId: string, metadata: Partial<OperationMetadata>): void => {
+    const operation = this.#get().operations[operationId];
     if (metadata.isAborting) {
       log(
         '[updateOperationMetadata] Setting isAborting=true for operation %s (type=%s)',
@@ -288,7 +199,7 @@ export const operationActions: StateCreator<
       );
     }
 
-    set(
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) return;
@@ -301,10 +212,14 @@ export const operationActions: StateCreator<
       false,
       n(`updateOperationMetadata/${operationId}`),
     );
-  },
+  };
 
-  updateOperationStatus: (operationId, status, metadata) => {
-    set(
+  updateOperationStatus = (
+    operationId: string,
+    status: OperationStatus,
+    metadata?: Partial<OperationMetadata>,
+  ): void => {
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) return;
@@ -321,10 +236,10 @@ export const operationActions: StateCreator<
       false,
       n(`updateOperationStatus/${operationId}/${status}`),
     );
-  },
+  };
 
-  updateOperationProgress: (operationId, current, total) => {
-    set(
+  updateOperationProgress = (operationId: string, current: number, total?: number): void => {
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) return;
@@ -338,10 +253,10 @@ export const operationActions: StateCreator<
       false,
       n(`updateOperationProgress/${operationId}`),
     );
-  },
+  };
 
-  completeOperation: (operationId, metadata) => {
-    const operation = get().operations[operationId];
+  completeOperation = (operationId: string, metadata?: Partial<OperationMetadata>): void => {
+    const operation = this.#get().operations[operationId];
     if (operation) {
       log(
         '[completeOperation] operation %s (type=%s) completed, duration=%dms',
@@ -351,13 +266,18 @@ export const operationActions: StateCreator<
       );
     }
 
-    set(
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) return;
 
         const now = Date.now();
-        operation.status = 'completed';
+
+        // Don't override cancelled status - preserve user interruption state
+        if (operation.status !== 'cancelled') {
+          operation.status = 'completed';
+        }
+
         operation.metadata.endTime = now;
         operation.metadata.duration = now - operation.metadata.startTime;
 
@@ -371,18 +291,21 @@ export const operationActions: StateCreator<
       false,
       n(`completeOperation/${operationId}`),
     );
-  },
+  };
 
-  getOperationAbortSignal: (operationId) => {
-    const operation = get().operations[operationId];
+  getOperationAbortSignal = (operationId: string): AbortSignal => {
+    const operation = this.#get().operations[operationId];
     if (!operation) {
       throw new Error(`[getOperationAbortSignal] Operation not found: ${operationId}`);
     }
     return operation.abortController.signal;
-  },
+  };
 
-  onOperationCancel: (operationId, handler) => {
-    set(
+  onOperationCancel = (
+    operationId: string,
+    handler: (context: OperationCancelContext) => void | Promise<void>,
+  ): void => {
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) {
@@ -400,10 +323,13 @@ export const operationActions: StateCreator<
       false,
       n(`onOperationCancel/${operationId}`),
     );
-  },
+  };
 
-  registerAfterCompletionCallback: (operationId, callback) => {
-    set(
+  registerAfterCompletionCallback = (
+    operationId: string,
+    callback: AfterCompletionCallback,
+  ): void => {
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) {
@@ -434,10 +360,10 @@ export const operationActions: StateCreator<
       false,
       n(`registerAfterCompletionCallback/${operationId}`),
     );
-  },
+  };
 
-  cancelOperation: (operationId, reason = 'User cancelled') => {
-    const operation = get().operations[operationId];
+  cancelOperation = (operationId: string, reason: string = 'User cancelled'): void => {
+    const operation = this.#get().operations[operationId];
     if (!operation) {
       log('[cancelOperation] operation not found: %s', operationId);
       return;
@@ -463,10 +389,14 @@ export const operationActions: StateCreator<
       // Ignore abort errors
     }
 
-    // 2. Set isAborting flag immediately for execAgentRuntime operations
-    // This ensures UI (loading button) responds instantly to user cancellation
-    if (operation.type === 'execAgentRuntime') {
-      get().updateOperationMetadata(operationId, { isAborting: true });
+    // 2. Set isAborting flag immediately for agent-runtime operations.
+    // This ensures UI (loading button) responds instantly to user cancellation.
+    // Applies to both client-side (execAgentRuntime) and Gateway-mode
+    // (execServerAgentRuntime) runs — the latter needs the flag so the UI
+    // transitions out of loading right away, without waiting for the
+    // round-trip WS `session_complete` after the server acknowledges interrupt.
+    if (operation.type === 'execAgentRuntime' || operation.type === 'execServerAgentRuntime') {
+      this.#get().updateOperationMetadata(operationId, { isAborting: true });
     }
 
     // 3. Call cancel handler if registered
@@ -493,7 +423,7 @@ export const operationActions: StateCreator<
     }
 
     // 4. Update status
-    set(
+    this.#set(
       produce((state: ChatStore) => {
         const op = state.operations[operationId];
         if (!op) return;
@@ -512,13 +442,16 @@ export const operationActions: StateCreator<
     if (operation.childOperationIds && operation.childOperationIds.length > 0) {
       log('[cancelOperation] cancelling %d child operations', operation.childOperationIds.length);
       operation.childOperationIds.forEach((childId) => {
-        get().cancelOperation(childId, 'Parent operation cancelled');
+        this.#get().cancelOperation(childId, 'Parent operation cancelled');
       });
     }
-  },
+  };
 
-  failOperation: (operationId, error) => {
-    const operation = get().operations[operationId];
+  failOperation = (
+    operationId: string,
+    error: { code?: string; details?: any; message: string; type: string },
+  ): void => {
+    const operation = this.#get().operations[operationId];
     if (operation) {
       log(
         '[failOperation] operation %s (type=%s) failed: %s',
@@ -528,7 +461,7 @@ export const operationActions: StateCreator<
       );
     }
 
-    set(
+    this.#set(
       produce((state: ChatStore) => {
         const operation = state.operations[operationId];
         if (!operation) return;
@@ -542,10 +475,10 @@ export const operationActions: StateCreator<
       false,
       n(`failOperation/${operationId}`),
     );
-  },
+  };
 
-  cancelOperations: (filter, reason = 'Batch cancelled') => {
-    const operations = Object.values(get().operations);
+  cancelOperations = (filter: OperationFilter, reason: string = 'Batch cancelled'): string[] => {
+    const operations = Object.values(this.#get().operations);
     const matchedIds: string[] = [];
 
     operations.forEach((op) => {
@@ -570,13 +503,13 @@ export const operationActions: StateCreator<
         matches = matches && op.context.agentId === filter.agentId;
       }
       if (filter.topicId !== undefined) {
-        matches = matches && op.context.topicId === filter.topicId;
+        matches = matches && isSameNullableContextValue(op.context.topicId, filter.topicId);
       }
       if (filter.messageId !== undefined) {
         matches = matches && op.context.messageId === filter.messageId;
       }
       if (filter.threadId !== undefined) {
-        matches = matches && op.context.threadId === filter.threadId;
+        matches = matches && isSameNullableContextValue(op.context.threadId, filter.threadId);
       }
       if (filter.groupId !== undefined) {
         matches = matches && op.context.groupId === filter.groupId;
@@ -592,29 +525,29 @@ export const operationActions: StateCreator<
 
     // Cancel all matched operations
     matchedIds.forEach((id) => {
-      get().cancelOperation(id, reason);
+      this.#get().cancelOperation(id, reason);
     });
 
     return matchedIds;
-  },
+  };
 
-  cancelAllOperations: (reason = 'Cancel all operations') => {
-    const operations = Object.values(get().operations);
+  cancelAllOperations = (reason: string = 'Cancel all operations'): void => {
+    const operations = Object.values(this.#get().operations);
 
     operations.forEach((op) => {
       if (op.status === 'running') {
-        get().cancelOperation(op.id, reason);
+        this.#get().cancelOperation(op.id, reason);
       }
     });
-  },
+  };
 
-  cleanupCompletedOperations: (olderThan = 60_000) => {
+  cleanupCompletedOperations = (olderThan: number = 60_000): number => {
     // Default: cleanup operations completed more than 1 minute ago
     const now = Date.now();
 
     // Collect operations to delete first
     const operationsToDelete: string[] = [];
-    Object.values(get().operations).forEach((op) => {
+    Object.values(this.#get().operations).forEach((op) => {
       const isCompleted =
         op.status === 'completed' || op.status === 'cancelled' || op.status === 'failed';
       const isOld = op.metadata.endTime && now - op.metadata.endTime > olderThan;
@@ -626,7 +559,7 @@ export const operationActions: StateCreator<
 
     if (operationsToDelete.length === 0) return 0;
 
-    set(
+    this.#set(
       produce((state: ChatStore) => {
         // Delete operations and update indexes
         operationsToDelete.forEach((operationId) => {
@@ -654,11 +587,7 @@ export const operationActions: StateCreator<
 
           // Remove from context index
           if (op.context.agentId) {
-            const contextKey = messageMapKey({
-              agentId: op.context.agentId,
-              groupId: op.context.groupId,
-              topicId: op.context.topicId !== undefined ? op.context.topicId : null,
-            });
+            const contextKey = messageMapKey(op.context as MessageMapKeyInput);
             const contextIndex = state.operationsByContext[contextKey];
             if (contextIndex) {
               state.operationsByContext[contextKey] = contextIndex.filter(
@@ -692,10 +621,10 @@ export const operationActions: StateCreator<
 
     log('[cleanupCompletedOperations] cleaned up %d operations', operationsToDelete.length);
     return operationsToDelete.length;
-  },
+  };
 
-  associateMessageWithOperation: (messageId, operationId) => {
-    set(
+  associateMessageWithOperation = (messageId: string, operationId: string): void => {
+    this.#set(
       produce((state: ChatStore) => {
         // Update messageOperationMap (for single operation lookup)
         state.messageOperationMap[messageId] = operationId;
@@ -711,5 +640,138 @@ export const operationActions: StateCreator<
       false,
       n(`associateMessageWithOperation/${messageId}/${operationId}`),
     );
-  },
-});
+  };
+
+  markUnreadCompleted = (agentId: string, topicId?: string | null): void => {
+    const { activeAgentId, activeTopicId } = this.#get();
+
+    // Only mark when user is NOT currently viewing this agent/topic
+    const isViewingAgent = activeAgentId === agentId;
+    const isViewingTopic = isViewingAgent && (activeTopicId ?? null) === (topicId ?? null);
+
+    if (!isViewingAgent) {
+      this.#set(
+        produce((state: ChatStore) => {
+          state.unreadCompletedAgentIds.add(agentId);
+        }),
+        false,
+        n(`markUnreadCompleted/agent/${agentId}`),
+      );
+    }
+
+    if (topicId && !isViewingTopic) {
+      this.#set(
+        produce((state: ChatStore) => {
+          state.unreadCompletedTopicIds.add(topicId);
+        }),
+        false,
+        n(`markUnreadCompleted/topic/${topicId}`),
+      );
+    }
+  };
+
+  clearUnreadCompletedAgent = (agentId: string): void => {
+    if (!this.#get().unreadCompletedAgentIds.has(agentId)) return;
+    this.#set(
+      produce((state: ChatStore) => {
+        state.unreadCompletedAgentIds.delete(agentId);
+      }),
+      false,
+      n(`clearUnreadCompleted/agent/${agentId}`),
+    );
+  };
+
+  clearUnreadCompletedTopic = (topicId: string): void => {
+    if (!this.#get().unreadCompletedTopicIds.has(topicId)) return;
+    this.#set(
+      produce((state: ChatStore) => {
+        state.unreadCompletedTopicIds.delete(topicId);
+      }),
+      false,
+      n(`clearUnreadCompleted/topic/${topicId}`),
+    );
+  };
+  // ━━━ Message Queue Actions ━━━
+
+  /**
+   * Enqueue a message for a conversation context.
+   * If a hard interrupt, also cancel the running operation.
+   */
+  enqueueMessage = (
+    contextKey: string,
+    message: QueuedMessage,
+    runningOperationId?: string,
+  ): void => {
+    log(
+      '[enqueueMessage] contextKey=%s, messageId=%s, mode=%s',
+      contextKey,
+      message.id,
+      message.interruptMode,
+    );
+
+    this.#set(
+      produce((state: ChatStore) => {
+        const queue = state.queuedMessages[contextKey] ?? [];
+        queue.push(message);
+        state.queuedMessages[contextKey] = queue;
+      }),
+      false,
+      n(`enqueueMessage/${contextKey}`),
+    );
+
+    // Hard interrupt: cancel the running operation
+    if (message.interruptMode === 'hard' && runningOperationId) {
+      const op = this.#get().operations[runningOperationId];
+      if (op?.status === 'running') {
+        log('[enqueueMessage] Hard interrupt, cancelling operation %s', runningOperationId);
+        this.#get().cancelOperation(runningOperationId, 'hard_interrupt');
+      }
+    }
+  };
+
+  /**
+   * Drain all queued messages for a context (atomic take-all).
+   */
+  drainQueuedMessages = (contextKey: string): QueuedMessage[] => {
+    const queue = this.#get().queuedMessages[contextKey];
+    if (!queue || queue.length === 0) return [];
+
+    const messages = [...queue];
+
+    this.#set(
+      produce((state: ChatStore) => {
+        state.queuedMessages[contextKey] = [];
+      }),
+      false,
+      n(`drainQueuedMessages/${contextKey}`),
+    );
+
+    log('[drainQueuedMessages] contextKey=%s, drained %d', contextKey, messages.length);
+    return messages;
+  };
+
+  removeQueuedMessage = (contextKey: string, messageId: string): void => {
+    this.#set(
+      produce((state: ChatStore) => {
+        const queue = state.queuedMessages[contextKey];
+        if (!queue) return;
+        const idx = queue.findIndex((m) => m.id === messageId);
+        if (idx >= 0) queue.splice(idx, 1);
+      }),
+      false,
+      n(`removeQueuedMessage/${contextKey}/${messageId}`),
+    );
+  };
+
+  clearMessageQueue = (contextKey: string): void => {
+    this.#set(
+      produce((state: ChatStore) => {
+        delete state.queuedMessages[contextKey];
+      }),
+      false,
+      n(`clearMessageQueue/${contextKey}`),
+    );
+  };
+}
+
+export type OperationActions = Pick<OperationActionsImpl, keyof OperationActionsImpl>;

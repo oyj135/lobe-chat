@@ -1,6 +1,6 @@
 import { type UIChatMessage } from '@lobechat/types';
-import { Button, Form, type FormItemProps, Segmented } from '@lobehub/ui';
-import { Flexbox } from '@lobehub/ui';
+import { type FormItemProps } from '@lobehub/ui';
+import { Button, Flexbox, Form, Segmented } from '@lobehub/ui';
 import { Switch } from 'antd';
 import { CopyIcon } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -13,23 +13,31 @@ import { ImageType, imageTypeOptions, useScreenshot } from '@/hooks/useScreensho
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
+import { useConversationStore } from '../../../store';
 import { styles } from '../style';
 import Preview from './Preview';
-import { type FieldType } from './type';
+import { type FieldType, WidthMode } from './type';
 
 const DEFAULT_FIELD_VALUE: FieldType = {
   imageType: ImageType.JPG,
-  withBackground: true,
+  widthMode: WidthMode.Wide,
+  withBackground: false,
   withFooter: true,
 };
 
 const ShareImage = memo<{ message: UIChatMessage; mobile?: boolean; uniqueId?: string }>(
   ({ message, uniqueId }) => {
     const currentAgentTitle = useAgentStore(agentSelectors.currentAgentTitle);
+    const context = useConversationStore((s) => s.context);
     const [fieldValue, setFieldValue] = useState<FieldType>(DEFAULT_FIELD_VALUE);
     const { t } = useTranslation(['chat', 'common']);
 
-    // 生成唯一的预览ID，避免DOM冲突
+    const widthModeOptions = [
+      { label: t('shareModal.widthMode.wide'), value: WidthMode.Wide },
+      { label: t('shareModal.widthMode.narrow'), value: WidthMode.Narrow },
+    ];
+
+    // Generate a unique preview ID to avoid DOM conflicts
     const previewId = uniqueId ? `preview-${uniqueId}` : 'preview';
 
     const { loading, onDownload, title } = useScreenshot({
@@ -39,6 +47,13 @@ const ShareImage = memo<{ message: UIChatMessage; mobile?: boolean; uniqueId?: s
     });
     const { loading: copyLoading, onCopy } = useImgToClipboard({ id: `#${previewId}` });
     const settings: FormItemProps[] = [
+      {
+        children: <Segmented options={widthModeOptions} />,
+        label: t('shareModal.widthMode.label'),
+        layout: 'horizontal',
+        minWidth: undefined,
+        name: 'widthMode',
+      },
       {
         children: <Switch />,
         label: t('shareModal.withBackground'),
@@ -72,13 +87,13 @@ const ShareImage = memo<{ message: UIChatMessage; mobile?: boolean; uniqueId?: s
           block
           icon={CopyIcon}
           loading={copyLoading}
-          onClick={() => onCopy()}
           size={isMobile ? undefined : 'large'}
           type={'primary'}
+          onClick={() => onCopy()}
         >
           {t('copy', { ns: 'common' })}
         </Button>
-        <Button block loading={loading} onClick={onDownload} size={isMobile ? undefined : 'large'}>
+        <Button block loading={loading} size={isMobile ? undefined : 'large'} onClick={onDownload}>
           {t('shareModal.download')}
         </Button>
       </>
@@ -87,7 +102,13 @@ const ShareImage = memo<{ message: UIChatMessage; mobile?: boolean; uniqueId?: s
     return (
       <>
         <Flexbox className={styles.body} gap={16} horizontal={!isMobile}>
-          <Preview title={title} {...fieldValue} message={message} previewId={previewId} />
+          <Preview
+            context={context}
+            title={title}
+            {...fieldValue}
+            message={message}
+            previewId={previewId}
+          />
           <Flexbox className={styles.sidebar} gap={12}>
             <Form
               initialValues={DEFAULT_FIELD_VALUE}
@@ -100,7 +121,7 @@ const ShareImage = memo<{ message: UIChatMessage; mobile?: boolean; uniqueId?: s
           </Flexbox>
         </Flexbox>
         {isMobile && (
-          <Flexbox className={styles.footer} gap={8} horizontal>
+          <Flexbox horizontal className={styles.footer} gap={8}>
             {button}
           </Flexbox>
         )}

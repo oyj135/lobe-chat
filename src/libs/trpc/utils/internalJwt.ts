@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { SignJWT, importJWK, jwtVerify } from 'jose';
+import { importJWK, jwtVerify, SignJWT } from 'jose';
 
 import { authEnv } from '@/envs/auth';
 
@@ -66,7 +66,7 @@ const getVerificationKey = async () => {
 
 /**
  * Sign JWT for internal lambda → async calls
- * Uses JWKS private key with short expiration (3s)
+ * Uses JWKS private key with configurable expiration (default: 30s)
  * The JWT only proves the request is from lambda, payload is sent via LOBE_CHAT_AUTH_HEADER
  */
 export const signInternalJWT = async (): Promise<string> => {
@@ -75,7 +75,23 @@ export const signInternalJWT = async (): Promise<string> => {
   return new SignJWT({ purpose: INTERNAL_JWT_PURPOSE })
     .setProtectedHeader({ alg: 'RS256', kid })
     .setIssuedAt()
-    .setExpirationTime('3s')
+    .setExpirationTime(authEnv.INTERNAL_JWT_EXPIRATION)
+    .sign(key);
+};
+
+/**
+ * Sign a short-lived OIDC-compatible JWT for a given user.
+ * Used by server-side sandbox execution to authenticate CLI commands.
+ * The token contains `sub: userId` and passes standard OIDC JWT validation.
+ */
+export const signUserJWT = async (userId: string): Promise<string> => {
+  const { key, kid } = await getSigningKey();
+
+  return new SignJWT({ purpose: 'cli-sandbox' })
+    .setProtectedHeader({ alg: 'RS256', kid })
+    .setSubject(userId)
+    .setIssuedAt()
+    .setExpirationTime('5m')
     .sign(key);
 };
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { ActionIcon, Flexbox } from '@lobehub/ui';
+import { ActionIcon, Flexbox, PopoverGroup } from '@lobehub/ui';
 import { cx } from 'antd-style';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -24,38 +24,40 @@ const ChatMinimap = memo(() => {
     <Flexbox align={'center'} className={styles.container} justify={'center'}>
       <Flexbox
         className={styles.rail}
+        role={'group'}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
-        role={'group'}
       >
         <ActionIcon
           aria-label={t('minimap.previousMessage')}
           className={cx(styles.arrow, isHovered && styles.arrowVisible)}
           icon={ChevronUp}
-          onClick={() => handleStep('prev')}
           size={14}
+          onClick={() => handleStep('prev')}
         />
         <Flexbox className={styles.railContent}>
-          {indicators.map(({ id, width, preview, role, virtuosoIndex }, position) => (
-            <MinimapIndicator
-              activePosition={activeIndicatorPosition}
-              id={id}
-              key={id}
-              onJump={handleJump}
-              position={position}
-              preview={preview}
-              role={role}
-              virtuosoIndex={virtuosoIndex}
-              width={width}
-            />
-          ))}
+          <PopoverGroup contentLayoutAnimation>
+            {indicators.map(({ id, width, preview, role, virtuosoIndex }, position) => (
+              <MinimapIndicator
+                activePosition={activeIndicatorPosition}
+                id={id}
+                key={id}
+                position={position}
+                preview={preview}
+                role={role}
+                virtuosoIndex={virtuosoIndex}
+                width={width}
+                onJump={handleJump}
+              />
+            ))}
+          </PopoverGroup>
         </Flexbox>
         <ActionIcon
           aria-label={t('minimap.nextMessage')}
           className={cx(styles.arrow, isHovered && styles.arrowVisible)}
           icon={ChevronDown}
-          onClick={() => handleStep('next')}
           size={14}
+          onClick={() => handleStep('next')}
         />
       </Flexbox>
     </Flexbox>

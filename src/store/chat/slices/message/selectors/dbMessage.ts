@@ -1,7 +1,14 @@
-import { type StepContextTodos, type UIChatMessage } from '@lobechat/types';
+import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
+import { GTDIdentifier } from '@lobechat/builtin-tool-gtd';
+import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import {
+  type StepActivatedSkill,
+  type StepContextTodos,
+  type UIChatMessage,
+} from '@lobechat/types';
 
 import { chatHelpers } from '../../../helpers';
-import type { ChatStoreState } from '../../../initialState';
+import { type ChatStoreState } from '../../../initialState';
 import { messageMapKey } from '../../../utils/messageMapKey';
 
 /**
@@ -146,9 +153,83 @@ const inboxActiveTopicDbMessages = (state: ChatStoreState) => {
   return state.dbMessagesMap[key] || [];
 };
 
-// ============= GTD Todos Selectors ========== //
+// ============= Activated Tools Selectors ========== //
 
-const GTD_IDENTIFIER = 'lobe-gtd';
+/**
+ * Accumulate activated tool identifiers from all lobe-activator messages.
+ *
+ * Unlike todos (which take the latest snapshot), activated tools are
+ * cumulative — once a tool is activated it stays active for the rest
+ * of the conversation.
+ *
+ * @param messages - Array of chat messages to scan
+ * @returns Deduplicated array of activated tool identifiers, or undefined if none
+ */
+export const selectActivatedToolIdsFromMessages = (
+  messages: UIChatMessage[],
+): string[] | undefined => {
+  const ids = new Set<string>();
+
+  for (const msg of messages) {
+    if (
+      msg.role === 'tool' &&
+      (msg.plugin?.identifier === LobeActivatorIdentifier ||
+        msg.plugin?.identifier === 'lobe-tools') &&
+      msg.pluginState?.activatedTools
+    ) {
+      const activatedTools = msg.pluginState.activatedTools as Array<{ identifier?: string }>;
+      if (Array.isArray(activatedTools)) {
+        for (const tool of activatedTools) {
+          if (tool.identifier) {
+            ids.add(tool.identifier);
+          }
+        }
+      }
+    }
+  }
+
+  return ids.size > 0 ? [...ids] : undefined;
+};
+
+// ============= Activated Skills Selectors ========== //
+
+/**
+ * Accumulate activated skills from all activateSkill messages.
+ *
+ * Skills once activated remain active for the rest of the conversation.
+ * Uses skill id as key to deduplicate (later calls update the entry).
+ *
+ * @param messages - Array of chat messages to scan
+ * @returns Array of activated skills, or undefined if none
+ */
+export const selectActivatedSkillsFromMessages = (
+  messages: UIChatMessage[],
+): StepActivatedSkill[] | undefined => {
+  const skillsMap = new Map<string, StepActivatedSkill>();
+
+  for (const msg of messages) {
+    if (
+      msg.role === 'tool' &&
+      (msg.plugin?.identifier === SkillsIdentifier ||
+        msg.plugin?.identifier === LobeActivatorIdentifier ||
+        msg.plugin?.identifier === 'lobe-tools') &&
+      msg.plugin?.apiName === 'activateSkill' &&
+      msg.pluginState?.id &&
+      msg.pluginState?.name
+    ) {
+      const id = msg.pluginState.id as string;
+      skillsMap.set(id, {
+        description: msg.pluginState.description as string | undefined,
+        id,
+        name: msg.pluginState.name as string,
+      });
+    }
+  }
+
+  return skillsMap.size > 0 ? [...skillsMap.values()] : undefined;
+};
+
+// ============= GTD Todos Selectors ========== //
 
 /**
  * Select the latest todos state from messages array
@@ -171,11 +252,7 @@ export const selectTodosFromMessages = (
     const msg = messages[i];
 
     // Check if this is a GTD tool message with todos state
-    if (
-      msg.role === 'tool' &&
-      msg.plugin?.identifier === GTD_IDENTIFIER &&
-      msg.pluginState?.todos
-    ) {
+    if (msg.role === 'tool' && msg.plugin?.identifier === GTDIdentifier && msg.pluginState?.todos) {
       const todos = msg.pluginState.todos as { items?: unknown[]; updatedAt?: string };
 
       // Handle the todos structure: { items: TodoItem[], updatedAt: string }
@@ -223,5 +300,7 @@ export const dbMessageSelectors = {
   isCurrentDbChatLoaded,
   latestDbMessage,
   latestUserMessage,
+  selectActivatedSkillsFromMessages,
+  selectActivatedToolIdsFromMessages,
   selectTodosFromMessages,
 };

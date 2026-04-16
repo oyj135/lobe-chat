@@ -5,6 +5,10 @@ import { lambdaClient } from '@/libs/trpc/client';
 class MemoryCRUDService {
   // ============ Identity CRUD ============
 
+  deleteAll = async () => {
+    return lambdaClient.userMemory.deleteAll.mutate();
+  };
+
   createIdentity = async (data: NewUserMemoryIdentity) => {
     return lambdaClient.userMemory.createIdentity.mutate(data);
   };
@@ -36,6 +40,23 @@ class MemoryCRUDService {
     data: { currentStatus?: string; description?: string; title?: string },
   ) => {
     return lambdaClient.userMemory.updateContext.mutate({ data, id });
+  };
+
+  // ============ Activity CRUD ============
+
+  deleteActivity = async (id: string) => {
+    return lambdaClient.userMemory.deleteActivity.mutate({ id });
+  };
+
+  getActivities = async () => {
+    return lambdaClient.userMemory.getActivities.query();
+  };
+
+  updateActivity = async (
+    id: string,
+    data: { narrative?: string; notes?: string; status?: string },
+  ) => {
+    return lambdaClient.userMemory.updateActivity.mutate({ data, id });
   };
 
   // ============ Experience CRUD ============

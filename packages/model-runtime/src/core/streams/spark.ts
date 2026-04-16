@@ -1,11 +1,10 @@
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
 
-import { ChatStreamCallbacks } from '../../types';
+import type { ChatStreamCallbacks } from '../../types';
 import { convertOpenAIUsage } from '../usageConverters';
+import type { StreamProtocolChunk, StreamProtocolToolCallChunk } from './protocol';
 import {
-  StreamProtocolChunk,
-  StreamProtocolToolCallChunk,
   convertIterableToStream,
   createCallbacksTransformer,
   createSSEProtocolTransformer,
@@ -23,7 +22,7 @@ export function transformSparkResponseToStream(data: OpenAI.ChatCompletion) {
             ? Array.isArray(choice.message.tool_calls)
               ? choice.message.tool_calls
               : [choice.message.tool_calls]
-            : []; // 如果不是数组，包装成数组
+            : []; // If not an array, wrap it in an array
 
           return {
             delta: {
@@ -91,7 +90,7 @@ export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamP
   if (item.delta?.tool_calls) {
     const toolCallsArray = Array.isArray(item.delta.tool_calls)
       ? item.delta.tool_calls
-      : [item.delta.tool_calls]; // 如果不是数组，包装成数组
+      : [item.delta.tool_calls]; // If not an array, wrap it in an array
 
     if (toolCallsArray.length > 0) {
       return {
@@ -108,7 +107,7 @@ export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamP
   }
 
   if (item.finish_reason) {
-    // one-api 的流式接口，会出现既有 finish_reason ，也有 content 的情况
+    // one-api's streaming interface can have both finish_reason and content
     //  {"id":"demo","model":"deepl-en","choices":[{"index":0,"delta":{"role":"assistant","content":"Introduce yourself."},"finish_reason":"stop"}]}
 
     if (typeof item.delta?.content === 'string' && !!item.delta.content) {
@@ -129,7 +128,7 @@ export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamP
 
   if (typeof item.delta?.content === 'string') {
     /*
-    处理 v1 endpoint usage，混合在最后一个 content 内容中
+    Handle v1 endpoint usage, mixed in the last content
     {"code":0,"message":"Success","sid":"cha000d05ef@dx196553ae415b80a432","id":"cha000d05ef@dx196553ae415b80a432","created":1745186655,"choices":[{"delta":{"role":"assistant","content":"😊"},"index":0}],"usage":{"prompt_tokens":1,"completion_tokens":418,"total_tokens":419}}
     */
     if (chunk.usage) {
@@ -146,7 +145,7 @@ export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamP
     return { data: item.delta, id: chunk.id, type: 'data' };
   }
 
-  // 处理 v2 endpoint usage
+  // Handle v2 endpoint usage
   if (chunk.usage) {
     return { data: convertOpenAIUsage(chunk.usage), id: chunk.id, type: 'usage' };
   }
@@ -161,7 +160,7 @@ export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamP
 export const SparkAIStream = (
   stream: Stream<OpenAI.ChatCompletionChunk> | ReadableStream,
   // TODO: preserve for RFC 097
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars, unused-imports/no-unused-vars
+  // eslint-disable-next-line unused-imports/no-unused-vars
   { callbacks, inputStartAt }: { callbacks?: ChatStreamCallbacks; inputStartAt?: number } = {},
 ) => {
   const readableStream =

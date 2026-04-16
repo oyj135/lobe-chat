@@ -1,230 +1,198 @@
-import { EDITOR_DEBOUNCE_TIME, EDITOR_MAX_WAIT } from '@lobechat/const';
-import { type IEditor } from '@lobehub/editor';
-import { debounce } from 'es-toolkit/compat';
-import { type StateCreator } from 'zustand/vanilla';
+'use client';
 
+import type { IEditor } from '@lobehub/editor';
+import type { EditorState as LobehubEditorState } from '@lobehub/editor/react';
+import isEqual from 'fast-deep-equal';
+
+import { EMPTY_EDITOR_STATE } from '@/libs/editor/constants';
+import { documentService } from '@/services/document';
+import type { StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
 import type { DocumentStore } from '../../store';
+import type { DocumentDispatch } from './reducer';
+import { documentReducer } from './reducer';
 
 const n = setNamespace('document/editor');
 
-export interface EditorAction {
-  /**
-   * Close the current document
-   */
-  closeDocument: () => void;
-  /**
-   * Flush any pending debounced save
-   */
-  flushSave: () => void;
-  /**
-   * Handle content change from editor
-   */
-  handleContentChange: () => void;
-  /**
-   * Called when editor is initialized
-   */
-  onEditorInit: () => void;
-  /**
-   * Open a document for editing
-   */
-  openDocument: (params: {
-    content: string;
-    documentId: string;
-    title: string;
-    topicId: string;
-  }) => void;
-  /**
-   * Perform save operation
-   */
-  performSave: () => Promise<void>;
-  /**
-   * Set editor instance
-   */
-  setEditor: (editor: IEditor | undefined) => void;
-  /**
-   * Set editor state
-   */
-  setEditorState: (editorState: any) => void;
-  /**
-   * Set edit mode
-   */
-  setMode: (mode: 'edit' | 'preview') => void;
-  /**
-   * Update document title
-   */
-  setTitle: (title: string) => void;
+/**
+ * Metadata passed in at save time (not stored in editor state)
+ */
+export interface SaveMetadata {
+  emoji?: string;
+  title?: string;
 }
 
-// Create debounced save outside store
-let debouncedSave: ReturnType<typeof debounce> | null = null;
+type Setter = StoreSetter<DocumentStore>;
+export const createEditorSlice = (set: Setter, get: () => DocumentStore, _api?: unknown) =>
+  new EditorActionImpl(set, get, _api);
 
-const createDebouncedSave = (get: () => DocumentStore) => {
-  if (debouncedSave) return debouncedSave;
+export class EditorActionImpl {
+  readonly #get: () => DocumentStore;
+  readonly #set: Setter;
 
-  debouncedSave = debounce(
-    async () => {
-      try {
-        await get().performSave();
-      } catch (error) {
-        console.error('[DocumentEditor] Failed to auto-save:', error);
-      }
-    },
-    EDITOR_DEBOUNCE_TIME,
-    { leading: false, maxWait: EDITOR_MAX_WAIT, trailing: true },
-  );
+  constructor(set: Setter, get: () => DocumentStore, _api?: unknown) {
+    void _api;
+    this.#set = set;
+    this.#get = get;
+  }
 
-  return debouncedSave;
-};
-
-export const createEditorSlice: StateCreator<
-  DocumentStore,
-  [['zustand/devtools', never]],
-  [],
-  EditorAction
-> = (set, get) => ({
-  closeDocument: () => {
-    // Flush any pending saves before closing
-    const save = createDebouncedSave(get);
-    save.flush();
-
-    set(
-      {
-        activeContent: '',
-        activeDocumentId: undefined,
-        activeTopicId: undefined,
-        isDirty: false,
-        lastSavedContent: '',
-        lastUpdatedTime: null,
-        mode: 'edit',
-        saveStatus: 'idle',
-        title: '',
-      },
-      false,
-      n('closeDocument'),
-    );
-  },
-
-  flushSave: () => {
-    const save = createDebouncedSave(get);
-    save.flush();
-  },
-
-  handleContentChange: () => {
-    const { editor, lastSavedContent } = get();
-    if (!editor) return;
+  getEditorContent = (): { editorData: any; markdown: string } | null => {
+    const { editor } = this.#get();
+    if (!editor) return null;
 
     try {
-      const markdownContent = (editor.getDocument('markdown') as unknown as string) || '';
+      const markdown = (editor.getDocument('markdown') as unknown as string) || '';
+      const editorData = editor.getDocument('json');
+      return { editorData, markdown };
+    } catch (error) {
+      console.error('[DocumentStore] Failed to get editor content:', error);
+      return null;
+    }
+  };
 
-      // Check if content actually changed
-      const contentChanged = markdownContent !== lastSavedContent;
+  handleContentChange = (): void => {
+    const { editor, activeDocumentId, documents, internal_dispatchDocument } = this.#get();
 
-      set(
-        { activeContent: markdownContent, isDirty: contentChanged },
-        false,
-        n('handleContentChange'),
+    if (!editor || !activeDocumentId) return;
+
+    const doc = documents[activeDocumentId];
+    if (!doc) return;
+
+    try {
+      const markdown = (editor.getDocument('markdown') as unknown as string) || '';
+      const editorData = editor.getDocument('json');
+
+      const markdownChanged = markdown !== doc.lastSavedContent;
+      const editorDataChanged = !isEqual(editorData, doc.lastSavedEditorData);
+      const contentChanged = markdownChanged || editorDataChanged;
+
+      internal_dispatchDocument(
+        {
+          id: activeDocumentId,
+          type: 'updateDocument',
+          value: { content: markdown, editorData, isDirty: contentChanged },
+        },
+        'handleContentChange',
       );
 
-      // Only trigger auto-save if content actually changed
-      if (contentChanged) {
-        const save = createDebouncedSave(get);
-        save();
+      // Only trigger auto-save if content actually changed AND autoSave is enabled
+      if (contentChanged && doc.autoSave !== false) {
+        this.#get().triggerDebouncedSave(activeDocumentId);
       }
     } catch (error) {
-      console.error('[DocumentEditor] Failed to update content:', error);
+      console.error('[DocumentStore] Failed to update content:', error);
     }
-  },
+  };
 
-  onEditorInit: () => {
-    const { editor, activeContent } = get();
+  internal_dispatchDocument = (payload: DocumentDispatch, action?: string): void => {
+    const { documents } = this.#get();
+    const nextDocuments = documentReducer(documents, payload);
 
-    if (editor && activeContent) {
-      // Set initial content when editor is ready
-      editor.setDocument('markdown', activeContent);
-    }
-  },
+    if (isEqual(documents, nextDocuments)) return;
 
-  openDocument: ({ content, documentId, title, topicId }) => {
-    const { editor } = get();
-
-    set(
-      {
-        activeContent: content,
-        activeDocumentId: documentId,
-        activeTopicId: topicId,
-        isDirty: false,
-        lastSavedContent: content,
-        mode: 'edit',
-        saveStatus: 'idle',
-        title,
-      },
+    this.#set(
+      { documents: nextDocuments },
       false,
-      n('openDocument', { documentId, topicId }),
+      action ?? n(`dispatchDocument/${payload.type}`, { id: payload.id }),
     );
+  };
 
-    // Set editor content if editor exists
-    if (editor && content) {
-      editor.setDocument('markdown', content);
+  markDirty = (documentId: string): void => {
+    const { documents, internal_dispatchDocument } = this.#get();
+    if (!documents[documentId]) return;
+
+    internal_dispatchDocument({ id: documentId, type: 'updateDocument', value: { isDirty: true } });
+  };
+
+  onEditorInit = async (editor: IEditor): Promise<void> => {
+    const { activeDocumentId, documents } = this.#get();
+    if (!editor || !activeDocumentId) return;
+
+    const doc = documents[activeDocumentId];
+
+    if (!doc) return;
+
+    // Check if editorData is valid and non-empty
+    const hasValidEditorData =
+      doc.editorData &&
+      typeof doc.editorData === 'object' &&
+      Object.keys(doc.editorData).length > 0;
+
+    // Set content from document state
+    if (hasValidEditorData) {
+      try {
+        editor.setDocument('json', JSON.stringify(doc.editorData));
+        return;
+      } catch {
+        // Fallback to markdown if JSON fails
+        console.warn('[DocumentStore] Failed to load editorData, falling back to markdown');
+      }
     }
-  },
 
-  performSave: async () => {
-    const { editor, activeDocumentId, title, activeTopicId, isDirty, updateDocument } = get();
+    try {
+      if (doc.content?.trim()) {
+        editor.setDocument('markdown', doc.content);
+      } else {
+        editor.setDocument('json', JSON.stringify(EMPTY_EDITOR_STATE));
+      }
+    } catch (err) {
+      console.error('[DocumentStore] Failed to load markdown content:', err);
+    }
 
-    if (!editor || !activeDocumentId || !activeTopicId) return;
+    this.#set({ editor });
+  };
+
+  performSave = async (documentId?: string, metadata?: SaveMetadata): Promise<void> => {
+    const id = documentId || this.#get().activeDocumentId;
+
+    if (!id) return;
+
+    const { editor, documents, internal_dispatchDocument } = this.#get();
+    const doc = documents[id];
+    if (!doc || !editor) return;
 
     // Skip save if no changes
-    if (!isDirty) return;
+    if (!doc.isDirty) return;
 
-    set({ saveStatus: 'saving' }, false, n('performSave:start'));
+    // Update save status
+    internal_dispatchDocument({ id, type: 'updateDocument', value: { saveStatus: 'saving' } });
 
     try {
       const currentContent = (editor.getDocument('markdown') as unknown as string) || '';
+      const currentEditorData = editor.getDocument('json');
 
-      // Update document via notebook slice
-      await updateDocument(
-        {
-          content: currentContent,
-          id: activeDocumentId,
-          title,
-        },
-        activeTopicId,
-      );
+      // Save document
+      await documentService.updateDocument({
+        content: currentContent,
+        editorData: JSON.stringify(currentEditorData),
+        id,
+        metadata: metadata?.emoji ? { emoji: metadata.emoji } : undefined,
+        title: metadata?.title,
+      });
 
       // Mark as clean and update save status
-      set(
-        {
+      internal_dispatchDocument({
+        id,
+        type: 'updateDocument',
+        value: {
+          editorData: structuredClone(currentEditorData),
           isDirty: false,
           lastSavedContent: currentContent,
+          lastSavedEditorData: structuredClone(currentEditorData),
           lastUpdatedTime: new Date(),
           saveStatus: 'saved',
         },
-        false,
-        n('performSave:success'),
-      );
+      });
     } catch (error) {
-      console.error('[DocumentEditor] Failed to save:', error);
-      set({ saveStatus: 'idle' }, false, n('performSave:error'));
+      console.error('[DocumentStore] Failed to save:', error);
+      internal_dispatchDocument({ id, type: 'updateDocument', value: { saveStatus: 'idle' } });
     }
-  },
+  };
 
-  setEditor: (editor) => {
-    set({ editor }, false, n('setEditor'));
-  },
+  setEditorState = (editorState: LobehubEditorState | undefined): void => {
+    this.#set({ editorState }, false, n('setEditorState'));
+  };
+}
 
-  setEditorState: (editorState) => {
-    set({ editorState }, false, n('setEditorState'));
-  },
-
-  setMode: (mode) => {
-    set({ mode }, false, n('setMode', { mode }));
-  },
-
-  setTitle: (title) => {
-    set({ isDirty: true, title }, false, n('setTitle'));
-    const save = createDebouncedSave(get);
-    save();
-  },
-});
+export type EditorAction = Pick<EditorActionImpl, keyof EditorActionImpl>;

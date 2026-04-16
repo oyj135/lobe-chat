@@ -1,12 +1,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { major, minor } from 'semver';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { withSWR } from '~test-utils';
 
 import { CURRENT_VERSION } from '@/const/version';
 import { globalService } from '@/services/global';
 import { useGlobalStore } from '@/store/global/index';
 import { initialState } from '@/store/global/initialState';
+import { withSWR } from '~test-utils';
 
 vi.mock('zustand/traditional');
 
@@ -269,7 +269,7 @@ describe('createPreferenceSlice', () => {
       const navigate = vi.fn();
 
       act(() => {
-        useGlobalStore.setState({ navigate });
+        useGlobalStore.setState({ navigationRef: { current: navigate } });
         result.current.switchBackToChat(sessionId);
       });
 
@@ -406,21 +406,6 @@ describe('createPreferenceSlice', () => {
       });
 
       expect(result.current.status.noWideScreen).toEqual(false);
-    });
-  });
-
-  describe('switchThemeMode', () => {
-    it('should switch theme mode', async () => {
-      const { result } = renderHook(() => useGlobalStore());
-
-      // Perform the action
-      act(() => {
-        useGlobalStore.setState({ isStatusInit: true });
-        result.current.switchThemeMode('light');
-      });
-
-      // Assert that updateUserSettings was called with the correct theme mode
-      expect(result.current.status.themeMode).toEqual('light');
     });
   });
 });

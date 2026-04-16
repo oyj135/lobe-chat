@@ -1,8 +1,135 @@
-import { AIChatModelCard } from '../types/aiModel';
+import { type AIChatModelCard } from '../types/aiModel';
 
 // https://cloud.infini-ai.com/genstudio/model
 
 const infiniaiChatModels: AIChatModelCard[] = [
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 204_800,
+    description:
+      'MiniMax-M2.7 has reached or refreshed the latest SOTA benchmark in programming, tool calling and search, office productivity and many other scenarios, officially starting the journey of model recursive self-improvement.',
+    displayName: 'MiniMax M2.7',
+    enabled: true,
+    id: 'minimax-m2.7',
+    pricing: {
+      currency: 'CNY',
+      units: [
+        { name: 'textInput', rate: 2.1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 8.4, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-03-17',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+    },
+    contextWindowTokens: 131_072,
+    description:
+      'DeepSeek-V3.2 is a model that balances high computational efficiency with excellent reasoning and agent performance.',
+    displayName: 'DeepSeek V3.2',
+    id: 'deepseek-v3.2',
+    maxOutput: 8192,
+    pricing: {
+      currency: 'CNY',
+      units: [
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2025-12-02',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 131_072,
+    description:
+      'DeepSeek-V3.2 Thinking is the thinking mode variant of DeepSeek-V3.2, focused on reasoning tasks.',
+    displayName: 'DeepSeek V3.2 Thinking',
+    enabled: true,
+    id: 'deepseek-v3.2-thinking',
+    maxOutput: 65_536,
+    pricing: {
+      currency: 'CNY',
+      units: [
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2025-12-02',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      vision: true,
+    },
+    contextWindowTokens: 131_072,
+    description:
+      'GLM-4.6V (106B) is a foundational model designed for cloud and high-performance cluster scenarios. GLM-4.6V extends the context window to 128k tokens and achieves SOTA visual understanding performance among models of the same parameter scale. The key is that GLM-4.6V integrates native Function Calling capabilities for the first time, effectively bridging the gap between visual perception and executable actions, providing a unified technical foundation for multimodal Agents in real business scenarios.',
+    displayName: 'GLM-4.6V',
+    id: 'glm-4.6v',
+    maxOutput: 4096,
+    pricing: {
+      currency: 'CNY',
+      units: [
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    settings: {
+      extendParams: ['enableReasoning'],
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 198_000,
+    description:
+      'A strong reasoning and agentic model from Z.ai with 744B total parameters (40B active), built for complex systems engineering and long-horizon tasks.',
+    displayName: 'GLM-5',
+    enabled: true,
+    id: 'glm-5',
+    pricing: {
+      currency: 'CNY',
+      units: [
+        { name: 'textInput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 22, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-02-13',
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 204_800,
+    description:
+      'MiniMax-M2.5 is a state-of-the-art large language model designed for real-world productivity and coding tasks.',
+    displayName: 'MiniMax M2.5',
+    id: 'minimax-m2.5',
+    pricing: {
+      currency: 'CNY',
+      units: [
+        { name: 'textInput', rate: 2.1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 8.4, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-02-13',
+    type: 'chat',
+  },
   {
     abilities: {
       functionCall: true,
@@ -51,9 +178,8 @@ const infiniaiChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      'MiniMax-M2.1 是 MiniMax 系列的最新版本，专为多语言编程和真实世界复杂任务优化。作为一款 AI 原生模型，MiniMax-M2.1 在模型性能、智能体框架支持以及多场景适配方面实现了显著提升，旨在帮助企业和个人更快地找到 AI 原生的工作与生活方式。',
+      'MiniMax-M2.1 is the latest version of the MiniMax series, optimized for multilingual programming and real-world complex tasks. As an AI-native model, MiniMax-M2.1 achieves significant improvements in model performance, agent framework support, and multi-scenario adaptation, aiming to help enterprises and individuals find AI-native work and lifestyle more quickly.',
     displayName: 'MiniMax M2.1',
-    enabled: true,
     id: 'minimax-m2.1',
     maxOutput: 200_000,
     pricing: {
@@ -72,7 +198,7 @@ const infiniaiChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      'MiniMax-M2 是一款专为编码与智能体工作流优化的专家混合（MoE）语言模型，具有约 230B 总参数与约 10B 活跃参数。它在保持强通用智能的同时，针对多文件编辑、代码-运行-修复闭环、测试校验修复等开发者场景进行深度增强，在终端、IDE 与 CI 等真实环境中表现稳定、高效。',
+      'MiniMax-M2 is a Mixture of Experts (MoE) language model optimized for coding and agent workflows, with approximately 230B total parameters and approximately 10B active parameters. While maintaining strong general intelligence, it is deeply enhanced for developer scenarios such as multi-file editing, code-run-fix loops, and test validation fixes, demonstrating stable and efficient performance in real environments like terminals, IDEs, and CI.',
     displayName: 'MiniMax M2',
     id: 'minimax-m2',
     maxOutput: 200_000,
@@ -91,9 +217,9 @@ const infiniaiChatModels: AIChatModelCard[] = [
       reasoning: true,
     },
     contextWindowTokens: 131_072,
-    description: 'GLM-4.7 是智谱AI推出的最新大语言模型，具备更强的推理和生成能力。',
+    description:
+      'GLM-4.7 is the latest large language model launched by Zhipu AI, with enhanced reasoning and generation capabilities.',
     displayName: 'GLM-4.7',
-    enabled: true,
     id: 'glm-4.7',
     maxOutput: 4096,
     pricing: {
@@ -114,7 +240,8 @@ const infiniaiChatModels: AIChatModelCard[] = [
       reasoning: true,
     },
     contextWindowTokens: 131_072,
-    description: 'GLM-4.6 是智谱AI推出的最新大语言模型，具备更强的推理和生成能力。',
+    description:
+      'GLM-4.6 is the latest large language model launched by Zhipu AI, with enhanced reasoning and generation capabilities.',
     displayName: 'GLM-4.6',
     id: 'glm-4.6',
     maxOutput: 4096,
@@ -136,7 +263,8 @@ const infiniaiChatModels: AIChatModelCard[] = [
       reasoning: true,
     },
     contextWindowTokens: 131_072,
-    description: 'DeepSeek-V3.2-Exp is an experimental DeepSeek LLM with stronger reasoning and generation.',
+    description:
+      'DeepSeek-V3.2-Exp is an experimental DeepSeek LLM with stronger reasoning and generation.',
     displayName: 'DeepSeek V3.2 Exp',
     id: 'deepseek-v3.2-exp',
     maxOutput: 65_536,
@@ -301,7 +429,8 @@ const infiniaiChatModels: AIChatModelCard[] = [
       vision: true,
     },
     contextWindowTokens: 131_072,
-    description: 'GLM-4.5V is a multimodal model from Zhipu AI for vision understanding and reasoning.',
+    description:
+      'GLM-4.5V is a multimodal model from Zhipu AI for vision understanding and reasoning.',
     displayName: 'GLM-4.5V',
     id: 'glm-4.5v',
     maxOutput: 4096,
@@ -400,8 +529,7 @@ const infiniaiChatModels: AIChatModelCard[] = [
       functionCall: true,
     },
     contextWindowTokens: 131_072,
-    description:
-      'Kimi K2 Instruct is a Moonshot AI LLM with ultra-long context handling.',
+    description: 'Kimi K2 Instruct is a Moonshot AI LLM with ultra-long context handling.',
     displayName: 'Kimi K2 Instruct',
     id: 'kimi-k2-instruct',
     maxOutput: 32_768,

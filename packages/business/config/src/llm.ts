@@ -1,4 +1,4 @@
-import { ModelProviderCard, UserModelProviderConfig } from '@lobechat/types';
+import type { ModelProviderCard, UserModelProviderConfig } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
 import * as ProviderCards from 'model-bank/modelProviders';
 
@@ -23,11 +23,16 @@ const genUserLLMConfig = (specificConfig: Record<any, any>): UserModelProviderCo
 };
 
 export const DEFAULT_LLM_CONFIG = genUserLLMConfig({
+  anthropic: {
+    enabled: true,
+  },
+  google: {
+    enabled: true,
+  },
   lmstudio: {
     fetchOnClient: true,
   },
   ollama: {
-    enabled: true,
     fetchOnClient: true,
   },
   openai: {

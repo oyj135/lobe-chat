@@ -1,22 +1,30 @@
 import { MessagesEngine } from '@lobechat/context-engine';
-import type { OpenAIChatMessage } from '@lobechat/types';
+import { type OpenAIChatMessage } from '@lobechat/types';
 
-import type { ServerMessagesEngineParams } from './types';
+import { type ServerMessagesEngineParams } from './types';
 
 /**
  * Create server-side variable generators with runtime context
  * These are safe to use in Node.js environment
  */
-const createServerVariableGenerators = (model?: string, provider?: string) => ({
-  // Time-related variables
-  date: () => new Date().toLocaleDateString('en-US', { dateStyle: 'full' }),
-  datetime: () => new Date().toISOString(),
-  time: () => new Date().toLocaleTimeString('en-US', { timeStyle: 'medium' }),
-  /* eslint-disable sort-keys-fix/sort-keys-fix */
-  // Model-related variables
-  model: () => model ?? '',
-  provider: () => provider ?? '',
-});
+const createServerVariableGenerators = (params: {
+  model?: string;
+  provider?: string;
+  timezone?: string;
+}) => {
+  const { model, provider, timezone } = params;
+  const tz = timezone || 'UTC';
+  return {
+    // Time-related variables (localized to user's timezone)
+    date: () => new Date().toLocaleDateString('en-US', { dateStyle: 'full', timeZone: tz }),
+    datetime: () => new Date().toLocaleString('en-US', { timeZone: tz }),
+    time: () => new Date().toLocaleTimeString('en-US', { timeStyle: 'medium', timeZone: tz }),
+    timezone: () => tz,
+    // Model-related variables
+    model: () => model ?? '',
+    provider: () => provider ?? '',
+  };
+};
 
 /**
  * Server-side messages engine function
@@ -46,15 +54,27 @@ export const serverMessagesEngine = async ({
   systemRole,
   inputTemplate,
   enableHistoryCount,
+  forceFinish,
   historyCount,
   historySummary,
   formatHistorySummary,
   knowledge,
+  agentDocuments,
+  skillsConfig,
+  toolDiscoveryConfig,
   toolsConfig,
   capabilities,
   userMemory,
   agentBuilderContext,
+  botPlatformContext,
+  discordContext,
+  evalContext,
+  agentManagementContext,
+  onboardingContext,
   pageContentContext,
+  topicReferences,
+  additionalVariables,
+  userTimezone,
 }: ServerMessagesEngineParams): Promise<OpenAIChatMessage[]> => {
   const engine = new MessagesEngine({
     // Capability injection
@@ -70,6 +90,9 @@ export const serverMessagesEngine = async ({
     // File context configuration (server always includes file URLs)
     fileContext: { enabled: true, includeFileUrl: true },
 
+    // Force finish mode (inject summary prompt when maxSteps exceeded)
+    forceFinish,
+
     formatHistorySummary,
 
     historyCount,
@@ -83,6 +106,7 @@ export const serverMessagesEngine = async ({
       fileContents: knowledge?.fileContents,
       knowledgeBases: knowledge?.knowledgeBases,
     },
+    agentDocuments,
 
     // Messages
     messages,
@@ -93,7 +117,11 @@ export const serverMessagesEngine = async ({
     provider,
     systemRole,
 
+    // Timezone for system date provider
+    timezone: userTimezone,
+
     // Tools configuration
+    toolDiscoveryConfig,
     toolsConfig: {
       manifests: toolsConfig?.manifests,
       tools: toolsConfig?.tools,
@@ -108,11 +136,27 @@ export const serverMessagesEngine = async ({
         }
       : undefined,
 
-    // Server-side variable generators (with model/provider context)
-    variableGenerators: createServerVariableGenerators(model, provider),
+    // Server-side variable generators (with model/provider context + device paths)
+    variableGenerators: {
+      ...createServerVariableGenerators({ model, provider, timezone: userTimezone }),
+      ...Object.fromEntries(
+        Object.entries(additionalVariables ?? {}).map(([k, v]) => [k, () => v]),
+      ),
+    },
+
+    // Skills configuration
+    ...(skillsConfig?.enabledSkills && skillsConfig.enabledSkills.length > 0 && { skillsConfig }),
+
+    // Topic references
+    ...(topicReferences && topicReferences.length > 0 && { topicReferences }),
 
     // Extended contexts
     ...(agentBuilderContext && { agentBuilderContext }),
+    ...(botPlatformContext && { botPlatformContext }),
+    ...(discordContext && { discordContext }),
+    ...(evalContext && { evalContext }),
+    ...(onboardingContext && { onboardingContext }),
+    ...(agentManagementContext && { agentManagementContext }),
     ...(pageContentContext && { pageContentContext }),
   });
 
@@ -122,6 +166,8 @@ export const serverMessagesEngine = async ({
 
 // Re-export types
 export type {
+  BotPlatformContext,
+  EvalContext,
   ServerKnowledgeConfig,
   ServerMessagesEngineParams,
   ServerModelCapabilities,

@@ -5,6 +5,7 @@ import { DocumentModel } from '@/database/models/document';
 import { TopicDocumentModel } from '@/database/models/topicDocument';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { NotebookRuntimeService } from '@/server/services/notebook';
 
 const notebookProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -12,6 +13,7 @@ const notebookProcedure = authedProcedure.use(serverDatabase).use(async (opts) =
   return opts.next({
     ctx: {
       documentModel: new DocumentModel(ctx.serverDB, ctx.userId),
+      notebookService: new NotebookRuntimeService({ serverDB: ctx.serverDB, userId: ctx.userId }),
       topicDocumentModel: new TopicDocumentModel(ctx.serverDB, ctx.userId),
     },
   });
@@ -24,6 +26,8 @@ export const notebookRouter = router({
         content: z.string(),
         description: z.string(),
         metadata: z.record(z.string(), z.any()).optional(),
+        source: z.string().optional().default('notebook'),
+        sourceType: z.enum(['file', 'web', 'api', 'topic']).optional().default('api'),
         title: z.string(),
         topicId: z.string(),
         type: z
@@ -39,8 +43,8 @@ export const notebookRouter = router({
         description: input.description,
         fileType: input.type,
         metadata: input.metadata,
-        source: 'notebook',
-        sourceType: 'api',
+        source: input.source,
+        sourceType: input.sourceType,
         title: input.title,
         totalCharCount: input.content.length,
         totalLineCount: input.content.split('\n').length,
@@ -58,10 +62,7 @@ export const notebookRouter = router({
   deleteDocument: notebookProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      // Remove associations first
-      await ctx.topicDocumentModel.deleteByDocumentId(input.id);
-      // Delete the document
-      await ctx.documentModel.delete(input.id);
+      await ctx.notebookService.deleteDocument(input.id);
 
       return { success: true };
     }),

@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
-import { RequestFilteringAgentOptions, useAgent as ssrfAgent } from 'request-filtering-agent';
+import type { RequestFilteringAgentOptions } from 'request-filtering-agent';
+import { RequestFilteringHttpAgent, RequestFilteringHttpsAgent } from 'request-filtering-agent';
 
 /**
  * Options for per-call SSRF configuration overrides
@@ -22,10 +23,9 @@ export interface SSRFOptions {
  */
 export const ssrfSafeFetch = async (
   url: string,
-  // eslint-disable-next-line no-undef
+
   options?: RequestInit,
   ssrfOptions?: SSRFOptions,
-  // eslint-disable-next-line no-undef
 ): Promise<Response> => {
   try {
     // Configure SSRF protection options with proper precedence using nullish coalescing
@@ -42,10 +42,16 @@ export const ssrfSafeFetch = async (
       denyIPAddressList: [],
     };
 
+    // Create agents for both protocols
+    const httpAgent = new RequestFilteringHttpAgent(agentOptions);
+    const httpsAgent = new RequestFilteringHttpsAgent(agentOptions);
+
     // Use node-fetch with SSRF protection agent
+    // Pass a function to dynamically select agent based on URL protocol
+    // This handles redirects from HTTP to HTTPS correctly
     const response = await fetch(url, {
       ...options,
-      agent: ssrfAgent(url, agentOptions),
+      agent: (parsedURL: URL) => (parsedURL.protocol === 'https:' ? httpsAgent : httpAgent),
     } as any);
 
     // Convert node-fetch Response to standard Response
@@ -55,10 +61,20 @@ export const ssrfSafeFetch = async (
       statusText: response.statusText,
     });
   } catch (error) {
-    console.error('SSRF-safe fetch error:', error);
-    throw new Error(
-      `SSRF-safe fetch failed: ${error instanceof Error ? error.message : String(error)}. ` +
-        'See: https://lobehub.com/docs/self-hosting/environment-variables/basic#ssrf-allow-private-ip-address',
-    );
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    // request-filtering-agent errors contain "is not allowed" when blocking private/denied IPs
+    const isSSRFBlock = errorMessage.includes('is not allowed');
+
+    if (isSSRFBlock) {
+      console.error('SSRF protection blocked request:', error);
+      throw new Error(
+        `SSRF blocked: ${errorMessage}. ` +
+          'See: https://lobehub.com/docs/self-hosting/environment-variables/basic#ssrf-allow-private-ip-address',
+        { cause: error },
+      );
+    }
+
+    console.error('Fetch error:', error);
+    throw new Error(`Fetch failed: ${errorMessage}`, { cause: error });
   }
 };

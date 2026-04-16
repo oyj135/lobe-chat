@@ -1,11 +1,6 @@
-import { HotkeyEnum, getHotkeyById } from '@lobehub/editor';
-import { useEditorState } from '@lobehub/editor/react';
-import {
-  ChatInputActionBar,
-  ChatInputActions,
-  type ChatInputActionsProps,
-  CodeLanguageSelect,
-} from '@lobehub/editor/react';
+import { getHotkeyById, HotkeyEnum } from '@lobehub/editor';
+import { type ChatInputActionsProps } from '@lobehub/editor/react';
+import { ChatInputActionBar, ChatInputActions, useEditorState } from '@lobehub/editor/react';
 import { cssVar } from 'antd-style';
 import {
   BoldIcon,
@@ -121,16 +116,6 @@ const TypoBar = memo(() => {
           key: 'codeblock',
           label: t('typobar.codeblock'),
           onClick: editorState.codeblock,
-        },
-        editorState.isCodeblock && {
-          children: (
-            <CodeLanguageSelect
-              onSelect={(value) => editorState.updateCodeblockLang(value)}
-              value={editorState.codeblockLang}
-            />
-          ),
-          disabled: !editorState.isCodeblock,
-          key: 'codeblockLang',
         },
       ].filter(Boolean) as ChatInputActionsProps['items'],
     [editorState],

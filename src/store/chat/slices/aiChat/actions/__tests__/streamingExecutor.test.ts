@@ -1,18 +1,20 @@
-import { UIChatMessage } from '@lobechat/types';
+import { type UIChatMessage } from '@lobechat/types';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as toolEngineering from '@/helpers/toolEngineering';
 import { chatService } from '@/services/chat';
 import * as agentConfigResolver from '@/services/chat/mecha/agentConfigResolver';
-import { messageService } from '@/services/message';
+import { pageAgentRuntime } from '@/store/tool/slices/builtin/executors/lobe-page-agent';
 
 import { useChatStore } from '../../../../store';
 import {
-  TEST_CONTENT,
-  TEST_IDS,
   createMockAgentConfig,
   createMockChatConfig,
   createMockMessage,
+  createMockResolvedAgentConfig,
+  TEST_CONTENT,
+  TEST_IDS,
 } from './fixtures';
 import { resetTestEnvironment, setupMockSelectors, spyOnMessageService } from './helpers';
 
@@ -39,545 +41,6 @@ afterEach(() => {
 });
 
 describe('StreamingExecutor actions', () => {
-  describe('internal_fetchAIChatMessage', () => {
-    it('should fetch and return AI chat response', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({ type: 'text', text: TEST_CONTENT.AI_RESPONSE } as any);
-          await onFinish?.(TEST_CONTENT.AI_RESPONSE, {});
-        });
-
-      await act(async () => {
-        const response = await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-        });
-        expect(response.isFunctionCall).toEqual(false);
-        expect(response.content).toEqual(TEST_CONTENT.AI_RESPONSE);
-      });
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle streaming errors gracefully', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onErrorHandle }) => {
-          await onErrorHandle?.({ type: 'InvalidProviderAPIKey', message: 'Network error' } as any);
-        });
-
-      const updateMessageSpy = vi.spyOn(messageService, 'updateMessage');
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-        });
-      });
-
-      expect(updateMessageSpy).toHaveBeenCalledWith(
-        TEST_IDS.ASSISTANT_MESSAGE_ID,
-        expect.objectContaining({
-          error: expect.objectContaining({ type: 'InvalidProviderAPIKey' }),
-        }),
-        expect.objectContaining({
-          agentId: TEST_IDS.SESSION_ID,
-          topicId: TEST_IDS.TOPIC_ID,
-        }),
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle tool call chunks during streaming', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({
-            type: 'tool_calls',
-            isAnimationActives: [true],
-            tool_calls: [
-              { id: 'tool-1', type: 'function', function: { name: 'test', arguments: '{}' } },
-            ],
-          } as any);
-          await onFinish?.(TEST_CONTENT.AI_RESPONSE, {
-            toolCalls: [
-              { id: 'tool-1', type: 'function', function: { name: 'test', arguments: '{}' } },
-            ],
-          } as any);
-        });
-
-      await act(async () => {
-        const response = await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-        });
-        expect(response.isFunctionCall).toEqual(true);
-      });
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle text chunks during streaming', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const dispatchSpy = vi.spyOn(result.current, 'internal_dispatchMessage');
-
-      // Create operation for this test
-      const { operationId } = result.current.startOperation({
-        type: 'execAgentRuntime',
-        context: {
-          agentId: TEST_IDS.SESSION_ID,
-          topicId: null,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-        },
-        label: 'Test AI Generation',
-      });
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({ type: 'text', text: 'Hello' } as any);
-          await onMessageHandle?.({ type: 'text', text: ' World' } as any);
-          await onFinish?.('Hello World', {} as any);
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-          operationId,
-        });
-      });
-
-      expect(dispatchSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          type: 'updateMessage',
-          value: expect.objectContaining({ content: 'Hello' }),
-        }),
-        expect.objectContaining({
-          operationId: expect.any(String),
-        }),
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle reasoning chunks during streaming', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const dispatchSpy = vi.spyOn(result.current, 'internal_dispatchMessage');
-
-      // Create operation for this test
-      const { operationId } = result.current.startOperation({
-        type: 'execAgentRuntime',
-        context: {
-          agentId: TEST_IDS.SESSION_ID,
-          topicId: null,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-        },
-        label: 'Test AI Generation',
-      });
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({ type: 'reasoning', text: 'Thinking...' } as any);
-          await onMessageHandle?.({ type: 'text', text: 'Answer' } as any);
-          await onFinish?.('Answer', {} as any);
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-          operationId,
-        });
-      });
-
-      expect(dispatchSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          type: 'updateMessage',
-          value: expect.objectContaining({ reasoning: { content: 'Thinking...' } }),
-        }),
-        expect.objectContaining({
-          operationId: expect.any(String),
-        }),
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    it('should skip grounding when citations are empty', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const dispatchSpy = vi.spyOn(result.current, 'internal_dispatchMessage');
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({
-            type: 'grounding',
-            grounding: { citations: [], searchQueries: [] },
-          } as any);
-          await onFinish?.('Answer', {} as any);
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-        });
-      });
-
-      // Should not dispatch when citations are empty
-      const groundingCalls = dispatchSpy.mock.calls.filter((call) => {
-        const dispatch = call[0];
-        return dispatch?.type === 'updateMessage' && 'value' in dispatch && dispatch.value?.search;
-      });
-      expect(groundingCalls).toHaveLength(0);
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle grounding chunks during streaming', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const dispatchSpy = vi.spyOn(result.current, 'internal_dispatchMessage');
-
-      // Create operation for this test
-      const { operationId } = result.current.startOperation({
-        type: 'execAgentRuntime',
-        context: {
-          agentId: TEST_IDS.SESSION_ID,
-          topicId: null,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-        },
-        label: 'Test AI Generation',
-      });
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({
-            type: 'grounding',
-            grounding: {
-              citations: [{ url: 'https://example.com', title: 'Example' }],
-              searchQueries: ['test query'],
-            },
-          } as any);
-          await onFinish?.('Answer', {} as any);
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-          operationId,
-        });
-      });
-
-      expect(dispatchSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          type: 'updateMessage',
-          value: expect.objectContaining({
-            search: expect.objectContaining({
-              citations: expect.any(Array),
-            }),
-          }),
-        }),
-        expect.objectContaining({
-          operationId: expect.any(String),
-        }),
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle base64 image chunks during streaming', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const dispatchSpy = vi.spyOn(result.current, 'internal_dispatchMessage');
-
-      // Create operation for this test
-      const { operationId } = result.current.startOperation({
-        type: 'execAgentRuntime',
-        context: {
-          agentId: TEST_IDS.SESSION_ID,
-          topicId: null,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-        },
-        label: 'Test AI Generation',
-      });
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({
-            type: 'base64_image',
-            image: { id: 'img-1', data: 'base64data' },
-            images: [{ id: 'img-1', data: 'base64data' }],
-          } as any);
-          await onFinish?.('Answer', {} as any);
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-          operationId,
-        });
-      });
-
-      expect(dispatchSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          type: 'updateMessage',
-          value: expect.objectContaining({
-            imageList: expect.any(Array),
-          }),
-        }),
-        expect.objectContaining({
-          operationId: expect.any(String),
-        }),
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    it('should handle empty tool call arguments', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onFinish }) => {
-          await onFinish?.(TEST_CONTENT.AI_RESPONSE, {
-            toolCalls: [
-              { id: 'tool-1', type: 'function', function: { name: 'test', arguments: '' } },
-            ],
-          } as any);
-        });
-
-      await act(async () => {
-        const response = await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-        });
-        expect(response.isFunctionCall).toEqual(true);
-      });
-
-      streamSpy.mockRestore();
-    });
-
-    it('should update message with traceId when provided in onFinish', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const traceId = 'test-trace-123';
-
-      const updateMessageSpy = vi.spyOn(messageService, 'updateMessage');
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onFinish }) => {
-          await onFinish?.(TEST_CONTENT.AI_RESPONSE, { traceId } as any);
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-        });
-      });
-
-      expect(updateMessageSpy).toHaveBeenCalledWith(
-        TEST_IDS.ASSISTANT_MESSAGE_ID,
-        expect.objectContaining({ traceId }),
-        expect.objectContaining({
-          agentId: expect.any(String),
-          topicId: expect.any(String),
-        }),
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    describe('effectiveAgentId for group orchestration', () => {
-      it('should pass effectiveAgentId (subAgentId) to chatService when subAgentId is set in operation context', async () => {
-        const { result } = renderHook(() => useChatStore());
-        const messages = [createMockMessage({ role: 'user' })];
-        const supervisorAgentId = 'supervisor-agent-id';
-        const subAgentId = 'sub-agent-id';
-
-        // Create operation with subAgentId in context (simulating group orchestration)
-        const { operationId } = result.current.startOperation({
-          type: 'execAgentRuntime',
-          context: {
-            agentId: supervisorAgentId,
-            subAgentId: subAgentId,
-            topicId: TEST_IDS.TOPIC_ID,
-            messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          },
-          label: 'Test Group Orchestration',
-        });
-
-        const streamSpy = vi
-          .spyOn(chatService, 'createAssistantMessageStream')
-          .mockImplementation(async ({ onFinish }) => {
-            await onFinish?.(TEST_CONTENT.AI_RESPONSE, {});
-          });
-
-        await act(async () => {
-          await result.current.internal_fetchAIChatMessage({
-            messages,
-            messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-            model: 'gpt-4o-mini',
-            provider: 'openai',
-            operationId,
-          });
-        });
-
-        // Verify chatService was called with subAgentId (effectiveAgentId), not supervisorAgentId
-        expect(streamSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            params: expect.objectContaining({
-              agentId: subAgentId, // Should be subAgentId, not supervisorAgentId
-            }),
-          }),
-        );
-
-        streamSpy.mockRestore();
-      });
-
-      it('should pass agentId to chatService when no subAgentId is set (normal chat)', async () => {
-        const { result } = renderHook(() => useChatStore());
-        const messages = [createMockMessage({ role: 'user' })];
-        const agentId = 'normal-agent-id';
-
-        // Create operation without subAgentId (normal chat scenario)
-        const { operationId } = result.current.startOperation({
-          type: 'execAgentRuntime',
-          context: {
-            agentId: agentId,
-            // No subAgentId
-            topicId: TEST_IDS.TOPIC_ID,
-            messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          },
-          label: 'Test Normal Chat',
-        });
-
-        const streamSpy = vi
-          .spyOn(chatService, 'createAssistantMessageStream')
-          .mockImplementation(async ({ onFinish }) => {
-            await onFinish?.(TEST_CONTENT.AI_RESPONSE, {});
-          });
-
-        await act(async () => {
-          await result.current.internal_fetchAIChatMessage({
-            messages,
-            messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-            model: 'gpt-4o-mini',
-            provider: 'openai',
-            operationId,
-          });
-        });
-
-        // Verify chatService was called with agentId (no subAgentId present)
-        expect(streamSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            params: expect.objectContaining({
-              agentId: agentId, // Should be agentId since no subAgentId
-            }),
-          }),
-        );
-
-        streamSpy.mockRestore();
-      });
-
-      it('should use subAgentId for agent config resolution when present', async () => {
-        const { result } = renderHook(() => useChatStore());
-        const messages = [createMockMessage({ role: 'user' })];
-        const supervisorAgentId = 'supervisor-agent-id';
-        const subAgentId = 'speaking-agent-id';
-        const groupId = 'test-group-id';
-
-        // Create operation simulating group orchestration speak scenario
-        const { operationId } = result.current.startOperation({
-          type: 'execAgentRuntime',
-          context: {
-            agentId: supervisorAgentId, // The supervisor/session ID
-            subAgentId: subAgentId, // The actual speaking agent
-            groupId: groupId,
-            topicId: TEST_IDS.TOPIC_ID,
-            messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-            scope: 'group',
-          },
-          label: 'Test Speak Executor',
-        });
-
-        const streamSpy = vi
-          .spyOn(chatService, 'createAssistantMessageStream')
-          .mockImplementation(async ({ onFinish }) => {
-            await onFinish?.(TEST_CONTENT.AI_RESPONSE, {});
-          });
-
-        await act(async () => {
-          await result.current.internal_fetchAIChatMessage({
-            messages,
-            messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-            model: 'gpt-4o-mini',
-            provider: 'openai',
-            operationId,
-          });
-        });
-
-        // The key assertion: chatService should receive subAgentId for agent config resolution
-        // This ensures the speaking agent's system role and tools are used, not the supervisor's
-        expect(streamSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            params: expect.objectContaining({
-              agentId: subAgentId,
-            }),
-          }),
-        );
-
-        streamSpy.mockRestore();
-      });
-    });
-  });
-
   describe('internal_execAgentRuntime', () => {
     it('should handle the core AI message processing', async () => {
       act(() => {
@@ -815,10 +278,11 @@ describe('StreamingExecutor actions', () => {
       // Verify only one LLM call was made (no tool execution happened)
       expect(streamCallCount).toBe(1);
 
-      // Verify the agent runtime completed (not just cancelled mid-flight)
+      // Verify the operation preserves cancelled status (user intentionally stopped it)
+      // even though tools were gracefully resolved after cancellation
       const operations = Object.values(result.current.operations);
       const execOperation = operations.find((op) => op.type === 'execAgentRuntime');
-      expect(execOperation?.status).toBe('completed');
+      expect(execOperation?.status).toBe('cancelled');
 
       streamSpy.mockRestore();
     });
@@ -866,97 +330,6 @@ describe('StreamingExecutor actions', () => {
 
     // Note: RAG metadata functionality has been removed
     // RAG is now handled by Knowledge Base Tools (searchKnowledgeBase and readKnowledge)
-  });
-
-  describe('StreamingExecutor OptimisticUpdateContext isolation', () => {
-    it('should pass context to optimisticUpdateMessageContent in internal_fetchAIChatMessage', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-      const contextAgentId = 'context-session';
-      const contextTopicId = 'context-topic';
-
-      const updateContentSpy = vi.spyOn(result.current, 'optimisticUpdateMessageContent');
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({ type: 'text', text: TEST_CONTENT.AI_RESPONSE } as any);
-          await onFinish?.(TEST_CONTENT.AI_RESPONSE, {});
-        });
-
-      // Create operation with specific context
-      const { operationId } = result.current.startOperation({
-        type: 'execAgentRuntime',
-        context: {
-          agentId: contextAgentId,
-          topicId: contextTopicId,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-        },
-        label: 'Test AI Generation',
-      });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-          operationId,
-        });
-      });
-
-      expect(updateContentSpy).toHaveBeenCalledWith(
-        TEST_IDS.ASSISTANT_MESSAGE_ID,
-        TEST_CONTENT.AI_RESPONSE,
-        expect.any(Object),
-        {
-          operationId: expect.any(String),
-        },
-      );
-
-      streamSpy.mockRestore();
-    });
-
-    it('should use activeAgentId/activeTopicId when context not provided', async () => {
-      act(() => {
-        useChatStore.setState({
-          activeAgentId: 'active-session',
-          activeTopicId: 'active-topic',
-        });
-      });
-
-      const { result } = renderHook(() => useChatStore());
-      const messages = [createMockMessage({ role: 'user' })];
-
-      const updateContentSpy = vi.spyOn(result.current, 'optimisticUpdateMessageContent');
-
-      const streamSpy = vi
-        .spyOn(chatService, 'createAssistantMessageStream')
-        .mockImplementation(async ({ onMessageHandle, onFinish }) => {
-          await onMessageHandle?.({ type: 'text', text: TEST_CONTENT.AI_RESPONSE } as any);
-          await onFinish?.(TEST_CONTENT.AI_RESPONSE, {});
-        });
-
-      await act(async () => {
-        await result.current.internal_fetchAIChatMessage({
-          messages,
-          messageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
-          model: 'gpt-4o-mini',
-          provider: 'openai',
-        });
-      });
-
-      expect(updateContentSpy).toHaveBeenCalledWith(
-        TEST_IDS.ASSISTANT_MESSAGE_ID,
-        TEST_CONTENT.AI_RESPONSE,
-        expect.any(Object),
-        {
-          operationId: undefined,
-        },
-      );
-
-      streamSpy.mockRestore();
-    });
   });
 
   describe('afterCompletion hooks', () => {
@@ -1040,6 +413,7 @@ describe('StreamingExecutor actions', () => {
             stepCount: 0,
           },
         },
+        agentConfig: createMockResolvedAgentConfig(),
       });
 
       // Execute internal_execAgentRuntime with the pre-created operationId
@@ -1135,6 +509,7 @@ describe('StreamingExecutor actions', () => {
             stepCount: 0,
           },
         },
+        agentConfig: createMockResolvedAgentConfig(),
       });
 
       // Suppress console.error for this test
@@ -1235,6 +610,7 @@ describe('StreamingExecutor actions', () => {
             stepCount: 0,
           },
         },
+        agentConfig: createMockResolvedAgentConfig(),
       });
 
       // Should not throw
@@ -1414,6 +790,350 @@ describe('StreamingExecutor actions', () => {
 
       streamSpy.mockRestore();
     });
+
+    it('should merge provided initialContext with runtime page editor context', () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
+        agentConfig: createMockAgentConfig(),
+        chatConfig: createMockChatConfig(),
+        isBuiltinAgent: false,
+        plugins: ['lobe-page-agent'],
+      });
+      vi.spyOn(toolEngineering, 'createAgentToolsEngine').mockReturnValue({
+        generateToolsDetailed: vi.fn().mockReturnValue({
+          enabledManifests: [],
+          enabledToolIds: ['lobe-page-agent'],
+          tools: [],
+        }),
+      } as any);
+      vi.spyOn(pageAgentRuntime, 'getPageContentContext').mockReturnValue({
+        markdown: '# Test Document',
+        xml: '<root><h1>Test</h1></root>',
+        metadata: { title: 'Test Doc', charCount: 15, lineCount: 1 },
+      });
+
+      const { context } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        initialContext: {
+          phase: 'init',
+          initialContext: {
+            selectedSkills: [{ identifier: 'user_memory', name: 'User Memory' }],
+            selectedTools: [{ identifier: 'lobe-notebook', name: 'Notebook' }],
+          },
+        },
+      });
+
+      expect(context.initialContext).toEqual({
+        pageEditor: {
+          markdown: '# Test Document',
+          xml: '<root><h1>Test</h1></root>',
+          metadata: { title: 'Test Doc', charCount: 15, lineCount: 1 },
+        },
+        selectedSkills: [{ identifier: 'user_memory', name: 'User Memory' }],
+        selectedTools: [{ identifier: 'lobe-notebook', name: 'Notebook' }],
+      });
+    });
+
+    it('should merge selectedTools into generated tools when provided', () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      const generateToolsDetailed = vi.fn().mockReturnValue({
+        enabledManifests: [],
+        enabledToolIds: ['lobe-notebook'],
+        tools: [],
+      });
+
+      vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
+        agentConfig: createMockAgentConfig(),
+        chatConfig: createMockChatConfig(),
+        isBuiltinAgent: false,
+        plugins: ['lobe-artifacts'],
+      });
+      vi.spyOn(toolEngineering, 'createAgentToolsEngine').mockReturnValue({
+        generateToolsDetailed,
+      } as any);
+
+      result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        initialContext: {
+          phase: 'init',
+          initialContext: {
+            selectedTools: [{ identifier: 'lobe-notebook', name: 'Notebook' }],
+          },
+        },
+      });
+
+      expect(generateToolsDetailed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skipDefaultTools: undefined,
+          toolIds: ['lobe-artifacts', 'lobe-notebook'],
+        }),
+      );
+    });
+
+    it('should preserve default model/provider payload when initialContext is provided', () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
+        agentConfig: createMockAgentConfig({
+          model: 'claude-sonnet-4-6',
+          provider: 'lobehub',
+        }),
+        chatConfig: createMockChatConfig(),
+        isBuiltinAgent: false,
+        plugins: [],
+      });
+      vi.spyOn(toolEngineering, 'createAgentToolsEngine').mockReturnValue({
+        generateToolsDetailed: vi.fn().mockReturnValue({
+          enabledManifests: [],
+          enabledToolIds: [],
+          tools: [],
+        }),
+      } as any);
+
+      const { context } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        initialContext: {
+          phase: 'init',
+          initialContext: {
+            selectedTools: [{ identifier: 'lobe-notebook', name: 'Notebook' }],
+          },
+        },
+      });
+
+      expect(context.payload).toEqual(
+        expect.objectContaining({
+          model: 'claude-sonnet-4-6',
+          parentMessageId: TEST_IDS.USER_MESSAGE_ID,
+          provider: 'lobehub',
+        }),
+      );
+    });
+
+    it('should pass merged resolvedAgentConfig to chatService when selectedTools are provided', async () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
+        agentConfig: createMockAgentConfig(),
+        chatConfig: createMockChatConfig(),
+        isBuiltinAgent: false,
+        plugins: ['lobe-artifacts'],
+      });
+      vi.spyOn(toolEngineering, 'createAgentToolsEngine').mockReturnValue({
+        generateToolsDetailed: vi.fn().mockReturnValue({
+          enabledManifests: [{ identifier: 'lobe-artifacts' }, { identifier: 'lobe-notebook' }],
+          enabledToolIds: ['lobe-artifacts', 'lobe-notebook'],
+          tools: [
+            {
+              function: { name: 'lobe-artifacts____create' },
+              type: 'function',
+            },
+            {
+              function: { name: 'lobe-notebook____createDocument' },
+              type: 'function',
+            },
+          ],
+        }),
+      } as any);
+
+      const streamSpy = vi
+        .spyOn(chatService, 'createAssistantMessageStream')
+        .mockImplementation(async ({ onFinish, params }) => {
+          expect(params.resolvedAgentConfig.enabledToolIds).toEqual([
+            'lobe-artifacts',
+            'lobe-notebook',
+          ]);
+          expect(params.resolvedAgentConfig.tools).toEqual([
+            {
+              function: { name: 'lobe-artifacts____create' },
+              type: 'function',
+            },
+            {
+              function: { name: 'lobe-notebook____createDocument' },
+              type: 'function',
+            },
+          ]);
+          await onFinish?.(TEST_CONTENT.AI_RESPONSE, {} as any);
+        });
+
+      await act(async () => {
+        await result.current.internal_execAgentRuntime({
+          context: { agentId: TEST_IDS.SESSION_ID, topicId: TEST_IDS.TOPIC_ID },
+          initialContext: {
+            phase: 'init',
+            initialContext: {
+              selectedTools: [{ identifier: 'lobe-notebook', name: 'Notebook' }],
+            },
+          },
+          messages: [userMessage],
+          parentMessageId: userMessage.id,
+          parentMessageType: 'user',
+        });
+      });
+
+      expect(streamSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('internal_createAgentState with disableTools', () => {
+    it('should return empty toolManifestMap when disableTools is true', async () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      // Get actual internal_createAgentState result with disableTools: true
+      const { state } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        disableTools: true,
+      });
+
+      // toolManifestMap should be empty when disableTools is true
+      expect(state.toolManifestMap).toEqual({});
+    });
+
+    it('should return empty tools in agentConfig when disableTools is true', async () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      // Get actual internal_createAgentState result with disableTools: true
+      const { agentConfig } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        disableTools: true,
+      });
+
+      // agentConfig should have empty tools-related fields when disableTools is true
+      expect(agentConfig.tools).toBeUndefined();
+      expect(agentConfig.enabledToolIds).toEqual([]);
+      expect(agentConfig.enabledManifests).toEqual([]);
+    });
+
+    it('should include tools in toolManifestMap when disableTools is false or undefined', async () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+
+      // Mock resolveAgentConfig to return plugins
+      vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
+        agentConfig: {
+          ...createMockAgentConfig(),
+          plugins: ['test-plugin'],
+        },
+        chatConfig: createMockChatConfig(),
+        isBuiltinAgent: false,
+        plugins: ['test-plugin'],
+      });
+
+      // Get actual internal_createAgentState result without disableTools
+      const { state: stateWithoutDisable } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        // disableTools not set (undefined)
+      });
+
+      // Get actual internal_createAgentState result with disableTools: false
+      const { state: stateWithDisableFalse } = result.current.internal_createAgentState({
+        messages: [userMessage],
+        parentMessageId: userMessage.id,
+        agentId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+        disableTools: false,
+      });
+
+      // Both should have the same toolManifestMap (tools enabled)
+      // Note: The actual content depends on what plugins are resolved,
+      // but the key point is they should not be empty (unless no plugins are configured)
+      expect(stateWithoutDisable.toolManifestMap).toEqual(stateWithDisableFalse.toolManifestMap);
+    });
   });
 
   describe('operation status handling', () => {
@@ -1489,6 +1209,7 @@ describe('StreamingExecutor actions', () => {
             stepCount: 1,
           },
         },
+        agentConfig: createMockResolvedAgentConfig(),
       });
 
       await act(async () => {
@@ -1583,6 +1304,7 @@ describe('StreamingExecutor actions', () => {
             stepCount: 1,
           },
         },
+        agentConfig: createMockResolvedAgentConfig(),
       });
 
       await act(async () => {
@@ -1600,6 +1322,93 @@ describe('StreamingExecutor actions', () => {
 
       // Operation should be failed
       expect(result.current.operations[operationId!].status).toBe('failed');
+    });
+  });
+
+  describe('isSubTask filtering', () => {
+    it('should filter out lobe-gtd tools when isSubTask is true', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const messages = [createMockMessage({ role: 'user' })];
+
+      // Mock resolveAgentConfig to return plugins including lobe-gtd
+      const resolveAgentConfigSpy = vi
+        .spyOn(agentConfigResolver, 'resolveAgentConfig')
+        .mockReturnValue({
+          agentConfig: createMockAgentConfig(),
+          chatConfig: createMockChatConfig(),
+          isBuiltinAgent: false,
+          plugins: ['lobe-gtd', 'lobe-local-system', 'other-plugin'],
+        });
+
+      // Create operation
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'execClientTask',
+          context: {
+            agentId: TEST_IDS.SESSION_ID,
+            topicId: TEST_IDS.TOPIC_ID,
+          },
+        });
+        operationId = res.operationId;
+      });
+
+      // Call internal_createAgentState with isSubTask: true
+      act(() => {
+        result.current.internal_createAgentState({
+          messages,
+          parentMessageId: TEST_IDS.USER_MESSAGE_ID,
+          operationId,
+          isSubTask: true,
+        });
+      });
+
+      // Verify that resolveAgentConfig was called
+      expect(resolveAgentConfigSpy).toHaveBeenCalled();
+
+      resolveAgentConfigSpy.mockRestore();
+    });
+
+    it('should NOT filter out lobe-gtd tools when isSubTask is false or undefined', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const messages = [createMockMessage({ role: 'user' })];
+
+      // Mock resolveAgentConfig to return plugins including lobe-gtd
+      const resolveAgentConfigSpy = vi
+        .spyOn(agentConfigResolver, 'resolveAgentConfig')
+        .mockReturnValue({
+          agentConfig: createMockAgentConfig(),
+          chatConfig: createMockChatConfig(),
+          isBuiltinAgent: false,
+          plugins: ['lobe-gtd', 'lobe-local-system', 'other-plugin'],
+        });
+
+      // Create operation without isSubTask (normal conversation)
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: {
+            agentId: TEST_IDS.SESSION_ID,
+            topicId: TEST_IDS.TOPIC_ID,
+          },
+        });
+        operationId = res.operationId;
+      });
+
+      // Call internal_createAgentState without isSubTask
+      act(() => {
+        result.current.internal_createAgentState({
+          messages,
+          parentMessageId: TEST_IDS.USER_MESSAGE_ID,
+          operationId,
+        });
+      });
+
+      // Verify that resolveAgentConfig was called
+      expect(resolveAgentConfigSpy).toHaveBeenCalled();
+
+      resolveAgentConfigSpy.mockRestore();
     });
   });
 });

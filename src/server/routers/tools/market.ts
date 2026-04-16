@@ -1,17 +1,20 @@
-import { type CodeInterpreterToolName, MarketSDK } from '@lobehub/market-sdk';
+import { type CodeInterpreterToolName } from '@lobehub/market-sdk';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
+import { sha256 } from 'js-sha256';
 import { z } from 'zod';
 
-import { DocumentModel } from '@/database/models/document';
+import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
-import { generateTrustedClientToken } from '@/libs/trusted-client';
+import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/marketSDK';
+import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { FileS3 } from '@/server/modules/S3';
 import { DiscoverService } from '@/server/services/discover';
 import { FileService } from '@/server/services/file';
+import { MarketService } from '@/server/services/market';
 import {
   contentBlocksToString,
   processContentBlocks,
@@ -37,10 +40,31 @@ const marketToolProcedure = authedProcedure
           userInfo: ctx.marketUserInfo,
         }),
         fileService: new FileService(ctx.serverDB, ctx.userId),
+        marketService: new MarketService({
+          accessToken: ctx.marketAccessToken,
+          userInfo: ctx.marketUserInfo,
+        }),
         userModel,
       },
     });
   });
+
+// ============================== LobeHub Skill Procedures ==============================
+/**
+ * LobeHub Skill procedure with SDK and optional auth
+ * Used for routes that may work without auth (like listing providers)
+ */
+const lobehubSkillBaseProcedure = authedProcedure
+  .use(serverDatabase)
+  .use(telemetry)
+  .use(marketUserInfo)
+  .use(marketSDK);
+
+/**
+ * LobeHub Skill procedure with required auth
+ * Used for routes that require user authentication
+ */
+const lobehubSkillAuthProcedure = lobehubSkillBaseProcedure.use(requireMarketAuth);
 
 // ============================== Schema Definitions ==============================
 
@@ -60,28 +84,19 @@ const metaSchema = z
   })
   .optional();
 
-// Schema for code interpreter tool call request
-const callCodeInterpreterToolSchema = z.object({
-  marketAccessToken: z.string().optional(),
+// Schema for sandbox tool execution request
+const execInSandboxSchema = z.object({
   params: z.record(z.any()),
   toolName: z.string(),
   topicId: z.string(),
-  userId: z.string(),
+  userId: z.string().optional(), // Optional: fallback to ctx.userId if not provided
 });
 
-// Schema for getting export file upload URL
-const getExportFileUploadUrlSchema = z.object({
+// Schema for export and upload file (combined operation)
+const exportAndUploadFileSchema = z.object({
   filename: z.string(),
+  path: z.string(),
   topicId: z.string(),
-});
-
-// Schema for saving exported file content to document
-const saveExportedFileContentSchema = z.object({
-  content: z.string(),
-  fileId: z.string(),
-  fileType: z.string(),
-  filename: z.string(),
-  url: z.string(),
 });
 
 // Schema for cloud MCP endpoint call
@@ -93,9 +108,10 @@ const callCloudMcpEndpointSchema = z.object({
 });
 
 // ============================== Type Exports ==============================
-export type CallCodeInterpreterToolInput = z.infer<typeof callCodeInterpreterToolSchema>;
-export type GetExportFileUploadUrlInput = z.infer<typeof getExportFileUploadUrlSchema>;
-export type SaveExportedFileContentInput = z.infer<typeof saveExportedFileContentSchema>;
+export type ExecInSandboxInput = z.infer<typeof execInSandboxSchema>;
+/** @deprecated Use ExecInSandboxInput */
+export type CallCodeInterpreterToolInput = ExecInSandboxInput;
+export type ExportAndUploadFileInput = z.infer<typeof exportAndUploadFileSchema>;
 
 export interface CallToolResult {
   error?: {
@@ -107,23 +123,167 @@ export interface CallToolResult {
   success: boolean;
 }
 
-export interface GetExportFileUploadUrlResult {
-  downloadUrl: string;
+export interface ExportAndUploadFileResult {
   error?: {
     message: string;
   };
-  key: string;
+  fileId?: string;
+  filename: string;
+  mimeType?: string;
+  size?: number;
   success: boolean;
-  uploadUrl: string;
+  url?: string;
 }
 
-export interface SaveExportedFileContentResult {
-  documentId?: string;
-  error?: {
-    message: string;
-  };
-  success: boolean;
-}
+// ============================== Sandbox Handler ==============================
+const execInSandboxHandler = async ({
+  input,
+  ctx,
+}: {
+  ctx: { fileService: FileService; marketService: MarketService; serverDB: any; userId: string };
+  input: ExecInSandboxInput;
+}): Promise<CallToolResult> => {
+  const { toolName, params, topicId } = input;
+  const userId = input?.userId || ctx.userId;
+
+  log('execInSandbox: tool=%s, topicId=%s', toolName, topicId);
+
+  try {
+    let enhancedParams = params;
+
+    // Preprocess lh commands: rewrite to npx @lobehub/cli + inject auth env vars
+    if ((toolName === 'execScript' || toolName === 'runCommand') && params.command) {
+      const { preprocessLhCommand } =
+        await import('@/server/services/toolExecution/preprocessLhCommand');
+      const lhResult = await preprocessLhCommand(params.command, userId);
+
+      if (lhResult.error) {
+        return {
+          error: { message: lhResult.error, name: 'AuthError' },
+          result: null,
+          sessionExpiredAndRecreated: false,
+          success: false,
+        };
+      }
+
+      if (lhResult.skipSkillLookup) {
+        enhancedParams = { ...params, command: lhResult.command };
+      }
+    }
+
+    // For execScript tool, look up skill zipUrls from activatedSkills
+    if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
+      const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId);
+      const fileModel = new FileModel(ctx.serverDB, userId);
+
+      // Resolve zipUrls for all activated skills
+      const skillZipUrls: Record<string, string> = {};
+
+      for (const activatedSkill of enhancedParams.activatedSkills) {
+        if (!activatedSkill.name) continue;
+
+        const skill = await agentSkillModel.findByName(activatedSkill.name);
+        if (!skill?.zipFileHash) continue;
+
+        const fileInfo = await fileModel.checkHash(skill.zipFileHash);
+        if (!fileInfo.isExist || !fileInfo.url) continue;
+
+        const fullUrl = await ctx.fileService.getFullFileUrl(fileInfo.url);
+        if (fullUrl) {
+          skillZipUrls[activatedSkill.name] = fullUrl;
+          log('Resolved zipUrl for skill %s: %s', activatedSkill.name, fullUrl);
+        }
+      }
+
+      // Add skillZipUrls to params if any were resolved
+      if (Object.keys(skillZipUrls).length > 0) {
+        enhancedParams = {
+          ...enhancedParams,
+          skillZipUrls,
+        };
+        log('Added skillZipUrls to execScript params: %O', Object.keys(skillZipUrls));
+      }
+    }
+
+    const market = ctx.marketService.market;
+
+    const response = await market.plugins.runBuildInTool(
+      toolName as CodeInterpreterToolName,
+      enhancedParams as any,
+      { topicId, userId },
+    );
+
+    log('execInSandbox response for %s: %O', toolName, response);
+
+    if (!response.success) {
+      const errorCode = response.error?.code;
+      const errorMessage = response.error?.message || 'Unknown error';
+
+      // Check for authentication errors and throw UNAUTHORIZED to trigger market auth flow
+      if (
+        errorCode === 'invalid_token' ||
+        errorCode === 'token_expired' ||
+        errorCode === 'unauthorized' ||
+        errorMessage.toLowerCase().includes('invalid_token') ||
+        errorMessage.toLowerCase().includes('token expired')
+      ) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message:
+            'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
+        });
+      }
+
+      return {
+        error: {
+          message: errorMessage,
+          name: errorCode,
+        },
+        result: null,
+        sessionExpiredAndRecreated: false,
+        success: false,
+      };
+    }
+
+    return {
+      result: response.data?.result,
+      sessionExpiredAndRecreated: response.data?.sessionExpiredAndRecreated || false,
+      success: true,
+    };
+  } catch (error) {
+    log('execInSandbox error for %s: %O', toolName, error);
+
+    // Re-throw TRPCError as-is (e.g., UNAUTHORIZED from above)
+    if (error instanceof TRPCError) {
+      throw error;
+    }
+
+    const errorMessage = (error as Error).message;
+
+    // Check for authentication errors thrown as exceptions
+    if (
+      errorMessage.toLowerCase().includes('invalid_token') ||
+      errorMessage.toLowerCase().includes('token expired') ||
+      errorMessage.toLowerCase().includes('unauthorized')
+    ) {
+      throw new TRPCError({
+        code: 'UNAUTHORIZED',
+        message:
+          'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
+      });
+    }
+
+    return {
+      error: {
+        message: errorMessage,
+        name: (error as Error).name,
+      },
+      result: null,
+      sessionExpiredAndRecreated: false,
+      success: false,
+    };
+  }
+};
 
 // ============================== Router ==============================
 export const marketRouter = router({
@@ -140,17 +300,26 @@ export const marketRouter = router({
       let result: { content: string; state: any; success: boolean } | undefined;
 
       try {
-        // Query user_settings to get market.accessToken
-        const userState = await ctx.userModel.getUserState(async () => ({}));
-        const userAccessToken = userState.settings?.market?.accessToken;
+        // Check if trusted client is enabled - if so, we don't need user's accessToken
+        const trustedClientEnabled = isTrustedClientEnabled();
 
-        log('callCloudMcpEndpoint: userAccessToken exists=%s', !!userAccessToken);
+        let userAccessToken: string | undefined;
 
-        if (!userAccessToken) {
-          throw new TRPCError({
-            code: 'UNAUTHORIZED',
-            message: 'User access token not found. Please sign in to Market first.',
-          });
+        if (!trustedClientEnabled) {
+          // Query user_settings to get market.accessToken only if trusted client is not enabled
+          const userState = await ctx.userModel.getUserState(async () => ({}));
+          userAccessToken = userState.settings?.market?.accessToken;
+
+          log('callCloudMcpEndpoint: userAccessToken exists=%s', !!userAccessToken);
+
+          if (!userAccessToken) {
+            throw new TRPCError({
+              code: 'UNAUTHORIZED',
+              message: 'User access token not found. Please sign in to Market first.',
+            });
+          }
+        } else {
+          log('callCloudMcpEndpoint: using trusted client authentication');
         }
 
         const cloudResult = await ctx.discoverService.callCloudMcpEndpoint({
@@ -209,167 +378,390 @@ export const marketRouter = router({
       }
     }),
 
-  // ============================== Code Interpreter ==============================
+  /** @deprecated Use execInSandbox instead. Will be removed in a future version. */
   callCodeInterpreterTool: marketToolProcedure
-    .input(callCodeInterpreterToolSchema)
+    .input(execInSandboxSchema)
+    .mutation(({ input, ctx }) => execInSandboxHandler({ ctx, input })),
+
+  // ============================== Sandbox Execution ==============================
+  execInSandbox: marketToolProcedure
+    .input(execInSandboxSchema)
+    .mutation(({ input, ctx }) => execInSandboxHandler({ ctx, input })),
+
+  // ============================== LobeHub Skill ==============================
+  /**
+   * Call a LobeHub Skill tool
+   */
+  connectCallTool: lobehubSkillAuthProcedure
+    .input(
+      z.object({
+        args: z.record(z.any()).optional(),
+        provider: z.string(),
+        toolName: z.string(),
+        topicId: z.string().optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const { toolName, params, userId, topicId, marketAccessToken } = input;
-
-      log('Calling cloud code interpreter tool: %s with params: %O', toolName, {
-        params,
-        topicId,
-        userId,
-      });
-      log('Market access token available: %s', marketAccessToken ? 'yes' : 'no');
-
-      // Generate trusted client token if user info is available
-      const trustedClientToken = ctx.marketUserInfo
-        ? generateTrustedClientToken(ctx.marketUserInfo)
-        : undefined;
-
+      const { provider, toolName, args, topicId } = input;
+      log('connectCallTool: provider=%s, tool=%s, topicId=%s', provider, toolName, topicId);
       try {
-        // Initialize MarketSDK with market access token and trusted client token
-        const market = new MarketSDK({
-          accessToken: marketAccessToken,
-          baseURL: process.env.NEXT_PUBLIC_MARKET_BASE_URL,
-          trustedClientToken,
+        const response = await ctx.marketSDK.skills.callTool(provider, {
+          args: args || {},
+          tool: toolName,
+          // @ts-ignore
+          topicId,
         });
 
-        // Call market-sdk's runBuildInTool
-        const response = await market.plugins.runBuildInTool(
-          toolName as CodeInterpreterToolName,
-          params as any,
-          { topicId, userId },
-        );
+        log('connectCallTool response: %O', response);
 
-        log('Cloud code interpreter tool %s response: %O', toolName, response);
+        return {
+          data: response.data,
+          success: response.success,
+        };
+      } catch (error) {
+        const errorMessage = (error as Error).message;
+        log('connectCallTool error: %s', errorMessage);
 
-        if (!response.success) {
-          return {
-            error: {
-              message: response.error?.message || 'Unknown error',
-              name: response.error?.code,
-            },
-            result: null,
-            sessionExpiredAndRecreated: false,
-            success: false,
-          } as CallToolResult;
+        if (errorMessage.includes('NOT_CONNECTED')) {
+          throw new TRPCError({
+            code: 'UNAUTHORIZED',
+            message: 'Provider not connected. Please authorize first.',
+          });
         }
 
-        return {
-          result: response.data?.result,
-          sessionExpiredAndRecreated: response.data?.sessionExpiredAndRecreated || false,
-          success: true,
-        } as CallToolResult;
-      } catch (error) {
-        log('Error calling cloud code interpreter tool %s: %O', toolName, error);
+        if (errorMessage.includes('TOKEN_EXPIRED')) {
+          throw new TRPCError({
+            code: 'UNAUTHORIZED',
+            message: 'Token expired. Please re-authorize.',
+          });
+        }
 
-        return {
-          error: {
-            message: (error as Error).message,
-            name: (error as Error).name,
-          },
-          result: null,
-          sessionExpiredAndRecreated: false,
-          success: false,
-        } as CallToolResult;
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to call tool: ${errorMessage}`,
+        });
       }
     }),
 
   /**
-   * Generate a pre-signed upload URL for exporting files from sandbox
+   * Get all connections health status
    */
-  getExportFileUploadUrl: marketToolProcedure
-    .input(getExportFileUploadUrlSchema)
-    .mutation(async ({ input }) => {
-      const { filename, topicId } = input;
+  connectGetAllHealth: lobehubSkillAuthProcedure.query(async ({ ctx }) => {
+    log('connectGetAllHealth');
 
-      log('Generating export file upload URL for: %s in topic: %s', filename, topicId);
+    try {
+      const response = await ctx.marketSDK.connect.getAllHealth();
+      return {
+        connections: response.connections || [],
+        summary: response.summary,
+      };
+    } catch (error) {
+      log('connectGetAllHealth error: %O', error);
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: `Failed to get connections health: ${(error as Error).message}`,
+      });
+    }
+  }),
+
+  /**
+   * Get authorize URL for a provider
+   * This calls the SDK's authorize method which generates a secure authorization URL
+   */
+  connectGetAuthorizeUrl: lobehubSkillAuthProcedure
+    .input(
+      z.object({
+        provider: z.string(),
+        redirectUri: z.string().optional(),
+        scopes: z.array(z.string()).optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      log('connectGetAuthorizeUrl: provider=%s', input.provider);
+
+      try {
+        const response = await ctx.marketSDK.connect.authorize(input.provider, {
+          redirect_uri: input.redirectUri,
+          scopes: input.scopes,
+        });
+
+        return {
+          authorizeUrl: response.authorize_url,
+          code: response.code,
+          expiresIn: response.expires_in,
+        };
+      } catch (error) {
+        log('connectGetAuthorizeUrl error: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to get authorize URL: ${(error as Error).message}`,
+        });
+      }
+    }),
+
+  /**
+   * Get connection status for a provider
+   */
+  connectGetStatus: lobehubSkillAuthProcedure
+    .input(z.object({ provider: z.string() }))
+    .query(async ({ input, ctx }) => {
+      log('connectGetStatus: provider=%s', input.provider);
+
+      try {
+        const response = await ctx.marketSDK.connect.getStatus(input.provider);
+        return {
+          connected: response.connected,
+          connection: response.connection,
+          icon: (response as any).icon,
+          providerName: (response as any).providerName,
+        };
+      } catch (error) {
+        log('connectGetStatus error: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to get status: ${(error as Error).message}`,
+        });
+      }
+    }),
+
+  /**
+   * List all user connections
+   */
+  connectListConnections: lobehubSkillBaseProcedure.query(async ({ ctx }) => {
+    log('connectListConnections');
+
+    try {
+      const response = await ctx.marketSDK.connect.listConnections();
+      // Debug logging
+      log('connectListConnections raw response: %O', response);
+      log('connectListConnections connections: %O', response.connections);
+      return {
+        connections: response.connections || [],
+      };
+    } catch (error) {
+      log('connectListConnections error: %O', error);
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: `Failed to list connections: ${(error as Error).message}`,
+      });
+    }
+  }),
+
+  /**
+   * List available providers (public, no auth required)
+   */
+  connectListProviders: lobehubSkillBaseProcedure.query(async ({ ctx }) => {
+    log('connectListProviders');
+
+    try {
+      const response = await ctx.marketSDK.skills.listProviders();
+      return {
+        providers: response.providers || [],
+      };
+    } catch (error) {
+      log('connectListProviders error: %O', error);
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: `Failed to list providers: ${(error as Error).message}`,
+      });
+    }
+  }),
+
+  /**
+   * List tools for a provider
+   */
+  connectListTools: lobehubSkillBaseProcedure
+    .input(z.object({ provider: z.string() }))
+    .query(async ({ input, ctx }) => {
+      log('connectListTools: provider=%s', input.provider);
+
+      try {
+        const response = await ctx.marketSDK.skills.listTools(input.provider);
+        return {
+          provider: input.provider,
+          tools: response.tools || [],
+        };
+      } catch (error) {
+        log('connectListTools error: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to list tools: ${(error as Error).message}`,
+        });
+      }
+    }),
+
+  /**
+   * Refresh token for a provider
+   */
+  connectRefresh: lobehubSkillAuthProcedure
+    .input(z.object({ provider: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      log('connectRefresh: provider=%s', input.provider);
+
+      try {
+        const response = await ctx.marketSDK.connect.refresh(input.provider);
+        return {
+          connection: response.connection,
+          refreshed: response.refreshed,
+        };
+      } catch (error) {
+        log('connectRefresh error: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to refresh token: ${(error as Error).message}`,
+        });
+      }
+    }),
+
+  /**
+   * Revoke connection for a provider
+   */
+  connectRevoke: lobehubSkillAuthProcedure
+    .input(z.object({ provider: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      log('connectRevoke: provider=%s', input.provider);
+
+      try {
+        await ctx.marketSDK.connect.revoke(input.provider);
+        return { success: true };
+      } catch (error) {
+        log('connectRevoke error: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to revoke connection: ${(error as Error).message}`,
+        });
+      }
+    }),
+
+  /**
+   * Export a file from sandbox and upload to S3, then create a persistent file record
+   * This combines the previous getExportFileUploadUrl + execInSandbox + createFileRecord flow
+   * Returns a permanent /f/:id URL instead of a temporary pre-signed URL
+   */
+  exportAndUploadFile: marketToolProcedure
+    .input(exportAndUploadFileSchema)
+    .mutation(async ({ input, ctx }) => {
+      const { path, filename, topicId } = input;
+
+      log('Exporting and uploading file: %s from path: %s in topic: %s', filename, path, topicId);
 
       try {
         const s3 = new FileS3();
 
+        // Use date-based sharding for privacy compliance (GDPR, CCPA)
+        const today = new Date().toISOString().split('T')[0];
+
         // Generate a unique key for the exported file
-        const key = `code-interpreter-exports/${topicId}/${filename}`;
+        const key = `code-interpreter-exports/${today}/${topicId}/${filename}`;
 
-        // Generate pre-signed upload URL
+        // Step 1: Generate pre-signed upload URL
         const uploadUrl = await s3.createPreSignedUrl(key);
-
-        // Generate download URL (pre-signed for preview)
-        const downloadUrl = await s3.createPreSignedUrlForPreview(key);
-
         log('Generated upload URL for key: %s', key);
 
-        return {
-          downloadUrl,
-          key,
-          success: true,
-          uploadUrl,
-        } as GetExportFileUploadUrlResult;
-      } catch (error) {
-        log('Error generating export file upload URL: %O', error);
+        // Step 2: Use MarketService from ctx
+        const market = ctx.marketService.market;
 
-        return {
-          downloadUrl: '',
-          error: {
-            message: (error as Error).message,
-          },
-          key: '',
-          success: false,
-          uploadUrl: '',
-        } as GetExportFileUploadUrlResult;
-      }
-    }),
+        // Step 3: Call sandbox's exportFile tool with the upload URL
+        const response = await market.plugins.runBuildInTool(
+          'exportFile',
+          { path, uploadUrl },
+          { topicId, userId: ctx.userId },
+        );
 
-  /**
-   * Save exported file content to documents table
-   */
-  saveExportedFileContent: marketToolProcedure
-    .input(saveExportedFileContentSchema)
-    .mutation(async ({ ctx, input }) => {
-      const { content, fileId, fileType, filename, url } = input;
+        log('Sandbox exportFile response: %O', response);
 
-      log('Saving exported file content: fileId=%s, filename=%s', fileId, filename);
+        if (!response.success) {
+          const errorCode = response.error?.code;
+          const errorMessage = response.error?.message || 'Failed to export file from sandbox';
 
-      try {
-        const documentModel = new DocumentModel(ctx.serverDB, ctx.userId);
-        const fileModel = new FileModel(ctx.serverDB, ctx.userId);
+          // Check for authentication errors and throw UNAUTHORIZED
+          if (
+            errorCode === 'invalid_token' ||
+            errorCode === 'token_expired' ||
+            errorCode === 'unauthorized' ||
+            errorMessage.toLowerCase().includes('invalid_token') ||
+            errorMessage.toLowerCase().includes('token expired')
+          ) {
+            throw new TRPCError({
+              code: 'UNAUTHORIZED',
+              message:
+                'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
+            });
+          }
 
-        // Verify the file exists
-        const file = await fileModel.findById(fileId);
-        if (!file) {
           return {
-            error: { message: 'File not found' },
+            error: { message: errorMessage },
+            filename,
             success: false,
-          } as SaveExportedFileContentResult;
+          } as ExportAndUploadFileResult;
         }
 
-        // Create document record with the file content
-        const document = await documentModel.create({
-          content,
-          fileId,
-          fileType,
-          filename,
-          source: url,
-          sourceType: 'file',
-          title: filename,
-          totalCharCount: content.length,
-          totalLineCount: content.split('\n').length,
+        const result = response.data?.result;
+        const uploadSuccess = result?.success !== false;
+
+        if (!uploadSuccess) {
+          return {
+            error: { message: result?.error || 'Failed to upload file from sandbox' },
+            filename,
+            success: false,
+          } as ExportAndUploadFileResult;
+        }
+
+        // Step 4: Get file metadata from S3 to verify upload and get actual size
+        const metadata = await s3.getFileMetadata(key);
+        const fileSize = metadata.contentLength;
+        const mimeType = metadata.contentType || result?.mimeType || 'application/octet-stream';
+
+        // Step 5: Create persistent file record using FileService
+        // Generate a simple hash from the key (since we don't have the actual file content)
+        const fileHash = sha256(key + Date.now().toString());
+
+        const { fileId, url } = await ctx.fileService.createFileRecord({
+          fileHash,
+          fileType: mimeType,
+          name: filename,
+          size: fileSize,
+          url: key, // Store S3 key
         });
 
-        log('Created document for exported file: documentId=%s, fileId=%s', document.id, fileId);
+        log('Created file record: fileId=%s, url=%s', fileId, url);
 
         return {
-          documentId: document.id,
+          fileId,
+          filename,
+          mimeType,
+          size: fileSize,
           success: true,
-        } as SaveExportedFileContentResult;
+          url, // This is the permanent /f/:id URL
+        } as ExportAndUploadFileResult;
       } catch (error) {
-        log('Error saving exported file content: %O', error);
+        log('Error in exportAndUploadFile: %O', error);
+
+        // Re-throw TRPCError as-is
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+
+        const errorMessage = (error as Error).message;
+
+        // Check for authentication errors
+        if (
+          errorMessage.toLowerCase().includes('invalid_token') ||
+          errorMessage.toLowerCase().includes('token expired') ||
+          errorMessage.toLowerCase().includes('unauthorized')
+        ) {
+          throw new TRPCError({
+            code: 'UNAUTHORIZED',
+            message:
+              'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
+          });
+        }
 
         return {
-          error: { message: (error as Error).message },
+          error: { message: errorMessage },
+          filename,
           success: false,
-        } as SaveExportedFileContentResult;
+        } as ExportAndUploadFileResult;
       }
     }),
 });

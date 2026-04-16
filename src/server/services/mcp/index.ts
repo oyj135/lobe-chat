@@ -1,6 +1,11 @@
-import { type CheckMcpInstallResult, type CustomPluginMetadata } from '@lobechat/types';
+import {
+  type CheckMcpInstallResult,
+  type CustomPluginMetadata,
+  type LobeChatPluginApi,
+  type ToolManifest,
+  type ToolManifestSettings,
+} from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
-import type { LobeChatPluginApi, LobeChatPluginManifest, PluginSchema } from '@lobehub/chat-plugin-sdk';
 import { type DeploymentOption } from '@lobehub/market-sdk';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import { TRPCError } from '@trpc/server';
@@ -8,15 +13,16 @@ import retry from 'async-retry';
 import debug from 'debug';
 
 import {
-  MCPClient,
   type MCPClientParams,
   type McpPrompt,
   type McpResource,
   type McpTool,
   type StdioMCPParams,
 } from '@/libs/mcp';
+import { MCPClient } from '@/libs/mcp';
 
-import { type ProcessContentBlocksFn, contentBlocksToString } from './contentProcessor';
+import { type ProcessContentBlocksFn } from './contentProcessor';
+import { contentBlocksToString } from './contentProcessor';
 import { mcpSystemDepsCheckService } from './deps';
 
 const log = debug('lobe-mcp:service');
@@ -77,7 +83,7 @@ export class MCPService {
 
   private sanitizeForLogging = <T extends Record<string, any>>(obj: T): Omit<T, 'env'> => {
     if (!obj) return obj;
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
     const { env: _, ...rest } = obj;
     return rest as Omit<T, 'env'>;
   };
@@ -106,7 +112,7 @@ export class MCPService {
             // Assuming identifier is the unique name/id
             description: item.description,
             name: item.name,
-            parameters: item.inputSchema as PluginSchema,
+            parameters: item.inputSchema as ToolManifestSettings,
           }));
         } catch (error) {
           // Only retry for NoValidSessionId errors
@@ -251,7 +257,7 @@ export class MCPService {
 
         return {
           content: mcpError.message,
-          error: error,
+          error,
           state: {
             content: [{ text: mcpError.message, type: 'text' }],
             isError: true,
@@ -350,7 +356,7 @@ export class MCPService {
       type: 'none' | 'bearer' | 'oauth2';
     },
     headers?: Record<string, string>,
-  ): Promise<LobeChatPluginManifest> {
+  ): Promise<ToolManifest> {
     const mcpParams = { name: identifier, type: 'http' as const, url };
 
     // Add authentication info to parameters if available
@@ -385,7 +391,7 @@ export class MCPService {
   async getStdioMcpServerManifest(
     params: Omit<StdioMCPParams, 'type'>,
     metadata?: CustomPluginMetadata,
-  ): Promise<LobeChatPluginManifest> {
+  ): Promise<ToolManifest> {
     const mcpParams = {
       args: params.args,
       command: params.command,
@@ -419,7 +425,7 @@ export class MCPService {
       mcpParams,
       // TODO: temporary
       type: 'mcp' as any,
-    } as LobeChatPluginManifest;
+    } as ToolManifest;
   }
 
   /**
@@ -485,7 +491,7 @@ export class MCPService {
       // Assuming identifier is the unique name/id
       description: item.description,
       name: item.name,
-      parameters: item.inputSchema as PluginSchema,
+      parameters: item.inputSchema as ToolManifestSettings,
     }));
   };
 }

@@ -1,6 +1,10 @@
-import { SidebarAgentItem, SidebarAgentListResponse, SidebarGroup } from '@lobechat/types';
+import {
+  type SidebarAgentItem,
+  type SidebarAgentListResponse,
+  type SidebarGroup,
+} from '@lobechat/types';
 import { cleanObject } from '@lobechat/utils';
-import { and, desc, eq, ilike, inArray, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, not, sql } from 'drizzle-orm';
 
 import {
   agents,
@@ -10,7 +14,8 @@ import {
   sessionGroups,
   sessions,
 } from '../../schemas';
-import { LobeChatDatabase } from '../../type';
+import { type LobeChatDatabase } from '../../type';
+import { sanitizeBm25Query } from '../../utils/bm25';
 
 // Re-export types for backward compatibility
 export type {
@@ -36,15 +41,12 @@ export class HomeRepository {
    * Get sidebar agent list with pinned, grouped, and ungrouped items
    */
   async getSidebarAgentList(): Promise<SidebarAgentListResponse> {
-    // 1. Query all agents (non-virtual) with their session info
-    // Note: We query both agents.pinned and sessions.pinned for backward compatibility
-    // agents.pinned takes priority, falling back to sessions.pinned for legacy data
-    // Note: We query both agents.sessionGroupId and sessions.groupId for backward compatibility
-    // agents.sessionGroupId takes priority, falling back to sessions.groupId for legacy data
+    // 1. Query all agents (non-virtual) with their session info (if exists)
     const agentList = await this.db
       .select({
         agentSessionGroupId: agents.sessionGroupId,
         avatar: agents.avatar,
+        backgroundColor: agents.backgroundColor,
         description: agents.description,
         id: agents.id,
         pinned: agents.pinned,
@@ -55,14 +57,16 @@ export class HomeRepository {
         updatedAt: agents.updatedAt,
       })
       .from(agents)
-      .innerJoin(agentsToSessions, eq(agents.id, agentsToSessions.agentId))
-      .innerJoin(sessions, eq(agentsToSessions.sessionId, sessions.id))
-      .where(and(eq(agents.userId, this.userId), eq(agents.virtual, false)))
+      .leftJoin(agentsToSessions, eq(agents.id, agentsToSessions.agentId))
+      .leftJoin(sessions, eq(agentsToSessions.sessionId, sessions.id))
+      .where(and(eq(agents.userId, this.userId), not(eq(agents.virtual, true))))
       .orderBy(desc(agents.updatedAt));
 
     // 2. Query all chatGroups (group chats)
     const chatGroupList = await this.db
       .select({
+        avatar: chatGroups.avatar,
+        backgroundColor: chatGroups.backgroundColor,
         description: chatGroups.description,
         groupId: chatGroups.groupId,
         id: chatGroups.id,
@@ -75,32 +79,7 @@ export class HomeRepository {
       .orderBy(desc(chatGroups.updatedAt));
 
     // 2.1 Query member avatars for each chat group
-    const chatGroupIds = chatGroupList.map((g) => g.id);
-    const memberAvatarsMap = new Map<string, Array<{ avatar: string; background?: string }>>();
-
-    if (chatGroupIds.length > 0) {
-      const memberAvatars = await this.db
-        .select({
-          avatar: agents.avatar,
-          backgroundColor: agents.backgroundColor,
-          chatGroupId: chatGroupsAgents.chatGroupId,
-        })
-        .from(chatGroupsAgents)
-        .innerJoin(agents, eq(chatGroupsAgents.agentId, agents.id))
-        .where(inArray(chatGroupsAgents.chatGroupId, chatGroupIds))
-        .orderBy(chatGroupsAgents.order);
-
-      for (const member of memberAvatars) {
-        const existing = memberAvatarsMap.get(member.chatGroupId) || [];
-        if (member.avatar) {
-          existing.push({
-            avatar: member.avatar,
-            background: member.backgroundColor ?? undefined,
-          });
-        }
-        memberAvatarsMap.set(member.chatGroupId, existing);
-      }
-    }
+    const memberAvatarsMap = await this.getChatGroupMemberAvatars(chatGroupList.map((g) => g.id));
 
     // 3. Query all sessionGroups (user-defined folders)
     const groupList = await this.db
@@ -121,16 +100,19 @@ export class HomeRepository {
     agentItems: Array<{
       agentSessionGroupId: string | null;
       avatar: string | null;
+      backgroundColor: string | null;
       description: string | null;
       id: string;
       pinned: boolean | null;
       sessionGroupId: string | null;
-      sessionId: string;
+      sessionId: string | null;
       sessionPinned: boolean | null;
       title: string | null;
       updatedAt: Date;
     }>,
     chatGroupItems: Array<{
+      avatar: string | null;
+      backgroundColor: string | null;
       description: string | null;
       groupId: string | null;
       id: string;
@@ -151,6 +133,7 @@ export class HomeRepository {
     const allItems: Array<SidebarAgentItem & { groupId: string | null }> = [
       ...agentItems.map((a) => ({
         avatar: a.avatar,
+        backgroundColor: a.backgroundColor,
         description: a.description,
         groupId: a.agentSessionGroupId ?? a.sessionGroupId,
         id: a.id,
@@ -161,8 +144,11 @@ export class HomeRepository {
         updatedAt: a.updatedAt,
       })),
       ...chatGroupItems.map((g) => ({
-        avatar: memberAvatarsMap.get(g.id) ?? null,
+        // If group has custom avatar, use it (string); otherwise fallback to member avatars (array)
+        avatar: g.avatar ? g.avatar : (memberAvatarsMap.get(g.id) ?? null),
+        backgroundColor: g.backgroundColor,
         description: g.description,
+        groupAvatar: g.avatar,
         groupId: g.groupId,
         id: g.id,
         pinned: g.pinned ?? false,
@@ -214,85 +200,66 @@ export class HomeRepository {
   async searchAgents(keyword: string): Promise<SidebarAgentItem[]> {
     if (!keyword.trim()) return [];
 
-    const searchPattern = `%${keyword.toLowerCase()}%`;
+    const bm25Query = sanitizeBm25Query(keyword);
 
-    // 1. Search agents by title or description
-    // Note: We query both agents.pinned and sessions.pinned for backward compatibility
-    const agentResults = await this.db
-      .select({
-        avatar: agents.avatar,
-        description: agents.description,
-        id: agents.id,
-        pinned: agents.pinned,
-        sessionId: sessions.id,
-        sessionPinned: sessions.pinned,
-        title: agents.title,
-        updatedAt: agents.updatedAt,
-      })
-      .from(agents)
-      .innerJoin(agentsToSessions, eq(agents.id, agentsToSessions.agentId))
-      .innerJoin(sessions, eq(agentsToSessions.sessionId, sessions.id))
-      .where(
-        and(
-          eq(agents.userId, this.userId),
-          eq(agents.virtual, false),
-          or(ilike(agents.title, searchPattern), ilike(agents.description, searchPattern)),
-        ),
-      )
-      .orderBy(desc(agents.updatedAt));
-
-    // 2. Search chat groups by title or description
-    const chatGroupResults = await this.db
-      .select({
-        description: chatGroups.description,
-        id: chatGroups.id,
-        pinned: chatGroups.pinned,
-        title: chatGroups.title,
-        updatedAt: chatGroups.updatedAt,
-      })
-      .from(chatGroups)
-      .where(
-        and(
-          eq(chatGroups.userId, this.userId),
-          or(ilike(chatGroups.title, searchPattern), ilike(chatGroups.description, searchPattern)),
-        ),
-      )
-      .orderBy(desc(chatGroups.updatedAt));
-
-    // 2.1 Query member avatars for matching chat groups
-    const chatGroupIds = chatGroupResults.map((g) => g.id);
-    const memberAvatarsMap = new Map<string, Array<{ avatar: string; background?: string }>>();
-
-    if (chatGroupIds.length > 0) {
-      const memberAvatars = await this.db
+    // Run agent and chat group searches in parallel
+    const [agentResults, chatGroupResults] = await Promise.all([
+      // 1. Search agents by title or description (BM25)
+      this.db
         .select({
           avatar: agents.avatar,
           backgroundColor: agents.backgroundColor,
-          chatGroupId: chatGroupsAgents.chatGroupId,
+          description: agents.description,
+          id: agents.id,
+          pinned: agents.pinned,
+          sessionId: sessions.id,
+          sessionPinned: sessions.pinned,
+          title: agents.title,
+          updatedAt: agents.updatedAt,
         })
-        .from(chatGroupsAgents)
-        .innerJoin(agents, eq(chatGroupsAgents.agentId, agents.id))
-        .where(inArray(chatGroupsAgents.chatGroupId, chatGroupIds))
-        .orderBy(chatGroupsAgents.order);
+        .from(agents)
+        .leftJoin(agentsToSessions, eq(agents.id, agentsToSessions.agentId))
+        .leftJoin(sessions, eq(agentsToSessions.sessionId, sessions.id))
+        .where(
+          and(
+            eq(agents.userId, this.userId),
+            not(eq(agents.virtual, true)),
+            sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query})`,
+          ),
+        )
+        .orderBy(desc(agents.updatedAt)),
+      // 2. Search chat groups by title or description (BM25)
+      this.db
+        .select({
+          avatar: chatGroups.avatar,
+          backgroundColor: chatGroups.backgroundColor,
+          description: chatGroups.description,
+          id: chatGroups.id,
+          pinned: chatGroups.pinned,
+          title: chatGroups.title,
+          updatedAt: chatGroups.updatedAt,
+        })
+        .from(chatGroups)
+        .where(
+          and(
+            eq(chatGroups.userId, this.userId),
+            sql`(${chatGroups.title} @@@ ${bm25Query} OR ${chatGroups.description} @@@ ${bm25Query})`,
+          ),
+        )
+        .orderBy(desc(chatGroups.updatedAt)),
+    ]);
 
-      for (const member of memberAvatars) {
-        const existing = memberAvatarsMap.get(member.chatGroupId) || [];
-        if (member.avatar) {
-          existing.push({
-            avatar: member.avatar,
-            background: member.backgroundColor ?? undefined,
-          });
-        }
-        memberAvatarsMap.set(member.chatGroupId, existing);
-      }
-    }
+    // 2.1 Query member avatars for matching chat groups
+    const memberAvatarsMap = await this.getChatGroupMemberAvatars(
+      chatGroupResults.map((g) => g.id),
+    );
 
     // 3. Combine and format results
-    // For pinned status: agents.pinned takes priority, fallback to sessions.pinned for backward compatibility
     const results: SidebarAgentItem[] = [
       ...agentResults.map((a) =>
         cleanObject({
           avatar: a.avatar,
+          backgroundColor: a.backgroundColor,
           description: a.description,
           id: a.id,
           pinned: a.pinned ?? a.sessionPinned ?? false,
@@ -304,7 +271,8 @@ export class HomeRepository {
       ),
       ...chatGroupResults.map((g) =>
         cleanObject({
-          avatar: memberAvatarsMap.get(g.id),
+          avatar: g.avatar ? g.avatar : (memberAvatarsMap.get(g.id) ?? null),
+          backgroundColor: g.backgroundColor,
           description: g.description,
           id: g.id,
           pinned: g.pinned ?? false,
@@ -319,5 +287,40 @@ export class HomeRepository {
     results.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
     return results;
+  }
+
+  /**
+   * Query member avatars for chat groups
+   */
+  private async getChatGroupMemberAvatars(
+    chatGroupIds: string[],
+  ): Promise<Map<string, Array<{ avatar: string; background?: string }>>> {
+    const memberAvatarsMap = new Map<string, Array<{ avatar: string; background?: string }>>();
+
+    if (chatGroupIds.length === 0) return memberAvatarsMap;
+
+    const memberAvatars = await this.db
+      .select({
+        avatar: agents.avatar,
+        backgroundColor: agents.backgroundColor,
+        chatGroupId: chatGroupsAgents.chatGroupId,
+      })
+      .from(chatGroupsAgents)
+      .innerJoin(agents, eq(chatGroupsAgents.agentId, agents.id))
+      .where(inArray(chatGroupsAgents.chatGroupId, chatGroupIds))
+      .orderBy(chatGroupsAgents.order);
+
+    for (const member of memberAvatars) {
+      const existing = memberAvatarsMap.get(member.chatGroupId) || [];
+      if (member.avatar) {
+        existing.push({
+          avatar: member.avatar,
+          background: member.backgroundColor ?? undefined,
+        });
+      }
+      memberAvatarsMap.set(member.chatGroupId, existing);
+    }
+
+    return memberAvatarsMap;
   }
 }

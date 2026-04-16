@@ -8,6 +8,8 @@ import { type RuntimeImageGenParams } from 'model-bank';
 import { z } from 'zod';
 
 import { chargeAfterGenerate } from '@/business/server/image-generation/chargeAfterGenerate';
+// TODO: temporarily disabled until notification UI is polished
+// import { notifyImageCompleted } from '@/business/server/image-generation/notifyImageCompleted';
 import { createImageBusinessMiddleware } from '@/business/server/trpc-middlewares/async';
 import { AsyncTaskModel } from '@/database/models/asyncTask';
 import { FileModel } from '@/database/models/file';
@@ -16,11 +18,10 @@ import { GenerationBatchModel } from '@/database/models/generationBatch';
 import { asyncAuthedProcedure, asyncRouter as router } from '@/libs/trpc/async';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { GenerationService } from '@/server/services/generation';
+import { sanitizeFileName } from '@/utils/sanitizeFileName';
 
 const log = debug('lobe-image:async');
 
-// Constants for better maintainability
-const FILENAME_MAX_LENGTH = 50;
 const IMAGE_URL_PREVIEW_LENGTH = 100;
 
 const imageProcedure = asyncAuthedProcedure.use(async (opts) => {
@@ -147,12 +148,28 @@ const categorizeError = (
     };
   }
 
-  // FIXME: 401 的问题应该放到 agentRuntime 中处理会更好
+  // FIXME: 401 errors should be handled in agentRuntime for better practice
   if (error.errorType === AgentRuntimeErrorType.InvalidProviderAPIKey || error?.status === 401) {
     return {
       errorMessage:
         error.error?.message || error.message || AgentRuntimeErrorType.InvalidProviderAPIKey,
       errorType: AsyncTaskErrorType.InvalidProviderAPIKey,
+    };
+  }
+
+  // Content moderation / policy violation — return a clean, generic message
+  const errorMsg: string = error.message || error.error?.message || '';
+  const errorCode: string = error.code || error.error?.code || '';
+  if (
+    errorCode === 'InputTextSensitiveContentDetected' ||
+    errorCode === 'content_policy_violation' ||
+    errorMsg.toLowerCase().includes('content policy') ||
+    errorMsg.toLowerCase().includes('sensitive information')
+  ) {
+    return {
+      errorMessage:
+        'The request content may violate content policy. Please modify your prompt and try again.',
+      errorType: AsyncTaskErrorType.ServerError,
     };
   }
 
@@ -185,7 +202,7 @@ const categorizeError = (
   }
 
   return {
-    errorMessage: error.message || AsyncTaskErrorType.ServerError,
+    errorMessage: error.message || error.error?.message || AsyncTaskErrorType.ServerError,
     errorType: AsyncTaskErrorType.ServerError,
   };
 };
@@ -266,20 +283,6 @@ export const imageRouter = router({
 
           const { modelUsage } = response;
 
-          if (ENABLE_BUSINESS_FEATURES) {
-            await chargeAfterGenerate({
-              metadata: {
-                asyncTaskId: taskId,
-                generationBatchId: generationBatchId,
-                modelId: model,
-                topicId: generationTopicId,
-              },
-              modelUsage,
-              provider,
-              userId: ctx.userId,
-            });
-          }
-
           // Check if operation has been cancelled
           checkAbortSignal(signal);
 
@@ -343,17 +346,44 @@ export const imageRouter = router({
                 path: uploadedImageUrl,
                 width: image.width,
               },
-              name: `${params.prompt.slice(0, FILENAME_MAX_LENGTH)}.${image.extension}`,
-              // Use first 50 characters of prompt as filename
+              name: `${sanitizeFileName(params.prompt, generationId)}.${image.extension}`,
               size: image.size,
               url: uploadedImageUrl,
             },
           );
 
-          log('Updating task status to Success: %s', taskId);
+          const duration = Date.now() - generationBatch.createdAt.getTime();
+
+          log('Updating task status to Success: %s, duration: %dms', taskId, duration);
           await ctx.asyncTaskModel.update(taskId, {
+            duration,
             status: AsyncTaskStatus.Success,
           });
+
+          // TODO: temporarily disabled until notification UI is polished
+          // notifyImageCompleted({
+          //   duration,
+          //   generationBatchId,
+          //   model,
+          //   prompt: params.prompt,
+          //   topicId: generationTopicId,
+          //   userId: ctx.userId,
+          // }).catch((err) => console.error('[image-async] notification failed:', err));
+
+          if (ENABLE_BUSINESS_FEATURES) {
+            await chargeAfterGenerate({
+              metrics: { latency: duration },
+              metadata: {
+                asyncTaskId: taskId,
+                generationBatchId,
+                modelId: model,
+                topicId: generationTopicId,
+              },
+              modelUsage,
+              provider,
+              userId: ctx.userId,
+            });
+          }
 
           log('Async image generation completed successfully: %s', taskId);
           return { success: true };
@@ -378,7 +408,6 @@ export const imageRouter = router({
         // Clean up timeout timer
         if (timeoutId) {
           clearTimeout(timeoutId);
-          timeoutId = null;
         }
 
         log('Async image generation failed: %O', {

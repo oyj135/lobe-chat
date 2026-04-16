@@ -1,5 +1,5 @@
 import { filesPrompts } from '@lobechat/prompts';
-import { MessageContentPart } from '@lobechat/types';
+import type { MessageContentPart } from '@lobechat/types';
 import { imageUrlToBase64 } from '@lobechat/utils/imageToBase64';
 import { parseDataUri } from '@lobechat/utils/uriParser';
 import { isDesktopLocalStaticServerUrl } from '@lobechat/utils/url';
@@ -7,6 +7,14 @@ import debug from 'debug';
 
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { PipelineContext, ProcessorOptions } from '../types';
+
+declare module '../types' {
+  interface PipelineContextMetadataOverrides {
+    assistantMessagesProcessed?: number;
+    messageContentProcessed?: number;
+    userMessagesProcessed?: number;
+  }
+}
 
 const log = debug('context-engine:processor:MessageContentProcessor');
 
@@ -145,8 +153,19 @@ export class MessageContentProcessor extends BaseProcessor {
 
     const contentParts: UserMessageContentPart[] = [];
 
-    // Add text content
-    let textContent = message.content || '';
+    // Normalize to a text string. Historical messages may already be in
+    // multimodal parts form (`content` is an array) — naive string
+    // concatenation coerces the array via `toString()` and produces
+    // `[object Object]` garbage. Extract text parts instead.
+    let textContent = '';
+    if (typeof message.content === 'string') {
+      textContent = message.content;
+    } else if (Array.isArray(message.content)) {
+      textContent = message.content
+        .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+        .map((part: any) => part.text)
+        .join('\n\n');
+    }
 
     // Add file context (if file context is enabled and has files, images or videos)
     if ((hasFiles || hasImages || hasVideos) && this.config.fileContext?.enabled) {

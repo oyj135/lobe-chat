@@ -1,59 +1,60 @@
-import type { AgentState } from '@lobechat/agent-runtime';
+import type { ToolExecuteData } from '@lobechat/agent-gateway-client';
+import { type AgentState } from '@lobechat/agent-runtime';
 
-import type { AgentOperationMetadata, StepResult } from './AgentStateManager';
-import type { StreamChunkData, StreamEvent } from './StreamEventManager';
+import { type AgentOperationMetadata, type StepResult } from './AgentStateManager';
+import { type StreamChunkData, type StreamEvent } from './StreamEventManager';
 
 /**
  * Agent State Manager Interface
- * 用于状态持久化的抽象接口，支持 Redis 和内存实现
+ * Abstract interface for state persistence, supports Redis and in-memory implementations
  */
 export interface IAgentStateManager {
   /**
-   * 清理过期的操作数据
+   * Clean up expired operation data
    */
-  cleanupExpiredOperations(): Promise<number>;
+  cleanupExpiredOperations: () => Promise<number>;
 
   /**
-   * 创建新的操作元数据
+   * Create new operation metadata
    */
-  createOperationMetadata(
+  createOperationMetadata: (
     operationId: string,
     data: {
       agentConfig?: any;
       modelRuntimeConfig?: any;
       userId?: string;
     },
-  ): Promise<void>;
+  ) => Promise<void>;
 
   /**
-   * 删除 Agent 操作的所有数据
+   * Delete all data for Agent operation
    */
-  deleteAgentOperation(operationId: string): Promise<void>;
+  deleteAgentOperation: (operationId: string) => Promise<void>;
 
   /**
-   * 关闭连接
+   * Close connections
    */
-  disconnect(): Promise<void>;
+  disconnect: () => Promise<void>;
 
   /**
-   * 获取所有活跃操作
+   * Get all active operations
    */
-  getActiveOperations(): Promise<string[]>;
+  getActiveOperations: () => Promise<string[]>;
 
   /**
-   * 获取执行历史
+   * Get execution history
    */
-  getExecutionHistory(operationId: string, limit?: number): Promise<any[]>;
+  getExecutionHistory: (operationId: string, limit?: number) => Promise<any[]>;
 
   /**
-   * 获取操作元数据
+   * Get operation metadata
    */
-  getOperationMetadata(operationId: string): Promise<AgentOperationMetadata | null>;
+  getOperationMetadata: (operationId: string) => Promise<AgentOperationMetadata | null>;
 
   /**
-   * 获取统计信息
+   * Get statistics
    */
-  getStats(): Promise<{
+  getStats: () => Promise<{
     activeOperations: number;
     completedOperations: number;
     errorOperations: number;
@@ -61,76 +62,105 @@ export interface IAgentStateManager {
   }>;
 
   /**
-   * 加载 Agent 状态
+   * Load Agent state
    */
-  loadAgentState(operationId: string): Promise<AgentState | null>;
+  loadAgentState: (operationId: string) => Promise<AgentState | null>;
 
   /**
-   * 保存 Agent 状态
+   * Release the step execution lock.
    */
-  saveAgentState(operationId: string, state: AgentState): Promise<void>;
+  releaseStepLock: (operationId: string, stepIndex: number) => Promise<void>;
 
   /**
-   * 保存步骤执行结果
+   * Save Agent state
    */
-  saveStepResult(operationId: string, stepResult: StepResult): Promise<void>;
+  saveAgentState: (operationId: string, state: AgentState) => Promise<void>;
+
+  /**
+   * Save step execution result
+   */
+  saveStepResult: (operationId: string, stepResult: StepResult) => Promise<void>;
+
+  /**
+   * Atomically try to claim a step for execution (distributed lock).
+   * Returns true if the lock was acquired, false if another execution already holds it.
+   */
+  tryClaimStep: (operationId: string, stepIndex: number, ttlSeconds?: number) => Promise<boolean>;
 }
 
 /**
  * Stream Event Manager Interface
- * 用于流式事件发布的抽象接口，支持 Redis 和内存实现
+ * Abstract interface for stream event publishing, supports Redis and in-memory implementations
  */
 export interface IStreamEventManager {
   /**
-   * 清理操作的流式数据
+   * Clean up stream data for operation
    */
-  cleanupOperation(operationId: string): Promise<void>;
+  cleanupOperation: (operationId: string) => Promise<void>;
 
   /**
-   * 关闭连接
+   * Close connections
    */
-  disconnect(): Promise<void>;
+  disconnect: () => Promise<void>;
 
   /**
-   * 获取活跃操作数量
+   * Get count of active operations
    */
-  getActiveOperationsCount(): Promise<number>;
+  getActiveOperationsCount: () => Promise<number>;
 
   /**
-   * 获取流式事件历史
+   * Get stream event history
    */
-  getStreamHistory(operationId: string, count?: number): Promise<StreamEvent[]>;
+  getStreamHistory: (operationId: string, count?: number) => Promise<StreamEvent[]>;
 
   /**
-   * 发布 Agent 运行时结束事件
+   * Publish Agent runtime end event
    */
-  publishAgentRuntimeEnd(
+  publishAgentRuntimeEnd: (
     operationId: string,
     stepIndex: number,
     finalState: any,
     reason?: string,
     reasonDetail?: string,
-  ): Promise<string>;
+  ) => Promise<string>;
 
   /**
-   * 发布 Agent 运行时初始化事件
+   * Publish Agent runtime initialization event
    */
-  publishAgentRuntimeInit(operationId: string, initialState: any): Promise<string>;
+  publishAgentRuntimeInit: (operationId: string, initialState: any) => Promise<string>;
 
   /**
-   * 发布流式内容块
+   * Publish stream content chunk
    */
-  publishStreamChunk(
+  publishStreamChunk: (
     operationId: string,
     stepIndex: number,
     chunkData: StreamChunkData,
-  ): Promise<string>;
+  ) => Promise<string>;
 
   /**
-   * 发布流式事件
+   * Publish stream event
    */
-  publishStreamEvent(
+  publishStreamEvent: (
     operationId: string,
     event: Omit<StreamEvent, 'operationId' | 'timestamp'>,
-  ): Promise<string>;
+  ) => Promise<string>;
+
+  /**
+   * Optional: dispatch a tool execution request to the client via Agent Gateway.
+   * Rejects if the gateway is unavailable — callers decide their fallback path.
+   * Only present on implementations that speak to a live gateway (not on the
+   * in-memory / Redis-only managers).
+   */
+  sendToolExecute?: (operationId: string, data: ToolExecuteData) => Promise<void>;
+
+  /**
+   * Subscribe to stream events (for SSE endpoint)
+   */
+  subscribeStreamEvents: (
+    operationId: string,
+    lastEventId: string,
+    onEvents: (events: StreamEvent[]) => void,
+    signal?: AbortSignal,
+  ) => Promise<void>;
 }

@@ -1,11 +1,9 @@
-import { ModelProvider, openrouter as OpenRouterModels } from 'model-bank';
+import { ModelProvider } from 'model-bank';
 
-import {
-  OpenAICompatibleFactoryOptions,
-  createOpenAICompatibleRuntime,
-} from '../../core/openaiCompatibleFactory';
+import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatibleFactory';
+import { createOpenAICompatibleRuntime } from '../../core/openaiCompatibleFactory';
 import { processMultiProviderModelList } from '../../utils/modelParse';
-import { OpenRouterModelCard, OpenRouterReasoning } from './type';
+import type { OpenRouterModelCard, OpenRouterReasoning } from './type';
 
 const formatPrice = (price?: string) => {
   if (price === undefined || price === '-1') return undefined;
@@ -16,34 +14,69 @@ export const params = {
   baseURL: 'https://openrouter.ai/api/v1',
   chatCompletion: {
     handlePayload: (payload) => {
-      const { thinking, model, max_tokens } = payload;
+      const {
+        reasoning_effort,
+        thinking,
+        reasoning: _reasoning,
+        thinkingLevel,
+        imageAspectRatio,
+        imageResolution,
+        model,
+        ...rest
+      } = payload;
 
-      let reasoning: OpenRouterReasoning = {};
+      let reasoning: OpenRouterReasoning | undefined;
 
-      if (thinking?.type === 'enabled') {
-        const modelConfig = OpenRouterModels.find((m) => m.id === model);
-        const defaultMaxOutput = modelConfig?.maxOutput;
-
-        // 配置优先级：用户设置 > 模型配置 > 硬编码默认值
-        const getMaxTokens = () => {
-          if (max_tokens) return max_tokens;
-          if (defaultMaxOutput) return defaultMaxOutput;
-          return undefined;
-        };
-
-        const maxTokens = getMaxTokens() || 32_000; // Claude Opus 4 has minimum maxOutput
-
-        reasoning = {
-          max_tokens: thinking?.budget_tokens
-            ? Math.min(thinking.budget_tokens, maxTokens - 1)
-            : 1024,
-        };
+      if (
+        thinking?.type ||
+        thinking?.budget_tokens !== undefined ||
+        reasoning_effort ||
+        thinkingLevel
+      ) {
+        if (thinking?.type === 'disabled') {
+          reasoning = { enabled: false };
+        } else if (thinking?.budget_tokens !== undefined) {
+          reasoning = {
+            max_tokens: thinking?.budget_tokens,
+          };
+        } else if (reasoning_effort) {
+          reasoning = { effort: reasoning_effort };
+        } else if (thinkingLevel) {
+          reasoning = { effort: thinkingLevel };
+        }
       }
 
+      // Add modalities and image_config for image generation models
+      const isImageModel = model.includes('-image') || model.includes('flux');
+      const modalities =
+        (payload as any).modalities ?? (isImageModel ? ['image', 'text'] : undefined);
+
+      // Map imageResolution to image_size: '512px' → '0.5K', others pass through
+      const imageSizeValue = imageResolution
+        ? imageResolution === '512px'
+          ? '0.5K'
+          : imageResolution
+        : undefined;
+
+      // 'auto' means use model default — omit the parameter
+      const aspectRatioValue =
+        imageAspectRatio && imageAspectRatio !== 'auto' ? imageAspectRatio : undefined;
+
+      const image_config =
+        (payload as any).image_config ??
+        (isImageModel && (aspectRatioValue || imageSizeValue)
+          ? {
+              ...(aspectRatioValue && { aspect_ratio: aspectRatioValue }),
+              ...(imageSizeValue && { image_size: imageSizeValue }),
+            }
+          : undefined);
+
       return {
-        ...payload,
+        ...rest,
+        ...(image_config && { image_config }),
+        ...(modalities && { modalities }),
         model: payload.enabledSearch ? `${payload.model}:online` : payload.model,
-        reasoning,
+        ...(reasoning && { reasoning }),
         stream: payload.stream ?? true,
       } as any;
     },
@@ -71,13 +104,13 @@ export const params = {
       return [];
     }
 
-    // 处理前端获取的模型信息，转换为标准格式
+    // Process the model info fetched from the frontend and convert to standard format
     const formattedModels = modelList.map((model) => {
       const { top_provider, architecture, pricing, supported_parameters } = model;
 
       const inputModalities = architecture.input_modalities || [];
 
-      // 处理 name，默认去除冒号及其前面的内容
+      // Process the name, by default strip the colon and everything before it
       let displayName = model.name;
       const colonIndex = displayName.indexOf(':');
       if (colonIndex !== -1) {
@@ -104,6 +137,8 @@ export const params = {
         displayName += ' (free)';
       }
 
+      const hasReasoning = supported_parameters.includes('reasoning');
+
       return {
         contextWindowTokens: top_provider.context_length || model.context_length,
         description: model.description,
@@ -113,16 +148,50 @@ export const params = {
         maxOutput:
           typeof top_provider.max_completion_tokens === 'number'
             ? top_provider.max_completion_tokens
-            : undefined,
+            : typeof model.context_length === 'number'
+              ? model.context_length
+              : undefined,
         pricing: {
           cachedInput: cachedInputPrice,
           input: inputPrice,
           output: outputPrice,
           writeCacheInput: writeCacheInputPrice,
         },
-        reasoning: supported_parameters.includes('reasoning'),
+        reasoning: hasReasoning,
         releasedAt: new Date(model.created * 1000).toISOString().split('T')[0],
         vision: inputModalities.includes('image'),
+        // Merge all applicable extendParams for settings
+        ...(() => {
+          const extendParams: string[] = [];
+          if (model.description && model.description.includes('`reasoning` `enabled`')) {
+            extendParams.push('enableReasoning');
+          }
+          if (hasReasoning && (model.id.includes('gpt-5.2') || model.id.includes('gpt-5.4'))) {
+            extendParams.push('gpt5_2ReasoningEffort', 'textVerbosity');
+          } else if (hasReasoning && model.id.includes('gpt-5.1')) {
+            extendParams.push('gpt5_1ReasoningEffort', 'textVerbosity');
+          } else if (hasReasoning && model.id.includes('gpt-5')) {
+            extendParams.push('gpt5ReasoningEffort', 'textVerbosity');
+          } else if (hasReasoning && model.id.includes('openai')) {
+            extendParams.push('reasoningEffort', 'textVerbosity');
+          }
+          if (hasReasoning && model.id.includes('claude')) {
+            extendParams.push('enableReasoning', 'reasoningBudgetToken');
+          }
+          if (model.id.includes('claude') && writeCacheInputPrice && writeCacheInputPrice !== 0) {
+            extendParams.push('disableContextCaching');
+          }
+          if (hasReasoning && model.id.includes('gemini-2.5')) {
+            extendParams.push('reasoningBudgetToken');
+          }
+          if (hasReasoning && model.id.includes('gemini-3-pro')) {
+            extendParams.push('thinkingLevel2');
+          }
+          if (hasReasoning && model.id.includes('gemini-3-flash')) {
+            extendParams.push('thinkingLevel');
+          }
+          return extendParams.length > 0 ? { settings: { extendParams } } : {};
+        })(),
       };
     });
 

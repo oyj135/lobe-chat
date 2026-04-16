@@ -1,7 +1,7 @@
 'use client';
 
 import { DEFAULT_AVATAR } from '@lobechat/const';
-import type { AgentItem, BuiltinInspectorProps } from '@lobechat/types';
+import type { AgentGroupMember, BuiltinInspectorProps } from '@lobechat/types';
 import { Avatar, Flexbox } from '@lobehub/ui';
 import { createStaticStyles, cx, useTheme } from 'antd-style';
 import { memo, useMemo } from 'react';
@@ -45,7 +45,7 @@ export const BroadcastInspector = memo<BuiltinInspectorProps<BroadcastParams>>(
       if (!agentIds.length || !groupAgents.length) return [];
       return agentIds
         .map((id) => groupAgents.find((agent) => agent.id === id))
-        .filter((agent): agent is AgentItem => !!agent);
+        .filter((agent): agent is AgentGroupMember => !!agent);
     }, [agentIds, groupAgents]);
 
     // Transform agents to Avatar.Group format
@@ -70,10 +70,10 @@ export const BroadcastInspector = memo<BuiltinInspectorProps<BroadcastParams>>(
 
     return (
       <Flexbox
+        horizontal
         align={'center'}
         className={cx(styles.root, isArgumentsStreaming && shinyTextStyles.shinyText)}
         gap={8}
-        horizontal
       >
         <span className={styles.title}>
           {t('builtins.lobe-group-management.inspector.broadcast.title')}

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { App as AppCore } from '../../App';
-import Browser, { BrowserWindowOpts } from '../Browser';
+import { type App as AppCore } from '../../App';
+import Browser, { type BrowserWindowOpts } from '../Browser';
 
 // Use vi.hoisted to define mocks before hoisting
 const { mockBrowserWindow, mockNativeTheme, mockIpcMain, mockScreen, MockBrowserWindow } =
@@ -36,9 +36,12 @@ const { mockBrowserWindow, mockNativeTheme, mockIpcMain, mockScreen, MockBrowser
         send: vi.fn(),
         session: {
           webRequest: {
+            onBeforeSendHeaders: vi.fn(),
             onHeadersReceived: vi.fn(),
           },
         },
+        on: vi.fn(),
+        setWindowOpenHandler: vi.fn(),
       },
     };
 
@@ -56,7 +59,13 @@ const { mockBrowserWindow, mockNativeTheme, mockIpcMain, mockScreen, MockBrowser
         themeSource: 'system',
       },
       mockScreen: {
+        getDisplayMatching: vi.fn().mockReturnValue({
+          workArea: { height: 1080, width: 1920, x: 0, y: 0 },
+        }),
         getDisplayNearestPoint: vi.fn().mockReturnValue({
+          workArea: { height: 1080, width: 1920, x: 0, y: 0 },
+        }),
+        getPrimaryDisplay: vi.fn().mockReturnValue({
           workArea: { height: 1080, width: 1920, x: 0, y: 0 },
         }),
       },
@@ -90,17 +99,18 @@ vi.mock('@/const/dir', () => ({
 
 vi.mock('@/const/env', () => ({
   isDev: false,
+  isLinux: false,
   isMac: false,
+  isMacTahoe: false,
   isWindows: true,
 }));
 
-vi.mock('@/const/theme', () => ({
+vi.mock('../../../const/theme', () => ({
   BACKGROUND_DARK: '#1a1a1a',
   BACKGROUND_LIGHT: '#ffffff',
   SYMBOL_COLOR_DARK: '#ffffff',
   SYMBOL_COLOR_LIGHT: '#000000',
   THEME_CHANGE_DELAY: 0,
-  TITLE_BAR_HEIGHT: 32,
 }));
 
 describe('Browser', () => {
@@ -127,6 +137,7 @@ describe('Browser', () => {
     vi.useFakeTimers();
 
     // Reset mock behaviors
+    mockBrowserWindow.getBounds.mockReturnValue({ height: 600, width: 800, x: 0, y: 0 });
     mockBrowserWindow.isDestroyed.mockReturnValue(false);
     mockBrowserWindow.isVisible.mockReturnValue(true);
     mockBrowserWindow.isFocused.mockReturnValue(true);
@@ -230,12 +241,53 @@ describe('Browser', () => {
       });
 
       // Create new browser to trigger initialization with saved state
-      const newBrowser = new Browser(defaultOptions, mockApp);
+      const _newBrowser = new Browser(defaultOptions, mockApp);
 
       expect(MockBrowserWindow).toHaveBeenCalledWith(
         expect.objectContaining({
           height: 700,
           width: 900,
+        }),
+      );
+    });
+
+    it('should restore window position from store and clamp within display', () => {
+      mockStoreManagerGet.mockImplementation((key: string) => {
+        if (key === 'windowSize_test-window') {
+          return { height: 700, width: 900, x: 1800, y: 900 };
+        }
+        return undefined;
+      });
+
+      new Browser(defaultOptions, mockApp);
+
+      expect(MockBrowserWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          height: 700,
+          width: 900,
+          x: 1020,
+          y: 380,
+        }),
+      );
+    });
+
+    it('should clamp saved size when it exceeds current display bounds', () => {
+      mockScreen.getDisplayMatching.mockReturnValueOnce({
+        workArea: { height: 800, width: 1200, x: 0, y: 0 },
+      });
+      mockStoreManagerGet.mockImplementation((key: string) => {
+        if (key === 'windowSize_test-window') {
+          return { height: 1200, width: 2000, x: 0, y: 0 };
+        }
+        return undefined;
+      });
+
+      new Browser(defaultOptions, mockApp);
+
+      expect(MockBrowserWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          height: 800,
+          width: 1200,
         }),
       );
     });
@@ -277,13 +329,13 @@ describe('Browser', () => {
         mockNativeTheme.shouldUseDarkColors = true;
 
         // Create browser with dark mode
-        const darkBrowser = new Browser(defaultOptions, mockApp);
+        const _darkBrowser = new Browser(defaultOptions, mockApp);
 
         expect(MockBrowserWindow).toHaveBeenCalledWith(
           expect.objectContaining({
             backgroundColor: '#1a1a1a',
             titleBarOverlay: expect.objectContaining({
-              color: '#1a1a1a',
+              color: '#00000000',
               symbolColor: '#ffffff',
             }),
           }),
@@ -297,7 +349,7 @@ describe('Browser', () => {
           expect.objectContaining({
             backgroundColor: '#ffffff',
             titleBarOverlay: expect.objectContaining({
-              color: '#ffffff',
+              color: '#00000000',
               symbolColor: '#000000',
             }),
           }),
@@ -541,6 +593,8 @@ describe('Browser', () => {
       expect(mockStoreManagerSet).toHaveBeenCalledWith('windowSize_test-window', {
         height: 600,
         width: 800,
+        x: 0,
+        y: 0,
       });
       expect(mockEvent.preventDefault).not.toHaveBeenCalled();
     });
@@ -550,12 +604,12 @@ describe('Browser', () => {
         ...defaultOptions,
         keepAlive: true,
       };
-      const keepAliveBrowser = new Browser(keepAliveOptions, mockApp);
+      const _keepAliveBrowser = new Browser(keepAliveOptions, mockApp);
 
       // Get the new close handler
-      const keepAliveCloseHandler = mockBrowserWindow.on.mock.calls
-        .filter((call) => call[0] === 'close')
-        .pop()?.[1];
+      const keepAliveCloseHandler = mockBrowserWindow.on.mock.calls.findLast(
+        (call) => call[0] === 'close',
+      )?.[1];
 
       const mockEvent = { preventDefault: vi.fn() };
       keepAliveCloseHandler(mockEvent);
@@ -572,6 +626,8 @@ describe('Browser', () => {
       expect(mockStoreManagerSet).toHaveBeenCalledWith('windowSize_test-window', {
         height: 600,
         width: 800,
+        x: 0,
+        y: 0,
       });
     });
   });
@@ -591,6 +647,37 @@ describe('Browser', () => {
       browser.reapplyVisualEffects();
 
       expect(mockBrowserWindow.setBackgroundColor).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('will-prevent-unload event handling', () => {
+    let willPreventUnloadHandler: (e: any) => void;
+
+    beforeEach(() => {
+      // Get the will-prevent-unload handler registered during initialization
+      willPreventUnloadHandler = mockBrowserWindow.webContents.on.mock.calls.find(
+        (call) => call[0] === 'will-prevent-unload',
+      )?.[1];
+    });
+
+    it('should call preventDefault when app is quitting', () => {
+      (mockApp as any).isQuiting = true;
+      const mockEvent = { preventDefault: vi.fn() };
+
+      expect(willPreventUnloadHandler).toBeDefined();
+      willPreventUnloadHandler(mockEvent);
+
+      expect(mockEvent.preventDefault).toHaveBeenCalled();
+    });
+
+    it('should not call preventDefault when app is not quitting', () => {
+      (mockApp as any).isQuiting = false;
+      const mockEvent = { preventDefault: vi.fn() };
+
+      expect(willPreventUnloadHandler).toBeDefined();
+      willPreventUnloadHandler(mockEvent);
+
+      expect(mockEvent.preventDefault).not.toHaveBeenCalled();
     });
   });
 });

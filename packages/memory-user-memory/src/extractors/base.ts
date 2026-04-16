@@ -1,17 +1,20 @@
 import { renderPlaceholderTemplate } from '@lobechat/context-engine';
-import type { ChatCompletionTool, GenerateObjectPayload } from '@lobechat/model-runtime';
-import { GenerateObjectSchema, ModelRuntime } from '@lobechat/model-runtime';
+import type {
+  ChatCompletionTool,
+  GenerateObjectPayload,
+  GenerateObjectSchema,
+  ModelRuntime,
+} from '@lobechat/model-runtime';
 import { SpanStatusCode } from '@lobechat/observability-otel/api';
 import {
   ATTR_GEN_AI_OPERATION_NAME,
   ATTR_GEN_AI_REQUEST_MODEL,
 } from '@lobechat/observability-otel/gen-ai';
 import { tracer } from '@lobechat/observability-otel/modules/memory-user-memory';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { z } from 'zod';
+import { RequestTrigger } from '@lobechat/types';
+import type { z } from 'zod';
 
-import {
+import type {
   ExtractorOptions,
   ExtractorTemplateProps,
   MemoryExtractionAgent,
@@ -36,8 +39,6 @@ export interface BaseMemoryExtractorConfig {
   agent: MemoryExtractionAgent;
   model: string;
   modelRuntime: ModelRuntime;
-
-  promptRoot?: string;
 }
 
 export abstract class BaseMemoryExtractor<
@@ -51,25 +52,24 @@ export abstract class BaseMemoryExtractor<
 
   protected promptTemplate: string | undefined;
 
-  private readonly promptRoot: string;
-
   constructor(config: BaseMemoryExtractorConfig) {
     this.model = config.model;
     this.agent = config.agent;
     this.runtime = config.modelRuntime;
-    this.promptRoot = config.promptRoot ?? join(import.meta.dirname, '../prompts');
   }
 
-  protected abstract getPromptFileName(): string;
+  protected abstract getPrompt(): string;
+  protected getPromptName(): string {
+    return this.agent;
+  }
   protected abstract getResultSchema(): z.ZodType<TOutput> | undefined;
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected getSchema(_options: TExtractorTemplateProps): GenerateObjectSchema | undefined {
     const schema = this.getResultSchema();
     if (!schema) return undefined;
 
     return buildGenerateObjectSchema(schema, {
-      name: this.getPromptFileName().replaceAll(/\W+/g, '_'),
+      name: this.getPromptName().replaceAll(/\W+/g, '_'),
     });
   }
 
@@ -81,7 +81,6 @@ export abstract class BaseMemoryExtractor<
     } satisfies TemplateProps;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected getTools(_options: TExtractorTemplateProps): ChatCompletionTool[] | undefined {
     return undefined;
   }
@@ -101,8 +100,7 @@ export abstract class BaseMemoryExtractor<
   async ensurePromptTemplate(): Promise<void> {
     if (this.promptTemplate) return;
 
-    const filePath = join(this.promptRoot, this.getPromptFileName());
-    this.promptTemplate = await readFile(filePath, 'utf8');
+    this.promptTemplate = this.getPrompt();
   }
 
   private buildSystemPrompt(options: TExtractorTemplateProps): string {
@@ -112,7 +110,7 @@ export abstract class BaseMemoryExtractor<
   protected abstract buildUserPrompt(options: TExtractorTemplateProps): string;
 
   async structuredCall(options?: TExtractorOptions): Promise<TOutput> {
-    return tracer.startActiveSpan(`structuredCall: ${this.getPromptFileName()}`, async (span) => {
+    return tracer.startActiveSpan(`structuredCall: ${this.getPromptName()}`, async (span) => {
       await this.ensurePromptTemplate();
 
       const messages = this.buildMessages(options as TExtractorOptions);
@@ -126,7 +124,7 @@ export abstract class BaseMemoryExtractor<
       span.setAttributes({
         memory_has_schema: Boolean(payload.schema),
         memory_message_count: payload.messages.length,
-        memory_prompt_file: this.getPromptFileName(),
+        memory_prompt_file: this.getPromptName(),
         memory_tool_count: payload.tools?.length ?? 0,
         model: this.model,
       });
@@ -158,7 +156,9 @@ export abstract class BaseMemoryExtractor<
               }
 
               span.addEvent('gen_ai.request.send');
-              const result = await this.runtime.generateObject(payload);
+              const result = await this.runtime.generateObject(payload, {
+                metadata: { trigger: RequestTrigger.Memory },
+              });
               span.addEvent('gen_ai.response.receive');
 
               span.setAttributes({

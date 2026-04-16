@@ -1,5 +1,5 @@
-import { Button, Form, type FormItemProps, Segmented } from '@lobehub/ui';
-import { Flexbox } from '@lobehub/ui';
+import { type FormItemProps } from '@lobehub/ui';
+import { Button, Flexbox, Form, Segmented } from '@lobehub/ui';
 import { Switch } from 'antd';
 import { CopyIcon } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -12,9 +12,11 @@ import { ImageType, imageTypeOptions, useScreenshot } from '@/hooks/useScreensho
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
+import { useShareData } from '../ShareDataProvider';
 import { styles } from '../style';
 import Preview from './Preview';
-import { type FieldType, WidthMode } from './type';
+import { type FieldType } from './type';
+import { WidthMode } from './type';
 
 const DEFAULT_FIELD_VALUE: FieldType = {
   imageType: ImageType.JPG,
@@ -29,6 +31,7 @@ const ShareImage = memo<{ mobile?: boolean }>(() => {
   const currentAgentTitle = useAgentStore(agentSelectors.currentAgentTitle);
   const [fieldValue, setFieldValue] = useState<FieldType>(DEFAULT_FIELD_VALUE);
   const { t } = useTranslation(['chat', 'common']);
+  const { context, dbMessages } = useShareData();
   const { loading, onDownload, title } = useScreenshot({
     imageType: fieldValue.imageType,
     title: currentAgentTitle ?? undefined,
@@ -56,14 +59,6 @@ const ShareImage = memo<{ mobile?: boolean }>(() => {
       name: 'withSystemRole',
       valuePropName: 'checked',
     },
-    // {
-    //   children: <Switch />,
-    //   label: t('shareModal.withBackground'),
-    //   layout: 'horizontal',
-    //   minWidth: undefined,
-    //   name: 'withBackground',
-    //   valuePropName: 'checked',
-    // },
     {
       children: <Switch />,
       label: t('shareModal.withFooter'),
@@ -89,13 +84,13 @@ const ShareImage = memo<{ mobile?: boolean }>(() => {
         block
         icon={CopyIcon}
         loading={copyLoading}
-        onClick={() => onCopy()}
         size={isMobile ? undefined : 'large'}
         type={'primary'}
+        onClick={() => onCopy()}
       >
         {t('copy', { ns: 'common' })}
       </Button>
-      <Button block loading={loading} onClick={onDownload} size={isMobile ? undefined : 'large'}>
+      <Button block loading={loading} size={isMobile ? undefined : 'large'} onClick={onDownload}>
         {t('shareModal.download')}
       </Button>
     </>
@@ -104,7 +99,7 @@ const ShareImage = memo<{ mobile?: boolean }>(() => {
   return (
     <>
       <Flexbox className={styles.body} gap={16} horizontal={!isMobile}>
-        <Preview title={title} {...fieldValue} />
+        <Preview context={context} messages={dbMessages} title={title} {...fieldValue} />
         <Flexbox className={styles.sidebar} gap={12}>
           <Form
             initialValues={DEFAULT_FIELD_VALUE}
@@ -117,7 +112,7 @@ const ShareImage = memo<{ mobile?: boolean }>(() => {
         </Flexbox>
       </Flexbox>
       {isMobile && (
-        <Flexbox className={styles.footer} gap={8} horizontal>
+        <Flexbox horizontal className={styles.footer} gap={8}>
           {button}
         </Flexbox>
       )}

@@ -1,19 +1,38 @@
 'use client';
 
+import { ThemeProvider } from '@lobehub/ui';
+import { type ComponentType, type ReactElement } from 'react';
+import { lazy, memo, Suspense, useCallback, useLayoutEffect } from 'react';
+import type { RouteObject } from 'react-router-dom';
 import {
-  type ComponentType,
-  type ReactElement,
-  Suspense,
-  createElement,
-  lazy,
-  memo,
-  useCallback,
-  useEffect,
-} from 'react';
-import { Navigate, Route, useNavigate, useRouteError } from 'react-router-dom';
+  createBrowserRouter,
+  Navigate,
+  Outlet,
+  useNavigate,
+  useRouteError,
+} from 'react-router-dom';
 
+import BusinessGlobalProvider from '@/business/client/BusinessGlobalProvider';
+import ErrorCapture from '@/components/Error';
 import Loading from '@/components/Loading/BrandTextLoading';
+import SPAGlobalProvider from '@/layout/SPAGlobalProvider';
 import { useGlobalStore } from '@/store/global';
+import { createNavigationRef } from '@/store/global/initialState';
+import { isChunkLoadError, notifyChunkError } from '@/utils/chunkError';
+
+async function importModule<T>(importFn: () => Promise<T>): Promise<T> {
+  return importFn();
+}
+
+function resolveLazyModule<P>(module: { default: ComponentType<P> } | ComponentType<P>) {
+  if (typeof module === 'function') {
+    return { default: module };
+  }
+  if ('default' in module) {
+    return module as { default: ComponentType<P> };
+  }
+  return { default: module as unknown as ComponentType<P> };
+}
 
 /**
  * Helper function to create a dynamic page element directly for router configuration
@@ -32,20 +51,35 @@ export function dynamicElement<P = NonNullable<unknown>>(
   debugId?: string,
 ): ReactElement {
   const LazyComponent = lazy(async () => {
-    // eslint-disable-next-line @next/next/no-assign-module-variable
-    const module = await importFn();
-    if (typeof module === 'function') {
-      return { default: module };
-    }
-    if ('default' in module) {
-      return module as { default: ComponentType<P> };
-    }
-    return { default: module as unknown as ComponentType<P> };
+    const mod = await importModule(importFn);
+    return resolveLazyModule(mod);
   });
 
   // @ts-ignore
   return (
     <Suspense fallback={<Loading debugId={debugId || 'dynamicElement'} />}>
+      {/* @ts-ignore */}
+      <LazyComponent {...({} as P)} />
+    </Suspense>
+  );
+}
+
+/**
+ * Helper function to create a lazy-loaded layout element for router configuration.
+ * Unlike dynamicElement (for pages), layouts use Outlet so children are rendered inside.
+ */
+export function dynamicLayout<P = NonNullable<unknown>>(
+  importFn: () => Promise<{ default: ComponentType<P> } | ComponentType<P>>,
+  debugId?: string,
+): ReactElement {
+  const LazyComponent = lazy(async () => {
+    const mod = await importModule(importFn);
+    return resolveLazyModule(mod);
+  });
+
+  // @ts-ignore
+  return (
+    <Suspense fallback={<Loading debugId={debugId || 'dynamicLayout'} />}>
       {/* @ts-ignore */}
       <LazyComponent {...({} as P)} />
     </Suspense>
@@ -70,101 +104,77 @@ export interface ErrorBoundaryProps {
 }
 
 export const ErrorBoundary = ({ resetPath }: ErrorBoundaryProps) => {
-  const ErrorCapture = require('@/components/Error').default;
-
   const error = useRouteError() as Error;
   const navigate = useNavigate();
-
   const reset = useCallback(() => {
     navigate(resetPath);
   }, [navigate, resetPath]);
 
-  return createElement(ErrorCapture, { error, reset });
+  if (typeof window !== 'undefined' && isChunkLoadError(error)) {
+    notifyChunkError();
+  }
+
+  return (
+    <ThemeProvider theme={{ cssVar: { key: 'lobe-vars' } }}>
+      <ErrorCapture error={error} reset={reset} />
+    </ThemeProvider>
+  );
 };
 
 /**
- * Component to register navigate function in global store
- * This allows navigation to be triggered from anywhere in the app, including stores
- *
- * @example
- * import { NavigatorRegistrar } from '@/utils/dynamicPage';
- *
- * // In router root layout:
- * const RootLayout = () => (
- *   <>
- *     <NavigatorRegistrar />
- *     <YourMainLayout />
- *   </>
- * );
+ * Syncs React Router's `navigate` into `navigationRef` (see `getStableNavigate` / `useStableNavigate`).
+ * Mounted once on {@link RouterRoot} so imperative navigation works app-wide (desktop + mobile).
  */
 export const NavigatorRegistrar = memo(() => {
   const navigate = useNavigate();
 
-  useEffect(() => {
-    useGlobalStore.setState({ navigate });
+  useLayoutEffect(() => {
+    useGlobalStore.setState({ navigationRef: { current: navigate } });
     return () => {
-      useGlobalStore.setState({ navigate: undefined });
+      useGlobalStore.setState({ navigationRef: createNavigationRef() });
     };
   }, [navigate]);
 
   return null;
 });
 
-/**
- * Route configuration object type (compatible with createBrowserRouter format)
- */
-export interface RouteConfig {
-  // HydrateFallback is ignored in declarative mode
-  HydrateFallback?: ComponentType;
-  children?: RouteConfig[];
-  element?: ReactElement;
-  errorElement?: ReactElement;
-  index?: boolean;
-  loader?: (args: { params: Record<string, string | undefined> }) => unknown;
-  path?: string;
+export interface CreateAppRouterOptions {
+  basename?: string;
 }
 
+const RouterRoot = memo(() => (
+  <SPAGlobalProvider>
+    <BusinessGlobalProvider>
+      <NavigatorRegistrar />
+      <Outlet />
+    </BusinessGlobalProvider>
+  </SPAGlobalProvider>
+));
+
+RouterRoot.displayName = 'RouterRoot';
+
 /**
- * Convert route config objects to declarative Route elements
- * This allows using createBrowserRouter-style config with BrowserRouter
+ * Create a React Router data router with root error boundary.
+ * Use with <RouterProvider router={router} />.
  *
  * @example
- * const routes: RouteConfig[] = [
- *   {
- *     path: '/',
- *     element: <Layout />,
- *     children: [
- *       { path: 'chat', element: <Chat /> }
- *     ]
- *   }
- * ];
- *
- * <BrowserRouter>
- *   <Routes>{renderRoutes(routes)}</Routes>
- * </BrowserRouter>
+ * const router = createAppRouter(desktopRoutes, { basename: '/app' });
+ * createRoot(document.getElementById('root')!).render(
+ *   <RouterProvider router={router} />
+ * );
  */
-export function renderRoutes(routes: RouteConfig[]): ReactElement[] {
-  return routes.map((route, index) => {
-    const { path, element, children, index: isIndex, loader } = route;
-
-    // Handle redirect loaders (convert to Navigate element)
-    if (loader && !element && isIndex) {
-      // Check if loader is a redirect by inspecting it
-      // For now, we'll handle this case in the config itself
-    }
-
-    const childRoutes = children ? renderRoutes(children) : undefined;
-
-    if (isIndex) {
-      return <Route element={element} index key={`index-${index}`} />;
-    }
-
-    return (
-      <Route element={element} key={path || index} path={path}>
-        {childRoutes}
-      </Route>
-    );
-  });
+export function createAppRouter(routes: RouteObject[], options?: CreateAppRouterOptions) {
+  return createBrowserRouter(
+    [
+      {
+        children: routes,
+        element: <RouterRoot />,
+        errorElement: <ErrorBoundary resetPath="/" />,
+        path: '/',
+      },
+    ],
+    { basename: options?.basename },
+  );
 }
 
 /**
@@ -173,4 +183,30 @@ export function renderRoutes(routes: RouteConfig[]): ReactElement[] {
  */
 export function redirectElement(to: string): ReactElement {
   return <Navigate replace to={to} />;
+}
+
+/**
+ * Prefetch route layout chunks on hover to reduce navigation delay.
+ * Each import is only triggered once — subsequent calls are no-ops.
+ */
+const prefetchedRoutes = new Set<string>();
+
+const routePrefetchMap: Record<string, () => Promise<unknown>> = {
+  '/agent': () => import('@/routes/(main)/agent/_layout'),
+  '/community': () => import('@/routes/(main)/community/_layout'),
+  '/group': () => import('@/routes/(main)/group/_layout'),
+  '/page': () => import('@/routes/(main)/page/_layout'),
+  '/resource': () => import('@/routes/(main)/resource/_layout'),
+  '/settings': () => import('@/routes/(main)/settings/_layout'),
+};
+
+export function prefetchRoute(path: string): void {
+  // Match the first path segment, e.g. "/settings/provider" -> "/settings"
+  const key = '/' + path.replace(/^\//, '').split('/')[0];
+  if (prefetchedRoutes.has(key)) return;
+  const loader = routePrefetchMap[key];
+  if (loader) {
+    prefetchedRoutes.add(key);
+    loader();
+  }
 }

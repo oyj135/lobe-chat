@@ -1,5 +1,6 @@
 import type { ChatModelCard } from '@lobechat/types';
-import { AIBaseModelCard } from 'model-bank';
+import type { AIBaseModelCard, AiModelSettings, AiModelType, ExtendParamsType } from 'model-bank';
+import { AiModelTypeSchema } from 'model-bank';
 
 import type { ModelProviderKey } from '../types';
 
@@ -31,7 +32,7 @@ export const MODEL_LIST_CONFIGS = {
   },
   deepseek: {
     functionCallKeywords: ['v3', 'r1', 'deepseek-chat'],
-    reasoningKeywords: ['r1', 'deepseek-reasoner', 'v3.1', 'v3.2'],
+    reasoningKeywords: ['r1', 'deepseek-reasoner', 'v3.'],
     visionKeywords: ['ocr'],
   },
   google: {
@@ -63,16 +64,21 @@ export const MODEL_LIST_CONFIGS = {
     reasoningKeywords: ['-m'],
     visionKeywords: ['-vl', 'Text-01'],
   },
+  mistral: {
+    functionCallKeywords: ['mistral', 'ministral', 'pixtral'],
+    reasoningKeywords: ['magistral'],
+    visionKeywords: ['magistral', 'pixtral', 'ministral', 'mistral'],
+  },
   moonshot: {
     functionCallKeywords: ['moonshot', 'kimi'],
-    reasoningKeywords: ['thinking'],
-    visionKeywords: ['vision', 'kimi-latest', 'kimi-thinking-preview'],
+    reasoningKeywords: ['thinking', 'k2.5'],
+    visionKeywords: ['vision', 'kimi-latest', 'kimi-thinking-preview', 'k2.5'],
   },
   openai: {
     excludeKeywords: ['audio'],
-    functionCallKeywords: ['4o', '4.1', 'o3', 'o4', 'oss'],
-    reasoningKeywords: ['o1', 'o3', 'o4', 'oss'],
-    visionKeywords: ['4o', '4.1', 'o4'],
+    functionCallKeywords: ['4o', '4.1', 'o3', 'o4', 'oss', '-5'],
+    reasoningKeywords: ['o1', 'o3', 'o4', 'oss', '-5'],
+    visionKeywords: ['4o', '4.1', 'o4', '-5'],
   },
   qwen: {
     functionCallKeywords: [
@@ -85,7 +91,7 @@ export const MODEL_LIST_CONFIGS = {
       'qwen2.5',
       'qwen3',
     ],
-    reasoningKeywords: ['qvq', 'qwq', 'qwen3', '!-instruct-', '!-coder-', '!-max-'],
+    reasoningKeywords: ['qvq', 'qwq', 'qwen3', '!-instruct-', '!-coder-'],
     visionKeywords: ['qvq', '-vl', '-omni'],
   },
   replicate: {
@@ -106,7 +112,7 @@ export const MODEL_LIST_CONFIGS = {
     visionKeywords: ['v0'],
   },
   volcengine: {
-    functionCallKeywords: ['1.5', '1-5', '1.6', '1-6'],
+    functionCallKeywords: ['seed'],
     reasoningKeywords: ['thinking', 'seed', 'ui-tars'],
     visionKeywords: ['vision', '-m', 'seed', 'ui-tars'],
   },
@@ -121,17 +127,18 @@ export const MODEL_LIST_CONFIGS = {
     visionKeywords: ['vision', 'grok-4'],
   },
   xiaomimimo: {
+    excludeKeywords: ['tts'],
     functionCallKeywords: ['mimo'],
     reasoningKeywords: ['mimo'],
-    visionKeywords: [],
+    visionKeywords: ['omni'],
   },
   zeroone: {
     functionCallKeywords: ['fc'],
     visionKeywords: ['vision'],
   },
   zhipu: {
-    functionCallKeywords: ['glm-4', 'glm-z1'],
-    reasoningKeywords: ['glm-zero', 'glm-z1', 'glm-4.'],
+    functionCallKeywords: ['glm-4', 'glm-z1', 'glm-5'],
+    reasoningKeywords: ['glm-zero', 'glm-z1', 'glm-4.', 'glm-5'],
     visionKeywords: ['re:glm-4(\\.\\d)?v'],
   },
 } as const;
@@ -146,6 +153,7 @@ export const MODEL_OWNER_DETECTION_CONFIG = {
   llama: ['llama', 'llava'],
   longcat: ['longcat'],
   minimax: ['minimax'],
+  mistral: ['mistral', 'ministral', 'magistral', 'pixtral'],
   moonshot: ['moonshot', 'kimi'],
   openai: ['o1', 'o3', 'o4', 'gpt-'],
   qwen: ['qwen', 'qwq', 'qvq'],
@@ -182,6 +190,20 @@ export const IMAGE_MODEL_KEYWORDS = [
 
 // Embedding model keyword configuration
 export const EMBEDDING_MODEL_KEYWORDS = ['embedding', 'embed', 'bge', 'm3e'] as const;
+
+const AI_MODEL_TYPE_SET = new Set<AiModelType>(AiModelTypeSchema.options);
+
+const normalizeModelType = (value: unknown): AiModelType | undefined => {
+  if (typeof value !== 'string') return undefined;
+
+  const normalized = value.toLowerCase() as AiModelType;
+
+  if (AI_MODEL_TYPE_SET.has(normalized)) {
+    return normalized;
+  }
+
+  return undefined;
+};
 
 /**
  * Detect whether a keyword list matches a model ID (supports multiple matching patterns)
@@ -336,12 +358,85 @@ const processReleasedAt = (model: any, knownModel?: any): string | undefined => 
  * @returns Processed display name
  */
 const processDisplayName = (displayName: string): string => {
+  if (displayName.includes('Gemini 3.1 Flash Image Preview')) {
+    return displayName.replace('Gemini 3.1 Flash Image Preview', 'Nano Banana 2');
+  }
+
   // If it contains "Gemini 2.5 Flash Image Preview", replace the corresponding part with "Nano Banana"
   if (displayName.includes('Gemini 2.5 Flash Image Preview')) {
     return displayName.replace('Gemini 2.5 Flash Image Preview', 'Nano Banana');
   }
 
   return displayName;
+};
+
+const mergeExtendParams = (
+  modelExtendParams?: ReadonlyArray<ExtendParamsType>,
+  knownExtendParams?: ReadonlyArray<ExtendParamsType>,
+  options?: { includeKnownExtendParams?: boolean },
+): ExtendParamsType[] | undefined => {
+  const includeKnown = options?.includeKnownExtendParams ?? true;
+
+  const combined = [
+    ...(includeKnown ? (knownExtendParams ?? []) : []),
+    ...(modelExtendParams ?? []),
+  ];
+
+  if (combined.length === 0) return undefined;
+
+  return Array.from(new Set(combined));
+};
+
+const mergeSettings = (
+  modelSettings?: AiModelSettings,
+  knownSettings?: AiModelSettings,
+  options?: { includeKnownExtendParams?: boolean; includeSearchSettings?: boolean },
+): AiModelSettings | undefined => {
+  if (!modelSettings && !knownSettings) return undefined;
+
+  const merged: AiModelSettings = {};
+
+  if (knownSettings) {
+    Object.assign(merged, knownSettings);
+  }
+
+  if (modelSettings) {
+    Object.assign(merged, modelSettings);
+  }
+
+  const extendParams = mergeExtendParams(
+    modelSettings?.extendParams,
+    knownSettings?.extendParams,
+    options,
+  );
+  if (extendParams) {
+    merged.extendParams = extendParams;
+  } else {
+    delete merged.extendParams;
+  }
+
+  const includeSearchSettings = options?.includeSearchSettings ?? true;
+
+  if (includeSearchSettings) {
+    const searchImpl = modelSettings?.searchImpl ?? knownSettings?.searchImpl;
+    if (searchImpl) {
+      merged.searchImpl = searchImpl;
+    } else {
+      delete merged.searchImpl;
+    }
+
+    const searchProvider = modelSettings?.searchProvider ?? knownSettings?.searchProvider;
+    if (searchProvider) {
+      merged.searchProvider = searchProvider;
+    } else {
+      delete merged.searchProvider;
+    }
+  } else {
+    delete merged.searchImpl;
+    delete merged.searchProvider;
+  }
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
 };
 
 /**
@@ -389,6 +484,7 @@ const processModelCard = (
   model: { [key: string]: any; id: string },
   config: ModelProcessorConfig,
   knownModel?: any,
+  options?: { includeKnownExtendParams?: boolean; includeSearchSettings?: boolean },
 ): ChatModelCard | undefined => {
   const {
     functionCallKeywords = [],
@@ -401,8 +497,9 @@ const processModelCard = (
   } = config;
 
   const isExcludedModel = isKeywordListMatch(model.id.toLowerCase(), excludeKeywords);
+  const normalizedModelType = normalizeModelType(model.type);
   const modelType =
-    model.type ||
+    normalizedModelType ||
     knownModel?.type ||
     (isKeywordListMatch(
       model.id.toLowerCase(),
@@ -420,6 +517,8 @@ const processModelCard = (
   if (modelType === 'image' && !model.parameters && !knownModel?.parameters) {
     return undefined;
   }
+
+  const mergedSettings = mergeSettings(model.settings, knownModel?.settings, options);
 
   const formatPricing = (pricing?: {
     cachedInput?: number;
@@ -510,6 +609,7 @@ const processModelCard = (
     ...(modelType === 'image' && {
       parameters: model.parameters ?? knownModel?.parameters,
     }),
+    ...(mergedSettings ? { settings: mergedSettings } : {}),
     video:
       model.video ??
       knownModel?.abilities?.video ??
@@ -606,13 +706,46 @@ export const processMultiProviderModelList = async (
         );
       }
 
+      const includeKnownExtendParams =
+        providerid === 'aihubmix' ||
+        providerid === 'newapi' ||
+        detectedProvider === 'openai' ||
+        detectedProvider === 'google';
+      const includeSearchSettings = providerid === 'aihubmix' || providerid === 'newapi';
+
       // If providerid is provided and has local configuration, try to get the model's enabled status from it
       const providerLocalModelConfig = getModelLocalEnableConfig(
         providerLocalConfig as any[],
         model,
       );
 
-      const processedModel = processModelCard(model, config, knownModel);
+      const processedModel = processModelCard(model, config, knownModel, {
+        includeKnownExtendParams,
+        includeSearchSettings,
+      });
+
+      if (processedModel && includeSearchSettings && providerLocalModelConfig?.settings) {
+        const localSettings = providerLocalModelConfig.settings as AiModelSettings | undefined;
+        const searchImpl = localSettings?.searchImpl;
+        const searchProvider = localSettings?.searchProvider;
+
+        if (searchImpl || searchProvider) {
+          const updatedSettings: AiModelSettings = processedModel.settings
+            ? { ...processedModel.settings }
+            : ({} as AiModelSettings);
+
+          if (searchImpl) {
+            updatedSettings.searchImpl = searchImpl;
+          }
+
+          if (searchProvider) {
+            updatedSettings.searchProvider = searchProvider;
+          }
+
+          processedModel.settings =
+            Object.keys(updatedSettings).length > 0 ? updatedSettings : undefined;
+        }
+      }
 
       // If model is found in local configuration, use its enabled status
       if (

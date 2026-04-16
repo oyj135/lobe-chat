@@ -1,4 +1,4 @@
-import { AgentRuntimeContext } from '@lobechat/agent-runtime';
+import { type AgentRuntimeContext } from '@lobechat/agent-runtime';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -34,14 +34,6 @@ vi.mock('@/server/services/search', () => ({
   searchService: {
     search: vi.fn(),
   },
-}));
-
-// Mock plugin gateway service
-vi.mock('@/server/services/pluginGateway', () => ({
-  PluginGatewayService: vi.fn().mockImplementation(() => ({
-    getPluginManifest: vi.fn(),
-    executePlugin: vi.fn(),
-  })),
 }));
 
 // Mock MCP service
@@ -112,8 +104,7 @@ describe('AgentRuntimeService.executeSync', () => {
         initialMessages: [{ role: 'user', content: 'Hello' }],
         modelRuntimeConfig: { model: 'gpt-4o', provider: 'openai' },
         operationId,
-        toolManifestMap: {},
-        tools: [],
+        toolSet: { manifestMap: {}, tools: [] },
         userId,
       });
 
@@ -153,8 +144,7 @@ describe('AgentRuntimeService.executeSync', () => {
         ],
         modelRuntimeConfig: { model: 'gpt-4o', provider: 'openai' },
         operationId,
-        toolManifestMap: {},
-        tools: [],
+        toolSet: { manifestMap: {}, tools: [] },
         userId,
       });
 

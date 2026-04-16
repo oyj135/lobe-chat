@@ -1,20 +1,18 @@
 'use client';
 
-import { Flexbox } from '@lobehub/ui';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { Fragment, memo, useCallback, useState } from 'react';
-import { Document, Page, pdfjs } from 'react-pdf';
-import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
-import 'react-pdf/dist/esm/Page/TextLayer.css';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
 
+import { Flexbox } from '@lobehub/ui';
+import { Fragment, memo, useCallback, useState } from 'react';
+
+import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
+import { Document, Page, pdfjs } from '@/libs/pdfjs';
 import { lambdaQuery } from '@/libs/trpc/client';
 
 import HighlightLayer from './HighlightLayer';
 import { styles } from './style';
 import useResizeObserver from './useResizeObserver';
-
-// 如果海外的地址： https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs
-pdfjs.GlobalWorkerOptions.workerSrc = `https://registry.npmmirror.com/pdfjs-dist/${pdfjs.version}/files/build/pdf.worker.min.mjs`;
 
 const options = {
   cMapUrl: `https://registry.npmmirror.com/pdfjs-dist/${pdfjs.version}/files/cmaps/`,
@@ -34,7 +32,7 @@ const PDFViewer = memo<PDFViewerProps>(({ url, fileId }) => {
   const [containerWidth, setContainerWidth] = useState<number>();
   const [isLoaded, setIsLoaded] = useState(false);
 
-  // eslint-disable-next-line no-undef
+   
   const onResize = useCallback<ResizeObserverCallback>((entries) => {
     const [entry] = entries;
 
@@ -45,8 +43,8 @@ const PDFViewer = memo<PDFViewerProps>(({ url, fileId }) => {
 
   useResizeObserver(containerRef, onResize);
 
-  const onDocumentLoadSuccess = ({ numPages: nextNumPages }: PDFDocumentProxy) => {
-    setNumPages(nextNumPages);
+  const onDocumentLoadSuccess = (document: unknown) => {
+    setNumPages((document as { numPages: number }).numPages);
     setIsLoaded(true);
   };
 
@@ -62,17 +60,18 @@ const PDFViewer = memo<PDFViewerProps>(({ url, fileId }) => {
       <Flexbox
         align={'center'}
         className={styles.documentContainer}
+        justify={isLoaded ? undefined : 'center'}
         padding={24}
         ref={setContainerRef}
-        style={{ height: isLoaded ? undefined : '100%' }}
       >
         <Document
           className={styles.document}
           file={url}
-          onLoadSuccess={onDocumentLoadSuccess}
+          loading={<NeuralNetworkLoading size={36} />}
           options={options}
+          onLoadSuccess={onDocumentLoadSuccess}
         >
-          {Array.from({ length: numPages }, (el, index) => {
+          {Array.from({ length: numPages }, (_, index) => {
             const width = containerWidth ? Math.min(containerWidth, maxWidth) : maxWidth;
 
             return (

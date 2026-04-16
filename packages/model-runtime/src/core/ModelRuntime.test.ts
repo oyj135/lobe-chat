@@ -1,11 +1,12 @@
 // @vitest-environment node
-import { ClientSecretPayload } from '@lobechat/types';
+import type { ClientSecretPayload } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ChatStreamCallbacks, ChatStreamPayload, LobeOpenAI, ModelRuntime } from '../index';
+import type { ChatStreamCallbacks, ChatStreamPayload, ModelRuntimeHooks } from '../index';
+import { LobeOpenAI, ModelRuntime } from '../index';
 import { providerRuntimeMap } from '../runtimeMap';
-import { CreateImagePayload } from '../types/image';
+import type { CreateImagePayload } from '../types/image';
 
 /**
  * Mock createTraceOptions for testing purposes.
@@ -221,45 +222,8 @@ describe('ModelRuntime', () => {
 
       const result = await mockModelRuntime.generateObject(payload);
 
-      expect(LobeOpenAI.prototype.generateObject).toHaveBeenCalledWith(payload);
+      expect(LobeOpenAI.prototype.generateObject).toHaveBeenCalledWith(payload, undefined);
       expect(result).toBe(mockResponse);
-    });
-  });
-
-  describe('ModelRuntime textToImage method', () => {
-    it('should run correctly', async () => {
-      const payload = {
-        model: 'stable-diffusion',
-        prompt: 'A beautiful landscape',
-      };
-
-      const mockResponse = ['https://example.com/image1.jpg', 'https://example.com/image2.jpg'];
-
-      vi.spyOn(LobeOpenAI.prototype, 'textToImage').mockResolvedValue(mockResponse);
-
-      const result = await mockModelRuntime.textToImage(payload);
-
-      expect(LobeOpenAI.prototype.textToImage).toHaveBeenCalledWith(payload);
-      expect(result).toBe(mockResponse);
-    });
-
-    it('should handle undefined textToImage method gracefully', async () => {
-      const payload = {
-        model: 'stable-diffusion',
-        prompt: 'A beautiful landscape',
-      };
-
-      // Mock runtime without textToImage method
-      const runtimeWithoutTextToImage = {
-        textToImage: undefined,
-      };
-
-      // @ts-ignore - testing edge case
-      mockModelRuntime['_runtime'] = runtimeWithoutTextToImage;
-
-      const result = await mockModelRuntime.textToImage(payload);
-
-      expect(result).toBeUndefined();
     });
   });
 
@@ -508,6 +472,215 @@ describe('ModelRuntime', () => {
       const result = await mockModelRuntime.pullModel(params);
 
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('hooks', () => {
+    const createMockRuntime = (hooks?: ModelRuntimeHooks) => {
+      const mockRuntimeAI = { chat: vi.fn(), embeddings: vi.fn(), generateObject: vi.fn() } as any;
+      return { runtime: new ModelRuntime(mockRuntimeAI, hooks), mockRuntimeAI };
+    };
+
+    const chatPayload: ChatStreamPayload = {
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'gpt-4',
+      temperature: 0,
+    };
+
+    const genObjPayload = {
+      messages: [{ role: 'user' as const, content: 'gen' }],
+      model: 'gpt-4',
+      schema: { name: 'test', schema: { type: 'object' as const, properties: {} } },
+    };
+
+    describe('chat hooks', () => {
+      it('beforeChat is called before runtime.chat', async () => {
+        const beforeChat = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeChat });
+        mockRuntimeAI.chat.mockResolvedValue(new Response(''));
+
+        await runtime.chat(chatPayload);
+
+        expect(beforeChat).toHaveBeenCalledWith(chatPayload, undefined);
+        expect(mockRuntimeAI.chat).toHaveBeenCalled();
+      });
+
+      it('beforeChat throwing aborts chat call', async () => {
+        const beforeChat = vi.fn().mockRejectedValue(new Error('budget exceeded'));
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeChat });
+
+        await expect(runtime.chat(chatPayload)).rejects.toThrow('budget exceeded');
+        expect(mockRuntimeAI.chat).not.toHaveBeenCalled();
+      });
+
+      it('beforeChat throwing triggers onChatError before re-throwing', async () => {
+        const budgetError = { errorType: 'FreePlanLimit', error: { message: 'Budget exceeded' } };
+        const beforeChat = vi.fn().mockRejectedValue(budgetError);
+        const onChatError = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeChat, onChatError });
+
+        await expect(runtime.chat(chatPayload)).rejects.toBe(budgetError);
+        expect(mockRuntimeAI.chat).not.toHaveBeenCalled();
+        expect(onChatError).toHaveBeenCalledWith(budgetError, {
+          options: undefined,
+          payload: chatPayload,
+        });
+      });
+
+      it('onChatFinal is injected into callback chain, existing onFinal called first', async () => {
+        const callOrder: string[] = [];
+        const existingOnFinal = vi.fn().mockImplementation(() => callOrder.push('existing'));
+        const onChatFinal = vi.fn().mockImplementation(() => callOrder.push('hook'));
+        const { runtime, mockRuntimeAI } = createMockRuntime({ onChatFinal });
+
+        mockRuntimeAI.chat.mockImplementation(async (_p: any, opts: any) => {
+          await opts?.callback?.onFinal?.({ id: 'msg-1', text: 'hello' });
+          return new Response('');
+        });
+
+        await runtime.chat(chatPayload, { callback: { onFinal: existingOnFinal } });
+
+        expect(existingOnFinal).toHaveBeenCalled();
+        expect(onChatFinal).toHaveBeenCalled();
+        expect(callOrder).toEqual(['existing', 'hook']);
+      });
+
+      it('onChatFinal receives data and context', async () => {
+        const onChatFinal = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({ onChatFinal });
+        const options = { callback: {} };
+        const finalData = { id: 'msg-1', text: 'hello' };
+
+        mockRuntimeAI.chat.mockImplementation(async (_p: any, opts: any) => {
+          await opts?.callback?.onFinal?.(finalData);
+          return new Response('');
+        });
+
+        await runtime.chat(chatPayload, options);
+
+        expect(onChatFinal).toHaveBeenCalledWith(finalData, {
+          options,
+          payload: chatPayload,
+        });
+      });
+
+      it('onChatError is called when chat throws, error is re-thrown', async () => {
+        const chatError = { errorType: 'ProviderBizError', error: new Error('fail') };
+        const onChatError = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({ onChatError });
+        mockRuntimeAI.chat.mockRejectedValue(chatError);
+
+        await expect(runtime.chat(chatPayload)).rejects.toBe(chatError);
+        expect(onChatError).toHaveBeenCalledWith(chatError, {
+          options: undefined,
+          payload: chatPayload,
+        });
+      });
+
+      it('works without hooks (undefined)', async () => {
+        const { runtime, mockRuntimeAI } = createMockRuntime(undefined);
+        mockRuntimeAI.chat.mockResolvedValue(new Response(''));
+
+        await expect(runtime.chat(chatPayload)).resolves.toBeInstanceOf(Response);
+      });
+    });
+
+    describe('generateObject hooks', () => {
+      it('beforeGenerateObject is called before runtime.generateObject', async () => {
+        const beforeGenerateObject = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeGenerateObject });
+        mockRuntimeAI.generateObject.mockResolvedValue({ result: 'ok' });
+
+        await runtime.generateObject(genObjPayload);
+
+        expect(beforeGenerateObject).toHaveBeenCalledWith(genObjPayload, undefined);
+        expect(mockRuntimeAI.generateObject).toHaveBeenCalled();
+      });
+
+      it('beforeGenerateObject throwing aborts generateObject call', async () => {
+        const beforeGenerateObject = vi.fn().mockRejectedValue(new Error('budget exceeded'));
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeGenerateObject });
+
+        await expect(runtime.generateObject(genObjPayload)).rejects.toThrow('budget exceeded');
+        expect(mockRuntimeAI.generateObject).not.toHaveBeenCalled();
+      });
+
+      it('beforeGenerateObject throwing triggers onGenerateObjectError before re-throwing', async () => {
+        const budgetError = { errorType: 'FreePlanLimit', error: { message: 'Budget exceeded' } };
+        const beforeGenerateObject = vi.fn().mockRejectedValue(budgetError);
+        const onGenerateObjectError = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({
+          beforeGenerateObject,
+          onGenerateObjectError,
+        });
+
+        await expect(runtime.generateObject(genObjPayload)).rejects.toBe(budgetError);
+        expect(mockRuntimeAI.generateObject).not.toHaveBeenCalled();
+        expect(onGenerateObjectError).toHaveBeenCalledWith(budgetError, {
+          options: undefined,
+          payload: genObjPayload,
+        });
+      });
+
+      it('onGenerateObjectFinal wraps onUsage, existing onUsage called first', async () => {
+        const callOrder: string[] = [];
+        const existingOnUsage = vi.fn().mockImplementation(() => callOrder.push('existing'));
+        const onGenerateObjectFinal = vi.fn().mockImplementation(() => callOrder.push('hook'));
+        const { runtime, mockRuntimeAI } = createMockRuntime({ onGenerateObjectFinal });
+        const usage = { totalTokens: 100, promptTokens: 50, completionTokens: 50 };
+
+        mockRuntimeAI.generateObject.mockImplementation(async (_p: any, opts: any) => {
+          await opts?.onUsage?.(usage);
+          return { result: 'ok' };
+        });
+
+        await runtime.generateObject(genObjPayload, { onUsage: existingOnUsage });
+
+        expect(existingOnUsage).toHaveBeenCalledWith(usage);
+        expect(onGenerateObjectFinal).toHaveBeenCalled();
+        expect(callOrder).toEqual(['existing', 'hook']);
+      });
+
+      it('onGenerateObjectError is called when generateObject throws, error is re-thrown', async () => {
+        const genError = { errorType: 'ProviderBizError', error: new Error('fail') };
+        const onGenerateObjectError = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({ onGenerateObjectError });
+        mockRuntimeAI.generateObject.mockRejectedValue(genError);
+
+        await expect(runtime.generateObject(genObjPayload)).rejects.toBe(genError);
+        expect(onGenerateObjectError).toHaveBeenCalledWith(genError, {
+          options: undefined,
+          payload: genObjPayload,
+        });
+      });
+
+      it('works without hooks (undefined)', async () => {
+        const { runtime, mockRuntimeAI } = createMockRuntime(undefined);
+        mockRuntimeAI.generateObject.mockResolvedValue({ result: 'ok' });
+
+        await expect(runtime.generateObject(genObjPayload)).resolves.toEqual({ result: 'ok' });
+      });
+    });
+
+    describe('embeddings hooks', () => {
+      const embeddingsPayload = { model: 'text-embedding-ada-002', input: 'hello' };
+
+      it('beforeEmbeddings throwing triggers onEmbeddingsError before re-throwing', async () => {
+        const budgetError = { errorType: 'FreePlanLimit', error: { message: 'Budget exceeded' } };
+        const beforeEmbeddings = vi.fn().mockRejectedValue(budgetError);
+        const onEmbeddingsError = vi.fn();
+        const { runtime, mockRuntimeAI } = createMockRuntime({
+          beforeEmbeddings,
+          onEmbeddingsError,
+        });
+
+        await expect(runtime.embeddings(embeddingsPayload)).rejects.toBe(budgetError);
+        expect(mockRuntimeAI.embeddings).not.toHaveBeenCalled();
+        expect(onEmbeddingsError).toHaveBeenCalledWith(budgetError, {
+          options: undefined,
+          payload: embeddingsPayload,
+        });
+      });
     });
   });
 });

@@ -1,17 +1,16 @@
 // @vitest-environment node
-import { Type as SchemaType } from '@google/genai';
 import * as imageToBase64Module from '@lobechat/utils';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ChatCompletionTool, OpenAIChatMessage, UserMessageContentPart } from '../../types';
+import type { ChatCompletionTool, OpenAIChatMessage, UserMessageContentPart } from '../../types';
 import { parseDataUri } from '../../utils/uriParser';
 import {
-  GEMINI_MAGIC_THOUGHT_SIGNATURE,
   buildGoogleMessage,
   buildGoogleMessages,
   buildGooglePart,
   buildGoogleTool,
   buildGoogleTools,
+  GEMINI_MAGIC_THOUGHT_SIGNATURE,
 } from './google';
 
 // Mock the utils
@@ -24,6 +23,14 @@ vi.mock('../../utils/imageToBase64', () => ({
 }));
 
 describe('google contextBuilders', () => {
+  describe('GEMINI_MAGIC_THOUGHT_SIGNATURE', () => {
+    it('should use skip_thought_signature_validator for Vertex AI compatibility', () => {
+      // Vertex AI only accepts `skip_thought_signature_validator`, not `context_engineering_is_the_way_to_go`
+      // see: https://github.com/pydantic/pydantic-ai/issues/3881
+      expect(GEMINI_MAGIC_THOUGHT_SIGNATURE).toBe('skip_thought_signature_validator');
+    });
+  });
+
   describe('buildGooglePart', () => {
     it('should handle text type messages', async () => {
       const content: UserMessageContentPart = {
@@ -148,6 +155,48 @@ describe('google contextBuilders', () => {
         },
         thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
       });
+    });
+
+    it('should return undefined for unsupported SVG image (base64)', async () => {
+      const svgBase64 =
+        'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==';
+
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: 'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==',
+        mimeType: 'image/svg+xml',
+        type: 'base64',
+      });
+
+      const content: UserMessageContentPart = {
+        image_url: { url: svgBase64 },
+        type: 'image_url',
+      };
+
+      const result = await buildGooglePart(content);
+      expect(result).toBeUndefined();
+    });
+
+    it('should return undefined for unsupported SVG image (URL)', async () => {
+      const svgUrl = 'https://example.com/image.svg';
+
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: null,
+        mimeType: null,
+        type: 'url',
+      });
+
+      vi.spyOn(imageToBase64Module, 'imageUrlToBase64').mockResolvedValueOnce({
+        base64: 'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==',
+        mimeType: 'image/svg+xml',
+      });
+
+      const content: UserMessageContentPart = {
+        image_url: { url: svgUrl },
+        type: 'image_url',
+      };
+
+      const result = await buildGooglePart(content);
+      expect(result).toBeUndefined();
     });
   });
 
@@ -676,8 +725,7 @@ describe('google contextBuilders', () => {
     });
 
     it('should correctly convert tool response message', async () => {
-      const toolCallNameMap = new Map<string, string>();
-      toolCallNameMap.set('call_1', 'get_current_weather');
+      const toolCallNameMap = new Map<string, string>([['call_1', 'get_current_weather']]);
 
       const message: OpenAIChatMessage = {
         content: '{"success":true,"data":{"temperature":"14°C"}}',
@@ -870,6 +918,92 @@ describe('google contextBuilders', () => {
       ]);
     });
 
+    it('should merge consecutive functionResponse contents into a single Content for multi-tool-call turns', async () => {
+      const messages: OpenAIChatMessage[] = [
+        { content: 'What is the weather in London and Tokyo?', role: 'user' },
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: JSON.stringify({ location: 'London' }),
+                name: 'get_weather',
+              },
+              id: 'call_1',
+              type: 'function',
+            },
+            {
+              function: {
+                arguments: JSON.stringify({ location: 'Tokyo' }),
+                name: 'get_weather',
+              },
+              id: 'call_2',
+              type: 'function',
+            },
+          ],
+        },
+        {
+          content: '{"temperature":"14°C"}',
+          name: 'get_weather',
+          role: 'tool',
+          tool_call_id: 'call_1',
+        },
+        {
+          content: '{"temperature":"22°C"}',
+          name: 'get_weather',
+          role: 'tool',
+          tool_call_id: 'call_2',
+        },
+      ];
+
+      const contents = await buildGoogleMessages(messages);
+
+      // Function calls should be in one Content, function responses merged into one Content
+      expect(contents).toHaveLength(3);
+      expect(contents).toEqual([
+        {
+          parts: [
+            {
+              text: 'What is the weather in London and Tokyo?',
+              thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
+            },
+          ],
+          role: 'user',
+        },
+        {
+          parts: [
+            {
+              functionCall: { args: { location: 'London' }, name: 'get_weather' },
+              thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
+            },
+            {
+              functionCall: { args: { location: 'Tokyo' }, name: 'get_weather' },
+              thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
+            },
+          ],
+          role: 'model',
+        },
+        {
+          parts: [
+            {
+              functionResponse: {
+                name: 'get_weather',
+                response: { result: '{"temperature":"14°C"}' },
+              },
+            },
+            {
+              functionResponse: {
+                name: 'get_weather',
+                response: { result: '{"temperature":"22°C"}' },
+              },
+            },
+          ],
+          role: 'user',
+        },
+      ]);
+    });
+
     it('should correctly convert full conversation with thoughtSignature', async () => {
       const messages: OpenAIChatMessage[] = [
         { content: 'system prompt', role: 'system' },
@@ -946,7 +1080,7 @@ describe('google contextBuilders', () => {
   });
 
   describe('buildGoogleTool', () => {
-    it('should correctly convert ChatCompletionTool to FunctionDeclaration', () => {
+    it('should use parametersJsonSchema to pass standard JSON Schema directly', () => {
       const tool: ChatCompletionTool = {
         function: {
           description: 'A test tool',
@@ -968,19 +1102,20 @@ describe('google contextBuilders', () => {
       expect(result).toEqual({
         description: 'A test tool',
         name: 'testTool',
-        parameters: {
-          description: undefined,
+        parametersJsonSchema: {
           properties: {
             param1: { type: 'string' },
             param2: { type: 'number' },
           },
           required: ['param1'],
-          type: SchemaType.OBJECT,
+          type: 'object',
         },
       });
+      // Should not have the old parameters field
+      expect(result.parameters).toBeUndefined();
     });
 
-    it('should handle tools with empty parameters', () => {
+    it('should handle tools with empty parameters using dummy property', () => {
       const tool: ChatCompletionTool = {
         function: {
           description: 'A simple function with no parameters',
@@ -995,28 +1130,31 @@ describe('google contextBuilders', () => {
 
       const result = buildGoogleTool(tool);
 
-      // Should use dummy property for empty parameters
       expect(result).toEqual({
         description: 'A simple function with no parameters',
         name: 'simple_function',
-        parameters: {
-          description: undefined,
-          properties: { dummy: { type: 'string' } },
-          required: undefined,
-          type: SchemaType.OBJECT,
-        },
+        parametersJsonSchema: { type: 'object', properties: { dummy: { type: 'string' } } },
       });
     });
 
-    it('should preserve parameter description', () => {
+    it('should pass through $ref without needing to resolve', () => {
       const tool: ChatCompletionTool = {
         function: {
-          description: 'A test tool',
-          name: 'testTool',
+          description: 'A tool with $ref',
+          name: 'refTool',
           parameters: {
-            description: 'Test parameters',
+            definitions: {
+              timeIntent: {
+                properties: {
+                  selector: { enum: ['today', 'yesterday', 'month'], type: 'string' },
+                },
+                required: ['selector'],
+                type: 'object',
+              },
+            },
             properties: {
-              param1: { type: 'string' },
+              query: { type: 'string' },
+              timeIntent: { $ref: '#/definitions/timeIntent' },
             },
             type: 'object',
           },
@@ -1026,23 +1164,42 @@ describe('google contextBuilders', () => {
 
       const result = buildGoogleTool(tool);
 
-      expect(result.parameters?.description).toBe('Test parameters');
+      // $ref should be passed through as-is via parametersJsonSchema
+      expect(result.parametersJsonSchema).toEqual(tool.function.parameters);
     });
 
-    it('should convert const to enum for Google compatibility', () => {
+    it('should pass through nullable types without sanitization', () => {
       const tool: ChatCompletionTool = {
         function: {
-          description: 'A tool with const values',
+          description: 'A tool with nullable enum',
+          name: 'nullableTool',
+          parameters: {
+            properties: {
+              status: {
+                enum: ['active', 'inactive', null],
+                type: ['string', 'null'],
+              },
+            },
+            type: 'object',
+          },
+        },
+        type: 'function',
+      };
+
+      const result = buildGoogleTool(tool);
+
+      // nullable types and null enum values should be passed through as-is
+      expect(result.parametersJsonSchema).toEqual(tool.function.parameters);
+    });
+
+    it('should pass through const values without conversion', () => {
+      const tool: ChatCompletionTool = {
+        function: {
+          description: 'A tool with const',
           name: 'constTool',
           parameters: {
             properties: {
               action: { const: 'insert', type: 'string' },
-              nested: {
-                properties: {
-                  operation: { const: 'create', type: 'string' },
-                },
-                type: 'object',
-              },
             },
             type: 'object',
           },
@@ -1052,65 +1209,8 @@ describe('google contextBuilders', () => {
 
       const result = buildGoogleTool(tool);
 
-      // const should be converted to enum with single value
-      expect(result.parameters?.properties).toEqual({
-        action: { enum: ['insert'], type: 'string' },
-        nested: {
-          properties: {
-            operation: { enum: ['create'], type: 'string' },
-          },
-          type: 'object',
-        },
-      });
-    });
-
-    it('should handle oneOf with const values (like page-agent modifyNodes)', () => {
-      const tool: ChatCompletionTool = {
-        function: {
-          description: 'Modify nodes operation',
-          name: 'modifyNodes',
-          parameters: {
-            properties: {
-              operations: {
-                items: {
-                  oneOf: [
-                    {
-                      properties: {
-                        action: { const: 'insert', type: 'string' },
-                        beforeId: { type: 'string' },
-                      },
-                      type: 'object',
-                    },
-                    {
-                      properties: {
-                        action: { const: 'modify', type: 'string' },
-                        content: { type: 'string' },
-                      },
-                      type: 'object',
-                    },
-                  ],
-                },
-                type: 'array',
-              },
-            },
-            type: 'object',
-          },
-        },
-        type: 'function',
-      };
-
-      const result = buildGoogleTool(tool);
-
-      // All const values in nested oneOf should be converted to enum
-      const operations = result.parameters?.properties?.operations as any;
-      expect(operations.items.oneOf[0].properties.action).toEqual({
-        enum: ['insert'],
-        type: 'string',
-      });
-      expect(operations.items.oneOf[1].properties.action).toEqual({
-        enum: ['modify'],
-        type: 'string',
-      });
+      // const should be passed through as-is
+      expect(result.parametersJsonSchema).toEqual(tool.function.parameters);
     });
   });
 
@@ -1146,14 +1246,13 @@ describe('google contextBuilders', () => {
       expect(googleTools![0].functionDeclarations![0]).toEqual({
         description: 'A test tool',
         name: 'testTool',
-        parameters: {
-          description: undefined,
+        parametersJsonSchema: {
           properties: {
             param1: { type: 'string' },
             param2: { type: 'number' },
           },
           required: ['param1'],
-          type: SchemaType.OBJECT,
+          type: 'object',
         },
       });
     });
@@ -1197,6 +1296,74 @@ describe('google contextBuilders', () => {
       expect(googleTools![0].functionDeclarations).toHaveLength(2);
       expect(googleTools![0].functionDeclarations![0].name).toBe('get_weather');
       expect(googleTools![0].functionDeclarations![1].name).toBe('get_time');
+    });
+
+    it('should deduplicate tools with the same function name', () => {
+      const tools: ChatCompletionTool[] = [
+        {
+          function: {
+            description: 'Search the web',
+            name: 'lobe-web-browsing____search____builtin',
+            parameters: {
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+              type: 'object',
+            },
+          },
+          type: 'function',
+        },
+        {
+          function: {
+            description: 'Get weather',
+            name: 'get_weather',
+            parameters: {
+              properties: { city: { type: 'string' } },
+              required: ['city'],
+              type: 'object',
+            },
+          },
+          type: 'function',
+        },
+        {
+          function: {
+            description: 'Search the web (duplicate)',
+            name: 'lobe-web-browsing____search____builtin',
+            parameters: {
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+              type: 'object',
+            },
+          },
+          type: 'function',
+        },
+      ];
+
+      const googleTools = buildGoogleTools(tools);
+
+      expect(googleTools).toHaveLength(1);
+      expect(googleTools![0].functionDeclarations).toHaveLength(2);
+      expect(googleTools![0].functionDeclarations![0].name).toBe(
+        'lobe-web-browsing____search____builtin',
+      );
+      expect(googleTools![0].functionDeclarations![0].description).toBe('Search the web');
+      expect(googleTools![0].functionDeclarations![1].name).toBe('get_weather');
+    });
+
+    it('should keep all tools when there are no duplicates', () => {
+      const tools: ChatCompletionTool[] = [
+        {
+          function: { description: 'Tool A', name: 'tool_a', parameters: { type: 'object' } },
+          type: 'function',
+        },
+        {
+          function: { description: 'Tool B', name: 'tool_b', parameters: { type: 'object' } },
+          type: 'function',
+        },
+      ];
+
+      const googleTools = buildGoogleTools(tools);
+
+      expect(googleTools![0].functionDeclarations).toHaveLength(2);
     });
   });
 });

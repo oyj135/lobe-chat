@@ -1,50 +1,36 @@
 import debug from 'debug';
-import { type NextRequest, NextResponse, after } from 'next/server';
+import { type NextRequest } from 'next/server';
+import { after, NextResponse } from 'next/server';
 
 import { OAuthHandoffModel } from '@/database/models/oauthHandoff';
 import { serverDB } from '@/database/server';
-import { correctOIDCUrl } from '@/utils/server/correctOIDCUrl';
+import { appEnv } from '@/envs/app';
 
 const log = debug('lobe-oidc:callback:desktop');
 
 const errorPathname = '/oauth/callback/error';
 
 /**
- * 安全地构建重定向URL
+ * Safely build redirect URL - directly use APP_URL as target
  */
 const buildRedirectUrl = (req: NextRequest, pathname: string): URL => {
-  const forwardedHost = req.headers.get('x-forwarded-host');
-  const requestHost = req.headers.get('host');
-  const forwardedProto =
-    req.headers.get('x-forwarded-proto') || req.headers.get('x-forwarded-protocol');
-
-  // 确定实际的主机名，提供后备值
-  const actualHost = forwardedHost || requestHost;
-  const actualProto = forwardedProto || 'https';
-
-  log(
-    'Building redirect URL - host: %s, proto: %s, pathname: %s',
-    actualHost,
-    actualProto,
-    pathname,
-  );
-
-  // 如果主机名仍然无效，使用req.nextUrl作为后备
-  if (!actualHost) {
-    log('Warning: Invalid host detected, using req.nextUrl as fallback');
-    const fallbackUrl = req.nextUrl.clone();
-    fallbackUrl.pathname = pathname;
-    return fallbackUrl;
+  // Use unified environment variable management
+  if (appEnv.APP_URL) {
+    try {
+      const baseUrl = new URL(appEnv.APP_URL);
+      baseUrl.pathname = pathname;
+      log('Using APP_URL for redirect: %s', baseUrl.toString());
+      return baseUrl;
+    } catch (error) {
+      log('Error parsing APP_URL, using fallback: %O', error);
+    }
   }
 
-  try {
-    return new URL(`${actualProto}://${actualHost}${pathname}`);
-  } catch (error) {
-    log('Error constructing URL, using req.nextUrl as fallback: %O', error);
-    const fallbackUrl = req.nextUrl.clone();
-    fallbackUrl.pathname = pathname;
-    return fallbackUrl;
-  }
+  // Fallback: use req.nextUrl
+  log('Warning: APP_URL not configured, using req.nextUrl as fallback');
+  const fallbackUrl = req.nextUrl.clone();
+  fallbackUrl.pathname = pathname;
+  return fallbackUrl;
 };
 
 export const GET = async (req: NextRequest) => {
@@ -76,14 +62,11 @@ export const GET = async (req: NextRequest) => {
 
     const successUrl = buildRedirectUrl(req, '/oauth/callback/success');
 
-    // 添加调试日志
+    // Add debug logging
     log('Request host header: %s', req.headers.get('host'));
     log('Request x-forwarded-host: %s', req.headers.get('x-forwarded-host'));
     log('Request x-forwarded-proto: %s', req.headers.get('x-forwarded-proto'));
     log('Constructed success URL: %s', successUrl.toString());
-
-    const correctedUrl = correctOIDCUrl(req, successUrl);
-    log('Final redirect URL: %s', correctedUrl.toString());
 
     // cleanup expired
     after(async () => {
@@ -92,7 +75,7 @@ export const GET = async (req: NextRequest) => {
       log('Cleaned up %d expired handoff records', cleanedCount);
     });
 
-    return NextResponse.redirect(correctedUrl);
+    return NextResponse.redirect(successUrl);
   } catch (error) {
     log('Error in OIDC callback: %O', error);
 

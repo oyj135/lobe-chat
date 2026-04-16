@@ -1,8 +1,12 @@
 import { copyToClipboard } from '@lobehub/ui';
 import { produce } from 'immer';
-import type { StateCreator } from 'zustand';
+import { type StateCreator } from 'zustand';
 
-import type { Store as ConversationStore } from '../../../action';
+import { messageService } from '@/services/message';
+import { useChatStore } from '@/store/chat';
+import { cleanSpeakerTag } from '@/store/chat/utils/cleanSpeakerTag';
+
+import { type Store as ConversationStore } from '../../../action';
 import { dataSelectors } from '../../data/selectors';
 
 /**
@@ -11,6 +15,11 @@ import { dataSelectors } from '../../data/selectors';
  * Handles message state operations like loading, collapsed, etc.
  */
 export interface MessageStateAction {
+  /**
+   * Cancel compression and restore original messages
+   */
+  cancelCompression: (id: string) => Promise<void>;
+
   /**
    * Copy message content to clipboard
    */
@@ -24,7 +33,16 @@ export interface MessageStateAction {
   /**
    * Modify message content (with optimistic update)
    */
-  modifyMessageContent: (id: string, content: string) => Promise<void>;
+  modifyMessageContent: (
+    id: string,
+    content: string,
+    editorData?: Record<string, any> | null,
+  ) => Promise<void>;
+
+  /**
+   * Toggle compressed group expanded state
+   */
+  toggleCompressedGroupExpanded: (id: string, expanded?: boolean) => Promise<void>;
 
   /**
    * Toggle tool inspect expanded state
@@ -43,10 +61,34 @@ export const messageStateSlice: StateCreator<
   [],
   MessageStateAction
 > = (set, get) => ({
+  cancelCompression: async (id) => {
+    const message = dataSelectors.getDisplayMessageById(id)(get());
+    if (!message || message.role !== 'compressedGroup') return;
+
+    const { context, replaceMessages } = get();
+    if (!context.agentId || !context.topicId) return;
+
+    useChatStore
+      .getState()
+      .cancelOperations({ messageId: id, status: 'running' }, 'Compression cancelled');
+
+    // Call service to cancel compression
+    const { messages } = await messageService.cancelCompression({
+      agentId: context.agentId,
+      groupId: context.groupId,
+      messageGroupId: id,
+      threadId: context.threadId,
+      topicId: context.topicId,
+    });
+
+    // Replace messages with restored original messages
+    replaceMessages(messages);
+  },
+
   copyMessage: async (id, content) => {
     const { hooks } = get();
 
-    await copyToClipboard(content);
+    await copyToClipboard(cleanSpeakerTag(content));
 
     // ===== Hook: onMessageCopied =====
     if (hooks.onMessageCopied) {
@@ -71,7 +113,7 @@ export const messageStateSlice: StateCreator<
     );
   },
 
-  modifyMessageContent: async (id, content) => {
+  modifyMessageContent: async (id, content, editorData) => {
     const { hooks } = get();
 
     // Get original content for hook
@@ -79,12 +121,46 @@ export const messageStateSlice: StateCreator<
     const originalContent = originalMessage?.content;
 
     // Update content
-    await get().updateMessageContent(id, content);
+    await get().updateMessageContent(id, content, editorData ? { editorData } : undefined);
 
     // ===== Hook: onMessageModified =====
     if (hooks.onMessageModified) {
       hooks.onMessageModified(id, content, originalContent);
     }
+  },
+
+  toggleCompressedGroupExpanded: async (id, expanded) => {
+    const message = dataSelectors.getDisplayMessageById(id)(get());
+    if (!message || message.role !== 'compressedGroup') return;
+
+    const { context, internal_dispatchMessage, replaceMessages } = get();
+    if (!context.agentId || !context.topicId) return;
+
+    // If expanded is not provided, toggle current state
+    const currentExpanded = (message.metadata as any)?.expanded ?? false;
+    const nextExpanded = expanded ?? !currentExpanded;
+
+    // Optimistic update
+    internal_dispatchMessage({
+      id,
+      type: 'updateMessageGroupMetadata',
+      value: { expanded: nextExpanded },
+    });
+
+    // Persist to server and get updated messages
+    const { messages } = await messageService.updateMessageGroupMetadata({
+      context: {
+        agentId: context.agentId,
+        groupId: context.groupId,
+        threadId: context.threadId,
+        topicId: context.topicId,
+      },
+      expanded: nextExpanded,
+      messageGroupId: id,
+    });
+
+    // Sync with server data
+    replaceMessages(messages);
   },
 
   toggleInspectExpanded: async (id, expanded) => {

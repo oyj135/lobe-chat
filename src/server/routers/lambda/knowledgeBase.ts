@@ -1,9 +1,12 @@
+import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
+import { serverDBEnv } from '@/config/db';
 import { KnowledgeBaseModel } from '@/database/models/knowledgeBase';
 import { insertKnowledgeBasesSchema } from '@/database/schemas';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { FileService } from '@/server/services/file';
 import { type KnowledgeBaseItem } from '@/types/knowledgeBase';
 
 const knowledgeBaseProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
@@ -20,7 +23,22 @@ export const knowledgeBaseRouter = router({
   addFilesToKnowledgeBase: knowledgeBaseProcedure
     .input(z.object({ ids: z.array(z.string()), knowledgeBaseId: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      return ctx.knowledgeBaseModel.addFilesToKnowledgeBase(input.knowledgeBaseId, input.ids);
+      try {
+        return await ctx.knowledgeBaseModel.addFilesToKnowledgeBase(
+          input.knowledgeBaseId,
+          input.ids,
+        );
+      } catch (e: any) {
+        // Check for PostgreSQL unique constraint violation (code 23505)
+        const pgErrorCode = e?.cause?.cause?.code || e?.cause?.code || e?.code;
+        if (pgErrorCode === '23505') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'FILE_ALREADY_IN_KNOWLEDGE_BASE',
+          });
+        }
+        throw e;
+      }
     }),
 
   createKnowledgeBase: knowledgeBaseProcedure
@@ -52,7 +70,15 @@ export const knowledgeBaseRouter = router({
   }),
 
   removeAllKnowledgeBases: knowledgeBaseProcedure.mutation(async ({ ctx }) => {
-    return ctx.knowledgeBaseModel.deleteAll();
+    const result = await ctx.knowledgeBaseModel.deleteAllWithFiles(serverDBEnv.REMOVE_GLOBAL_FILE);
+
+    if (result.deletedFiles.length > 0) {
+      const fileService = new FileService(ctx.serverDB, ctx.userId);
+      const urls = result.deletedFiles.map((f) => f.url).filter(Boolean) as string[];
+      if (urls.length > 0) {
+        await fileService.deleteFiles(urls);
+      }
+    }
   }),
 
   removeFilesFromKnowledgeBase: knowledgeBaseProcedure
@@ -62,9 +88,20 @@ export const knowledgeBaseRouter = router({
     }),
 
   removeKnowledgeBase: knowledgeBaseProcedure
-    .input(z.object({ id: z.string(), removeFiles: z.boolean().optional() }))
+    .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      return ctx.knowledgeBaseModel.delete(input.id);
+      const result = await ctx.knowledgeBaseModel.deleteWithFiles(
+        input.id,
+        serverDBEnv.REMOVE_GLOBAL_FILE,
+      );
+
+      if (result.deletedFiles.length > 0) {
+        const fileService = new FileService(ctx.serverDB, ctx.userId);
+        const urls = result.deletedFiles.map((f) => f.url).filter(Boolean) as string[];
+        if (urls.length > 0) {
+          await fileService.deleteFiles(urls);
+        }
+      }
     }),
 
   updateKnowledgeBase: knowledgeBaseProcedure

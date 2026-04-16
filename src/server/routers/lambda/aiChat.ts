@@ -1,8 +1,5 @@
-import {
-  AiSendMessageServerSchema,
-  type SendMessageServerResponse,
-  StructureOutputSchema,
-} from '@lobechat/types';
+import { type CreateMessageParams, type SendMessageServerResponse } from '@lobechat/types';
+import { AiSendMessageServerSchema, RequestTrigger, StructureOutputSchema } from '@lobechat/types';
 import debug from 'debug';
 
 import { LOADING_FLAT } from '@/const/message';
@@ -45,12 +42,15 @@ export const aiChatRouter = router({
     const modelRuntime = await initModelRuntimeFromDB(ctx.serverDB, ctx.userId, input.provider);
 
     log('calling generateObject');
-    const result = await modelRuntime.generateObject({
-      messages: input.messages,
-      model: input.model,
-      schema: input.schema,
-      tools: input.tools,
-    });
+    const result = await modelRuntime.generateObject(
+      {
+        messages: input.messages,
+        model: input.model,
+        schema: input.schema,
+        tools: input.tools,
+      },
+      { metadata: { trigger: RequestTrigger.Chat } },
+    );
 
     log('generateObject completed, result: %O', result);
     return result;
@@ -72,7 +72,6 @@ export const aiChatRouter = router({
         if (!!context.sessionId) sessionId = context.sessionId;
       }
 
-      let messageId: string;
       let topicId = input.topicId!;
       let threadId = input.threadId;
       let createdThreadId: string | undefined;
@@ -121,21 +120,54 @@ export const aiChatRouter = router({
         }
       }
 
+      let parentId = input.newUserMessage.parentId;
+
+      if (input.preloadMessages?.length) {
+        log('creating %d preload messages before user message', input.preloadMessages.length);
+
+        for (const preloadMessage of input.preloadMessages) {
+          const preloadItem = await ctx.messageModel.create({
+            agentId: input.agentId,
+            content: preloadMessage.content,
+            groupId: input.groupId,
+            metadata: preloadMessage.metadata,
+            parentId,
+            plugin: preloadMessage.plugin as CreateMessageParams['plugin'],
+            role: preloadMessage.role,
+            sessionId,
+            threadId,
+            tool_call_id: preloadMessage.tool_call_id,
+            tools: preloadMessage.tools as CreateMessageParams['tools'],
+            topicId,
+          });
+
+          parentId = preloadItem.id;
+        }
+      }
+
       // create user message
       log('creating user message with content length: %d', input.newUserMessage.content.length);
+
+      // Build user message metadata with pageSelections if present
+      const userMessageMetadata = input.newUserMessage.pageSelections?.length
+        ? { pageSelections: input.newUserMessage.pageSelections }
+        : undefined;
+
       const userMessageItem = await ctx.messageModel.create({
         agentId: input.agentId,
         content: input.newUserMessage.content,
+        editorData: input.newUserMessage.editorData,
         files: input.newUserMessage.files,
         groupId: input.groupId,
-        parentId: input.newUserMessage.parentId,
+        metadata: userMessageMetadata,
+        parentId,
         role: 'user',
         sessionId,
         threadId,
         topicId,
       });
 
-      messageId = userMessageItem.id;
+      const messageId = userMessageItem.id;
       log('user message created with id: %s', messageId);
 
       // create assistant message

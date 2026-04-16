@@ -2,6 +2,8 @@ import { type DocumentItem } from '@lobechat/database/schemas';
 
 import { lambdaClient } from '@/libs/trpc/client';
 
+import { abortableRequest } from '../utils/abortableRequest';
+
 export interface CreateDocumentParams {
   content?: string;
   editorData: string;
@@ -28,6 +30,10 @@ export class DocumentService {
     return lambdaClient.document.createDocument.mutate(params);
   }
 
+  async createDocuments(documents: CreateDocumentParams[]): Promise<DocumentItem[]> {
+    return lambdaClient.document.createDocuments.mutate({ documents });
+  }
+
   async queryDocuments(params?: {
     current?: number;
     fileTypes?: string[];
@@ -37,7 +43,35 @@ export class DocumentService {
     return lambdaClient.document.queryDocuments.query(params);
   }
 
-  async getDocumentById(id: string): Promise<DocumentItem | undefined> {
+  /**
+   * Query page documents with standard filters for the page sidebar.
+   */
+  async getPageDocuments(pageSize: number = 20): Promise<DocumentItem[]> {
+    const result = await this.queryDocuments({
+      current: 0,
+      fileTypes: ['custom/document', 'application/pdf'],
+      pageSize,
+      sourceTypes: ['editor', 'file', 'api'],
+    });
+
+    return result.items
+      .filter(
+        (doc) =>
+          ['editor', 'file', 'api'].includes(doc.sourceType) &&
+          ['custom/document', 'application/pdf'].includes(doc.fileType),
+      )
+      .map((doc) => ({ ...doc, filename: doc.filename ?? doc.title ?? 'Untitled' }));
+  }
+
+  async getDocumentById(id: string, uniqueKey?: string): Promise<DocumentItem | undefined> {
+    if (uniqueKey) {
+      // Use fixed key so switching documents cancels the previous request
+      // This prevents race conditions where old document's data overwrites new document's editor
+      return abortableRequest.execute(uniqueKey, async (signal) =>
+        lambdaClient.document.getDocumentById.query({ id }, { signal }),
+      );
+    }
+
     return lambdaClient.document.getDocumentById.query({ id });
   }
 

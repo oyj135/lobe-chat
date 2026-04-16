@@ -1,6 +1,6 @@
 import type { LobeAgentChatConfig, LobeAgentConfig } from '@lobechat/types';
 
-import { GroupSupervisorContext } from './agents/group-supervisor/type';
+import type { GroupSupervisorContext } from './agents/group-supervisor/type';
 
 /**
  * Builtin Agent Slugs - unique identifiers for builtin agents
@@ -11,6 +11,7 @@ export const BUILTIN_AGENT_SLUGS = {
   groupSupervisor: 'group-supervisor',
   inbox: 'inbox',
   pageAgent: 'page-agent',
+  webOnboarding: 'web-onboarding',
 } as const;
 
 export type BuiltinAgentSlug = (typeof BUILTIN_AGENT_SLUGS)[keyof typeof BUILTIN_AGENT_SLUGS];
@@ -50,6 +51,9 @@ export interface RuntimeContext {
 
   /** Context for GroupSupervisor */
   groupSupervisorContext?: GroupSupervisorContext;
+
+  /** Whether running in development mode */
+  isDev?: boolean;
 
   /** Current model being used */
   model?: string;

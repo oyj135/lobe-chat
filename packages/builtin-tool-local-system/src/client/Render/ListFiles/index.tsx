@@ -1,23 +1,17 @@
-import { type LocalFileListState } from '@lobechat/builtin-tool-local-system';
-import { type ListLocalFileParams } from '@lobechat/electron-client-ipc';
-import { type BuiltinRenderProps } from '@lobechat/types';
-import React, { memo } from 'react';
-
-import { LocalFolder } from '@/features/LocalFile';
+import type { ListFilesState } from '@lobechat/tool-runtime';
+import type { BuiltinRenderProps } from '@lobechat/types';
+import { memo } from 'react';
 
 import SearchResult from './Result';
 
-const ListFiles = memo<BuiltinRenderProps<ListLocalFileParams, LocalFileListState>>(
-  ({ messageId, pluginError, args, pluginState }) => {
+const ListFiles = memo<BuiltinRenderProps<any, ListFilesState>>(
+  ({ messageId, pluginError, pluginState }) => {
     return (
-      <>
-        <LocalFolder path={args.path} />
-        <SearchResult
-          listResults={pluginState?.listResults}
-          messageId={messageId}
-          pluginError={pluginError}
-        />
-      </>
+      <SearchResult
+        listResults={pluginState?.files}
+        messageId={messageId}
+        pluginError={pluginError}
+      />
     );
   },
 );

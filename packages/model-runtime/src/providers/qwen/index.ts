@@ -5,6 +5,7 @@ import { resolveParameters } from '../../core/parameterResolver';
 import { QwenAIStream } from '../../core/streams';
 import { processMultiProviderModelList } from '../../utils/modelParse';
 import { createQwenImage } from './createImage';
+import { createQwenVideo } from './createVideo';
 
 export interface QwenModelCard {
   id: string;
@@ -51,17 +52,11 @@ export const LobeQwenAI = createOpenAICompatibleRuntime({
               thinking_budget:
                 thinking?.budget_tokens === 0 ? 0 : thinking?.budget_tokens || undefined,
             }
-          : [
-                'qwen3',
-                'qwen-turbo',
-                'qwen-plus',
-                'qwen-flash',
-                'deepseek-v3.1',
-                'deepseek-v3.2',
-                'glm',
-              ].some((keyword) => model.toLowerCase().includes(keyword))
+          : thinking
             ? {
-                enable_thinking: thinking !== undefined ? thinking.type === 'enabled' : false,
+                ...(thinking.type !== undefined && {
+                  enable_thinking: thinking.type === 'enabled',
+                }),
                 thinking_budget:
                   thinking?.budget_tokens === 0 ? 0 : thinking?.budget_tokens || undefined,
               }
@@ -88,6 +83,16 @@ export const LobeQwenAI = createOpenAICompatibleRuntime({
   createImage: createQwenImage,
   debug: {
     chatCompletion: () => process.env.DEBUG_QWEN_CHAT_COMPLETION === '1',
+  },
+  createVideo: createQwenVideo,
+  handlePollVideoStatus: async (inferenceId, options) => {
+    const { pollQwenVideoStatus } = await import('./createVideo');
+    const baseURL = options.baseURL || '';
+
+    const suffixIndex = baseURL.indexOf('/compatible-mode/v1');
+    const dashscopeURL = suffixIndex > -1 ? baseURL.slice(0, suffixIndex) : baseURL;
+
+    return pollQwenVideoStatus(inferenceId, options.apiKey || '', dashscopeURL);
   },
   models: async ({ client }) => {
     const modelsPage = (await client.models.list()) as any;

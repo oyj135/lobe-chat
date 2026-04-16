@@ -4,7 +4,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useFileStore } from '@/store/file';
-import { knowledgeBaseSelectors, useKnowledgeBaseStore } from '@/store/knowledgeBase';
+import { knowledgeBaseSelectors, useKnowledgeBaseStore } from '@/store/library';
 
 import { usePageEditorStore } from '../store';
 
@@ -40,7 +40,7 @@ interface FolderCrumb {
 const Breadcrumb = memo(() => {
   const { t } = useTranslation('file');
 
-  const currentTitle = usePageEditorStore((s) => s.currentTitle);
+  const title = usePageEditorStore((s) => s.title);
   const knowledgeBaseId = usePageEditorStore((s) => s.knowledgeBaseId);
   const parentId = usePageEditorStore((s) => s.parentId);
 
@@ -61,10 +61,10 @@ const Breadcrumb = memo(() => {
     return null;
   }
 
-  const documentTitle = currentTitle || t('pageEditor.titlePlaceholder');
+  const documentTitle = title || t('pageEditor.titlePlaceholder');
 
   return (
-    <Flexbox align={'center'} className={styles.breadcrumb} flex={1} gap={0} horizontal>
+    <Flexbox horizontal align={'center'} className={styles.breadcrumb} flex={1} gap={0}>
       {/* Knowledge Base (root) */}
       {knowledgeBaseId && (
         <>
@@ -77,7 +77,7 @@ const Breadcrumb = memo(() => {
 
       {/* Folder chain */}
       {folderChain.map((folder: FolderCrumb) => (
-        <Flexbox align={'center'} gap={0} horizontal key={folder.id}>
+        <Flexbox horizontal align={'center'} gap={0} key={folder.id}>
           <span className={styles.breadcrumbItem} style={{ cursor: 'default' }}>
             {folder.name}
           </span>

@@ -3,27 +3,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { uuid } from '@/utils/uuid';
 
+import { getTestDB } from '../../../core/getTestDB';
 import {
-  agents,
-  chatGroups,
-  chunks,
   embeddings,
-  fileChunks,
   files,
   messagePlugins,
-  messageQueries,
-  messageQueryChunks,
-  messageTTS,
-  messageTranslates,
   messages,
   messagesFiles,
+  messageTranslates,
+  messageTTS,
   sessions,
-  topics,
   users,
 } from '../../../schemas';
-import { LobeChatDatabase } from '../../../type';
+import type { LobeChatDatabase } from '../../../type';
 import { MessageModel } from '../../message';
-import { getTestDB } from '../../../core/getTestDB';
 import { codeEmbedding } from '../fixtures/embedding';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -47,7 +40,7 @@ beforeEach(async () => {
     ]);
     await trx.insert(files).values({
       id: 'f1',
-      userId: userId,
+      userId,
       url: 'abc',
       name: 'file-1',
       fileType: 'image/png',
@@ -290,7 +283,7 @@ describe('MessageModel Update Tests', () => {
         .insert(messages)
         .values([{ id: '1', userId, role: 'user', content: 'message 1' }]);
 
-      // 调用 deleteMessage 方法
+      // Call deleteMessage method
       await messageModel.deleteMessage('1');
 
       // Assert result
@@ -310,7 +303,7 @@ describe('MessageModel Update Tests', () => {
           .values([{ id: '2', toolCallId: 'tool1', identifier: 'plugin-1', userId }]);
       });
 
-      // 调用 deleteMessage 方法
+      // Call deleteMessage method
       await messageModel.deleteMessage('1');
 
       // Assert result
@@ -331,7 +324,7 @@ describe('MessageModel Update Tests', () => {
         .insert(messages)
         .values([{ id: '1', userId: otherUserId, role: 'user', content: 'message 1' }]);
 
-      // 调用 deleteMessage 方法
+      // Call deleteMessage method
       await messageModel.deleteMessage('1');
 
       // Assert result
@@ -348,7 +341,7 @@ describe('MessageModel Update Tests', () => {
         { id: '2', userId, role: 'user', content: 'message 2' },
       ]);
 
-      // 调用 deleteMessage 方法
+      // Call deleteMessage method
       await messageModel.deleteMessages(['1', '2']);
 
       // Assert result
@@ -365,7 +358,7 @@ describe('MessageModel Update Tests', () => {
         { id: '2', userId: otherUserId, role: 'user', content: 'message 1' },
       ]);
 
-      // 调用 deleteMessage 方法
+      // Call deleteMessage method
       await messageModel.deleteMessages(['1', '2']);
 
       // Assert result
@@ -383,7 +376,7 @@ describe('MessageModel Update Tests', () => {
         { id: '3', userId: otherUserId, role: 'user', content: 'message 3' },
       ]);
 
-      // 调用 deleteAllMessages 方法
+      // Call deleteAllMessages method
       await messageModel.deleteAllMessages();
 
       // Assert result
@@ -433,7 +426,7 @@ describe('MessageModel Update Tests', () => {
         },
       ]);
 
-      // 调用 updatePluginState 方法
+      // Call updatePluginState method
       await messageModel.updatePluginState('1', { key2: 'value2' });
 
       // Assert result
@@ -465,7 +458,7 @@ describe('MessageModel Update Tests', () => {
     });
 
     it('should throw an error if plugin does not exist', async () => {
-      // 调用 updatePluginState 方法
+      // Call updatePluginState method
       await expect(messageModel.updatePluginState('1', { key: 'value' })).rejects.toThrowError(
         'Plugin not found',
       );
@@ -485,7 +478,7 @@ describe('MessageModel Update Tests', () => {
         },
       ]);
 
-      // 调用 updatePluginState 方法
+      // Call updatePluginState method
       await messageModel.updateMessagePlugin('1', { identifier: 'plugin2' });
 
       // Assert result
@@ -495,10 +488,46 @@ describe('MessageModel Update Tests', () => {
     });
 
     it('should throw an error if plugin does not exist', async () => {
-      // 调用 updateMessagePlugin 方法（修复：之前错误地调用了 updatePluginState）
+      // Call updateMessagePlugin method (fix: previously incorrectly called updatePluginState)
       await expect(
         messageModel.updateMessagePlugin('non-existent-id', { identifier: 'test' }),
       ).rejects.toThrowError('Plugin not found');
+    });
+  });
+
+  describe('findMessagePlugin', () => {
+    it('should return the plugin row (identifier / apiName / toolCallId / ...) for a tool message', async () => {
+      await serverDB.insert(messages).values({ id: '1', role: 'tool', content: '', userId });
+      await serverDB.insert(messagePlugins).values([
+        {
+          id: '1',
+          apiName: 'runCommand',
+          arguments: '{"command":"echo"}',
+          identifier: 'lobe-local-system',
+          toolCallId: 'call_abc',
+          type: 'builtin',
+          userId,
+        },
+      ]);
+
+      const plugin = await messageModel.findMessagePlugin('1');
+
+      expect(plugin).toEqual(
+        expect.objectContaining({
+          apiName: 'runCommand',
+          arguments: '{"command":"echo"}',
+          id: '1',
+          identifier: 'lobe-local-system',
+          toolCallId: 'call_abc',
+          type: 'builtin',
+        }),
+      );
+    });
+
+    it('should return undefined when no plugin row exists for the given id', async () => {
+      const plugin = await messageModel.findMessagePlugin('non-existent-id');
+
+      expect(plugin).toBeUndefined();
     });
   });
 
@@ -784,7 +813,7 @@ describe('MessageModel Update Tests', () => {
         metadata: { existingKey: 'existingValue' },
       });
 
-      // 调用 updateMetadata 方法
+      // Call updateMetadata method
       await messageModel.updateMetadata('msg-with-metadata', { newKey: 'newValue' });
 
       // Assert result
@@ -815,7 +844,7 @@ describe('MessageModel Update Tests', () => {
         },
       });
 
-      // 调用 updateMetadata 方法
+      // Call updateMetadata method
       await messageModel.updateMetadata('msg-merge-metadata', {
         level1: {
           level2a: 'updated',
@@ -824,7 +853,7 @@ describe('MessageModel Update Tests', () => {
         newTopLevel: 'value',
       });
 
-      // Assert result - 应该使用 es-toolkit merge 行为
+      // Assert result - should use es-toolkit merge behavior
       const result = await serverDB
         .select()
         .from(messages)
@@ -842,10 +871,10 @@ describe('MessageModel Update Tests', () => {
     });
 
     it('should handle non-existent message IDs', async () => {
-      // 调用 updateMetadata 方法，尝试更新不存在的消息
+      // Call updateMetadata method, trying to update a non-existent message
       const result = await messageModel.updateMetadata('non-existent-id', { key: 'value' });
 
-      // Assert result - 应该返回 undefined
+      // Assert result - should return undefined
       expect(result).toBeUndefined();
     });
 
@@ -859,10 +888,10 @@ describe('MessageModel Update Tests', () => {
         metadata: { originalKey: 'originalValue' },
       });
 
-      // 调用 updateMetadata 方法，传递空对象
+      // Call updateMetadata method, passing empty object
       await messageModel.updateMetadata('msg-empty-metadata', {});
 
-      // Assert result - 原始 metadata 应该保持不变
+      // Assert result - original metadata should remain unchanged
       const result = await serverDB
         .select()
         .from(messages)
@@ -881,10 +910,10 @@ describe('MessageModel Update Tests', () => {
         metadata: null,
       });
 
-      // 调用 updateMetadata 方法
+      // Call updateMetadata method
       await messageModel.updateMetadata('msg-null-metadata', { key: 'value' });
 
-      // Assert result - 应该创建新的 metadata
+      // Assert result - should create new metadata
       const result = await serverDB
         .select()
         .from(messages)
@@ -894,7 +923,7 @@ describe('MessageModel Update Tests', () => {
     });
 
     it('should only update messages belonging to the current user', async () => {
-      // Create test data - 其他用户的消息
+      // Create test data - messages from other users
       await serverDB.insert(messages).values({
         id: 'msg-other-user',
         userId: otherUserId,
@@ -903,15 +932,15 @@ describe('MessageModel Update Tests', () => {
         metadata: { originalKey: 'originalValue' },
       });
 
-      // 调用 updateMetadata 方法
+      // Call updateMetadata method
       const result = await messageModel.updateMetadata('msg-other-user', {
         hackedKey: 'hackedValue',
       });
 
-      // Assert result - 应该返回 undefined
+      // Assert result - should return undefined
       expect(result).toBeUndefined();
 
-      // 验证原始 metadata 未被修改
+      // Verify original metadata was not modified
       const dbResult = await serverDB
         .select()
         .from(messages)
@@ -938,7 +967,7 @@ describe('MessageModel Update Tests', () => {
         },
       });
 
-      // 调用 updateMetadata 方法
+      // Call updateMetadata method
       await messageModel.updateMetadata('msg-complex-metadata', {
         config: {
           settings: {
@@ -997,7 +1026,6 @@ describe('MessageModel Update Tests', () => {
         role: 'tool',
         content: 'search result',
         parentId: 'assistant-msg-1',
-        tool_call_id: 'tool-call-1',
       });
 
       // Create plugin record
@@ -1065,7 +1093,6 @@ describe('MessageModel Update Tests', () => {
           role: 'tool',
           content: 'search result',
           parentId: 'assistant-msg-2',
-          tool_call_id: 'tool-call-search',
         },
         {
           id: 'tool-msg-calc',
@@ -1073,7 +1100,6 @@ describe('MessageModel Update Tests', () => {
           role: 'tool',
           content: 'calc result',
           parentId: 'assistant-msg-2',
-          tool_call_id: 'tool-call-calc',
         },
       ]);
 
@@ -1182,7 +1208,6 @@ describe('MessageModel Update Tests', () => {
         role: 'tool' as const,
         content: '',
         parentId: `perf-assistant-${i}`,
-        tool_call_id: `perf-tool-call-${i}`,
       }));
 
       await serverDB.insert(messages).values(toolMessagesData);
@@ -1230,7 +1255,7 @@ describe('MessageModel Update Tests', () => {
         .insert(messages)
         .values([{ id: '1', userId, role: 'user', content: 'message 1' }]);
 
-      // 调用 updateTranslate 方法
+      // Call updateTranslate method
       await messageModel.updateTranslate('1', {
         content: 'translated message 1',
         from: 'en',
@@ -1258,7 +1283,7 @@ describe('MessageModel Update Tests', () => {
           .values([{ id: '1', content: 'translated message 1', from: 'en', to: 'zh', userId }]);
       });
 
-      // 调用 updateTranslate 方法
+      // Call updateTranslate method
       await messageModel.updateTranslate('1', { content: 'updated translated message 1' });
 
       // Assert result
@@ -1278,7 +1303,7 @@ describe('MessageModel Update Tests', () => {
         .insert(messages)
         .values([{ id: '1', userId, role: 'user', content: 'message 1' }]);
 
-      // 调用 updateTTS 方法
+      // Call updateTTS method
       await messageModel.updateTTS('1', { contentMd5: 'md5', file: 'f1', voice: 'voice1' });
 
       // Assert result
@@ -1299,13 +1324,113 @@ describe('MessageModel Update Tests', () => {
           .values([{ id: '1', contentMd5: 'md5', fileId: 'f1', voice: 'voice1', userId }]);
       });
 
-      // 调用 updateTTS 方法
+      // Call updateTTS method
       await messageModel.updateTTS('1', { voice: 'updated voice1' });
 
       // Assert result
       const result = await serverDB.select().from(messageTTS).where(eq(messageTTS.id, '1'));
 
       expect(result[0].voice).toBe('updated voice1');
+    });
+  });
+
+  describe('addFiles', () => {
+    it('should add file associations to a message', async () => {
+      await serverDB.insert(messages).values({
+        id: 'msg-add-files',
+        userId,
+        role: 'user',
+        content: 'test message',
+      });
+
+      const result = await messageModel.addFiles('msg-add-files', ['f1']);
+      expect(result.success).toBe(true);
+
+      const messageFiles = await serverDB
+        .select()
+        .from(messagesFiles)
+        .where(eq(messagesFiles.messageId, 'msg-add-files'));
+      expect(messageFiles).toHaveLength(1);
+      expect(messageFiles[0].fileId).toBe('f1');
+    });
+
+    it('should return success true for empty fileIds array', async () => {
+      const result = await messageModel.addFiles('msg-any', []);
+      expect(result.success).toBe(true);
+    });
+
+    it('should return success false on database error', async () => {
+      // Try to add a file with a non-existent fileId (FK constraint violation)
+      await serverDB.insert(messages).values({
+        id: 'msg-add-files-err',
+        userId,
+        role: 'user',
+        content: 'test',
+      });
+
+      const result = await messageModel.addFiles('msg-add-files-err', ['non-existent-file-id']);
+      expect(result.success).toBe(false);
+    });
+
+    it('should add multiple files at once', async () => {
+      await serverDB
+        .insert(files)
+        .values([
+          { id: 'f2', userId, url: 'url2', name: 'file-2', fileType: 'image/jpeg', size: 500 },
+        ]);
+      await serverDB.insert(messages).values({
+        id: 'msg-multi-files',
+        userId,
+        role: 'user',
+        content: 'test',
+      });
+
+      const result = await messageModel.addFiles('msg-multi-files', ['f1', 'f2']);
+      expect(result.success).toBe(true);
+
+      const messageFiles = await serverDB
+        .select()
+        .from(messagesFiles)
+        .where(eq(messagesFiles.messageId, 'msg-multi-files'));
+      expect(messageFiles).toHaveLength(2);
+    });
+  });
+
+  describe('updateToolArguments - parent message without tools', () => {
+    it('should return success false when parent message has no tools', async () => {
+      // Create assistant message WITHOUT tools
+      await serverDB.insert(messages).values({
+        id: 'assistant-no-tools',
+        userId,
+        role: 'assistant',
+        content: 'No tools here',
+        tools: null,
+      });
+
+      // Create tool message pointing to the assistant
+      await serverDB.insert(messages).values({
+        id: 'tool-msg-orphan',
+        userId,
+        role: 'tool',
+        content: 'tool result',
+        parentId: 'assistant-no-tools',
+      });
+
+      // Create plugin record
+      await serverDB.insert(messagePlugins).values({
+        id: 'tool-msg-orphan',
+        toolCallId: 'orphan-tool-call',
+        identifier: 'test-plugin',
+        arguments: '{"key":"val"}',
+        userId,
+      });
+
+      // Should fail because parent message has no tools
+      const result = await messageModel.updateToolArguments(
+        'orphan-tool-call',
+        '{"key":"updated"}',
+      );
+      expect(result.success).toBe(false);
     });
   });
 });

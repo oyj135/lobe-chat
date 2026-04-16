@@ -77,25 +77,35 @@ export class ShortcutManager {
     try {
       logger.debug(`Updating shortcut ${id} to ${accelerator}`);
 
-      // 1. 检查 ID 是否有效
+      // 1. Check if ID is valid
       if (!DEFAULT_SHORTCUTS_CONFIG[id]) {
         logger.error(`Invalid shortcut ID: ${id}`);
         return { errorType: 'INVALID_ID', success: false };
       }
 
-      // 2. 基本格式校验
-      if (!accelerator || typeof accelerator !== 'string' || accelerator.trim() === '') {
+      // 2. Basic format validation
+      if (typeof accelerator !== 'string') {
         logger.error(`Invalid accelerator format: ${accelerator}`);
         return { errorType: 'INVALID_FORMAT', success: false };
       }
 
-      // 转换前端格式到 Electron 格式
-      const convertedAccelerator = this.convertAcceleratorFormat(accelerator.trim());
+      const trimmedAccelerator = accelerator.trim();
+
+      // Empty value means disable this shortcut binding
+      if (trimmedAccelerator === '') {
+        this.shortcutsConfig[id] = '';
+        this.saveShortcutsConfig();
+        this.registerConfiguredShortcuts();
+        return { success: true };
+      }
+
+      // Convert frontend format to Electron format
+      const convertedAccelerator = this.convertAcceleratorFormat(trimmedAccelerator);
       const cleanAccelerator = convertedAccelerator.toLowerCase();
 
       logger.debug(`Converted accelerator from ${accelerator} to ${convertedAccelerator}`);
 
-      // 3. 检查是否包含 + 号（修饰键格式）
+      // 3. Check if contains + sign (modifier key format)
       if (!cleanAccelerator.includes('+')) {
         logger.error(
           `Invalid accelerator format: ${cleanAccelerator}. Must contain modifier keys like 'CommandOrControl+E'`,
@@ -103,7 +113,7 @@ export class ShortcutManager {
         return { errorType: 'INVALID_FORMAT', success: false };
       }
 
-      // 4. 检查是否有基本的修饰键
+      // 4. Check if has basic modifier keys
       const hasModifier = ['CommandOrControl', 'Command', 'Ctrl', 'Alt', 'Shift'].some((modifier) =>
         cleanAccelerator.includes(modifier.toLowerCase()),
       );
@@ -113,7 +123,7 @@ export class ShortcutManager {
         return { errorType: 'NO_MODIFIER', success: false };
       }
 
-      // 5. 检查冲突
+      // 5. Check for conflicts
       for (const [existingId, existingAccelerator] of Object.entries(this.shortcutsConfig)) {
         if (
           existingId !== id &&
@@ -125,7 +135,7 @@ export class ShortcutManager {
         }
       }
 
-      // 6. 尝试注册测试（检查是否被系统占用）
+      // 6. Try test registration (check if occupied by system)
       const testSuccess = globalShortcut.register(convertedAccelerator, () => {});
       if (!testSuccess) {
         logger.error(
@@ -133,11 +143,11 @@ export class ShortcutManager {
         );
         return { errorType: 'SYSTEM_OCCUPIED', success: false };
       } else {
-        // 测试成功，立即取消注册
+        // Test successful, immediately unregister
         globalShortcut.unregister(convertedAccelerator);
       }
 
-      // 7. 更新配置
+      // 7. Update configuration
       this.shortcutsConfig[id] = convertedAccelerator;
 
       this.saveShortcutsConfig();
@@ -221,7 +231,7 @@ export class ShortcutManager {
       // If no configuration, use default configuration
       if (!config || Object.keys(config).length === 0) {
         logger.debug('No shortcuts config found, using defaults');
-        this.shortcutsConfig = DEFAULT_SHORTCUTS_CONFIG;
+        this.shortcutsConfig = { ...DEFAULT_SHORTCUTS_CONFIG };
         this.saveShortcutsConfig();
       } else {
         // Filter out invalid shortcuts that are not in DEFAULT_SHORTCUTS_CONFIG
@@ -257,7 +267,7 @@ export class ShortcutManager {
       logger.debug('Loaded shortcuts config:', this.shortcutsConfig);
     } catch (error) {
       logger.error('Error loading shortcuts config:', error);
-      this.shortcutsConfig = DEFAULT_SHORTCUTS_CONFIG;
+      this.shortcutsConfig = { ...DEFAULT_SHORTCUTS_CONFIG };
       this.saveShortcutsConfig();
     }
   }
@@ -285,7 +295,7 @@ export class ShortcutManager {
     Object.entries(this.shortcutsConfig).forEach(([id, accelerator]) => {
       logger.debug(`Registering shortcut '${id}' with ${accelerator}`);
 
-      // 只注册在 DEFAULT_SHORTCUTS_CONFIG 中存在的快捷键
+      // Only register shortcuts that exist in DEFAULT_SHORTCUTS_CONFIG
       if (!DEFAULT_SHORTCUTS_CONFIG[id]) {
         logger.debug(`Skipping shortcut '${id}' - not found in DEFAULT_SHORTCUTS_CONFIG`);
         return;

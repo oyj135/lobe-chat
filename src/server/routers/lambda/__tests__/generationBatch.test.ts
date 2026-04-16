@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { GenerationBatchModel } from '@/database/models/generationBatch';
-import { GenerationBatchItem } from '@/database/schemas/generation';
+import { type GenerationBatchItem } from '@/database/schemas/generation';
 import { FileService } from '@/server/services/file';
+import { getVideoAvgLatency } from '@/server/services/generation/latency';
 
 import { generationBatchRouter } from '../generationBatch';
 
 vi.mock('@/database/models/generationBatch');
 vi.mock('@/server/services/file');
+vi.mock('@/server/services/generation/latency');
 
 describe('generationBatchRouter', () => {
   const mockCtx = {
@@ -74,7 +76,7 @@ describe('generationBatchRouter', () => {
 
     const mockDelete = vi.fn().mockResolvedValue({
       deletedBatch: mockDeletedBatch,
-      thumbnailUrls: [], // 没有缩略图
+      filesToDelete: [], // no thumbnails
     });
     const mockDeleteFiles = vi.fn();
 
@@ -97,7 +99,7 @@ describe('generationBatchRouter', () => {
 
     expect(result).toEqual(mockDeletedBatch);
     expect(mockDelete).toHaveBeenCalledWith(mockBatchId);
-    expect(mockDeleteFiles).not.toHaveBeenCalled(); // 没有文件要删除
+    expect(mockDeleteFiles).not.toHaveBeenCalled(); // no files to delete
   });
 
   it('should delete generation batch with thumbnails', async () => {
@@ -121,7 +123,7 @@ describe('generationBatchRouter', () => {
 
     const mockDelete = vi.fn().mockResolvedValue({
       deletedBatch: mockDeletedBatch,
-      thumbnailUrls: mockThumbnailUrls,
+      filesToDelete: mockThumbnailUrls,
     });
     const mockDeleteFiles = vi.fn().mockResolvedValue(true);
 
@@ -168,7 +170,7 @@ describe('generationBatchRouter', () => {
 
     const mockDelete = vi.fn().mockResolvedValue({
       deletedBatch: mockDeletedBatch,
-      thumbnailUrls: mockThumbnailUrls,
+      filesToDelete: mockThumbnailUrls,
     });
 
     // Mock thumbnail deletion to fail
@@ -197,7 +199,7 @@ describe('generationBatchRouter', () => {
     expect(mockDelete).toHaveBeenCalledWith(mockBatchId);
     expect(mockDeleteFiles).toHaveBeenCalledWith(mockThumbnailUrls);
     expect(consoleSpy).toHaveBeenCalledWith(
-      'Failed to delete thumbnail files from S3:',
+      'Failed to delete files from S3:',
       expect.any(Error),
     );
 
@@ -229,12 +231,12 @@ describe('generationBatchRouter', () => {
 
     expect(result).toBeUndefined();
     expect(mockDelete).toHaveBeenCalledWith(mockBatchId);
-    expect(mockDeleteFiles).not.toHaveBeenCalled(); // 没有文件要删除
+    expect(mockDeleteFiles).not.toHaveBeenCalled(); // no files to delete
   });
 
   it('should handle large number of thumbnails deletion', async () => {
     const mockBatchId = 'batch-with-many-thumbnails';
-    // 模拟包含大量缩略图的批次
+    // Simulate a batch with many thumbnails
     const mockThumbnailUrls = Array.from({ length: 50 }, (_, i) => `thumb${i + 1}.jpg`);
     const mockDeletedBatch: GenerationBatchItem = {
       id: mockBatchId,
@@ -254,7 +256,7 @@ describe('generationBatchRouter', () => {
 
     const mockDelete = vi.fn().mockResolvedValue({
       deletedBatch: mockDeletedBatch,
-      thumbnailUrls: mockThumbnailUrls,
+      filesToDelete: mockThumbnailUrls,
     });
     const mockDeleteFiles = vi.fn().mockResolvedValue(true);
 
@@ -336,7 +338,7 @@ describe('generationBatchRouter', () => {
 
     const mockDelete = vi.fn().mockResolvedValue({
       deletedBatch: mockDeletedBatch,
-      thumbnailUrls: mockThumbnailUrls,
+      filesToDelete: mockThumbnailUrls,
     });
 
     // Mock partial failure - some thumbnails could not be deleted
@@ -367,10 +369,99 @@ describe('generationBatchRouter', () => {
     expect(mockDelete).toHaveBeenCalledWith(mockBatchId);
     expect(mockDeleteFiles).toHaveBeenCalledWith(mockThumbnailUrls);
     expect(consoleSpy).toHaveBeenCalledWith(
-      'Failed to delete thumbnail files from S3:',
+      'Failed to delete files from S3:',
       expect.any(Error),
     );
 
     consoleSpy.mockRestore();
+  });
+
+  describe('getGenerationBatches latency enrichment', () => {
+    const mockBatches = [
+      { id: 'batch-1', model: 'model-a', generations: [] },
+      { id: 'batch-2', model: 'model-b', generations: [] },
+    ];
+
+    it('should skip latency enrichment when type is image', async () => {
+      const mockQuery = vi.fn().mockResolvedValue(mockBatches);
+      vi.mocked(GenerationBatchModel).mockImplementation(
+        () => ({ queryGenerationBatchesByTopicIdWithGenerations: mockQuery }) as any,
+      );
+      vi.mocked(FileService).mockImplementation(() => ({}) as any);
+
+      const caller = generationBatchRouter.createCaller(mockCtx);
+      const result = await caller.getGenerationBatches({ topicId: 'topic-1', type: 'image' });
+
+      expect(result).toEqual(mockBatches);
+      expect(getVideoAvgLatency).not.toHaveBeenCalled();
+    });
+
+    it('should skip latency enrichment when type is omitted', async () => {
+      const mockQuery = vi.fn().mockResolvedValue(mockBatches);
+      vi.mocked(GenerationBatchModel).mockImplementation(
+        () => ({ queryGenerationBatchesByTopicIdWithGenerations: mockQuery }) as any,
+      );
+      vi.mocked(FileService).mockImplementation(() => ({}) as any);
+
+      const caller = generationBatchRouter.createCaller(mockCtx);
+      const result = await caller.getGenerationBatches({ topicId: 'topic-1' });
+
+      expect(result).toEqual(mockBatches);
+      expect(getVideoAvgLatency).not.toHaveBeenCalled();
+    });
+
+    it('should enrich batches with latency when type is video', async () => {
+      const mockQuery = vi.fn().mockResolvedValue(mockBatches);
+      vi.mocked(GenerationBatchModel).mockImplementation(
+        () => ({ queryGenerationBatchesByTopicIdWithGenerations: mockQuery }) as any,
+      );
+      vi.mocked(FileService).mockImplementation(() => ({}) as any);
+      vi.mocked(getVideoAvgLatency).mockImplementation(async (model) => {
+        if (model === 'model-a') return 120_000;
+        if (model === 'model-b') return 180_000;
+        return null;
+      });
+
+      const caller = generationBatchRouter.createCaller(mockCtx);
+      const result = await caller.getGenerationBatches({ topicId: 'topic-1', type: 'video' });
+
+      expect(result).toEqual([
+        { ...mockBatches[0], avgLatencyMs: 120_000 },
+        { ...mockBatches[1], avgLatencyMs: 180_000 },
+      ]);
+    });
+
+    it('should deduplicate model latency lookups', async () => {
+      const sameModelBatches = [
+        { id: 'batch-1', model: 'model-a', generations: [] },
+        { id: 'batch-2', model: 'model-a', generations: [] },
+        { id: 'batch-3', model: 'model-a', generations: [] },
+      ];
+      const mockQuery = vi.fn().mockResolvedValue(sameModelBatches);
+      vi.mocked(GenerationBatchModel).mockImplementation(
+        () => ({ queryGenerationBatchesByTopicIdWithGenerations: mockQuery }) as any,
+      );
+      vi.mocked(FileService).mockImplementation(() => ({}) as any);
+      vi.mocked(getVideoAvgLatency).mockResolvedValue(100_000);
+
+      const caller = generationBatchRouter.createCaller(mockCtx);
+      await caller.getGenerationBatches({ topicId: 'topic-1', type: 'video' });
+
+      expect(getVideoAvgLatency).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fallback to null when latency lookup fails', async () => {
+      const mockQuery = vi.fn().mockResolvedValue([mockBatches[0]]);
+      vi.mocked(GenerationBatchModel).mockImplementation(
+        () => ({ queryGenerationBatchesByTopicIdWithGenerations: mockQuery }) as any,
+      );
+      vi.mocked(FileService).mockImplementation(() => ({}) as any);
+      vi.mocked(getVideoAvgLatency).mockRejectedValue(new Error('DB timeout'));
+
+      const caller = generationBatchRouter.createCaller(mockCtx);
+      const result = await caller.getGenerationBatches({ topicId: 'topic-1', type: 'video' });
+
+      expect(result).toEqual([{ ...mockBatches[0], avgLatencyMs: null }]);
+    });
   });
 });

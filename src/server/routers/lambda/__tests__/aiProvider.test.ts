@@ -1,10 +1,11 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import { AiProviderDetailItem, AiProviderRuntimeState } from '@/types/aiProvider';
+import { type AiProviderDetailItem, type AiProviderRuntimeState } from '@/types/aiProvider';
 
 import { aiProviderRouter } from '../aiProvider';
 
@@ -38,8 +39,9 @@ describe('aiProviderRouter', () => {
     enabledAiModels: [],
     enabledAiProviders: [],
     enabledChatAiProviders: [],
-    runtimeConfig: {},
     enabledImageAiProviders: [],
+    enabledVideoAiProviders: [],
+    runtimeConfig: {},
   };
 
   beforeEach(() => {
@@ -181,6 +183,7 @@ describe('aiProviderRouter', () => {
         mockProviderId,
         { checkModel: 'gpt-4' },
         mockGateKeeper.encrypt,
+        KeyVaultsGateKeeper.getUserKeyVaults,
       );
     });
   });

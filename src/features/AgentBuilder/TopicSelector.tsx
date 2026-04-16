@@ -1,7 +1,7 @@
-import { ActionIcon, DropdownMenu, type DropdownMenuCheckboxItem, Flexbox } from '@lobehub/ui';
+import { type DropdownMenuCheckboxItem } from '@lobehub/ui';
+import { ActionIcon, DropdownMenu, Flexbox } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
 import { Clock3Icon, PlusIcon } from 'lucide-react';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -10,8 +10,6 @@ import { DESKTOP_HEADER_ICON_SIZE } from '@/const/layoutTokens';
 import NavHeader from '@/features/NavHeader';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/slices/topic/selectors';
-
-dayjs.extend(relativeTime);
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   time: css`
@@ -37,7 +35,9 @@ const TopicSelector = memo<TopicSelectorProps>(({ agentId }) => {
   const { t } = useTranslation('topic');
 
   // Fetch topics for the agent builder
-  useChatStore((s) => s.useFetchTopics)(true, { agentId });
+  const useFetchTopics = useChatStore((s) => s.useFetchTopics);
+
+  useFetchTopics(true, { agentId });
 
   const [activeTopicId, switchTopic, topics] = useChatStore((s) => [
     s.activeTopicId,
@@ -64,7 +64,7 @@ const TopicSelector = memo<TopicSelectorProps>(({ agentId }) => {
           closeOnClick: true,
           key: topic.id,
           label: (
-            <Flexbox align="center" gap={4} horizontal justify="space-between" width="100%">
+            <Flexbox horizontal align="center" gap={4} justify="space-between" width="100%">
               <span className={styles.title}>{topic.title}</span>
               <span className={styles.time}>{displayTime}</span>
             </Flexbox>
@@ -83,6 +83,7 @@ const TopicSelector = memo<TopicSelectorProps>(({ agentId }) => {
 
   return (
     <NavHeader
+      showTogglePanelButton={false}
       left={
         activeTopic?.title ? <span className={styles.title}>{activeTopic.title}</span> : undefined
       }
@@ -90,9 +91,9 @@ const TopicSelector = memo<TopicSelectorProps>(({ agentId }) => {
         <>
           <ActionIcon
             icon={PlusIcon}
-            onClick={() => switchTopic()}
             size={DESKTOP_HEADER_ICON_SIZE}
             title={t('actions.addNewTopic')}
+            onClick={() => switchTopic()}
           />
           <DropdownMenu
             items={items}
@@ -104,7 +105,6 @@ const TopicSelector = memo<TopicSelectorProps>(({ agentId }) => {
           </DropdownMenu>
         </>
       }
-      showTogglePanelButton={false}
     />
   );
 });

@@ -1,19 +1,19 @@
-import { ModelPerformance, ModelTokensUsage, ModelUsage } from '@lobechat/types';
+import type { ModelPerformance, ModelTokensUsage, ModelUsage } from '@lobechat/types';
 
-import { MessageToolCall, MessageToolCallChunk } from './toolsCalling';
+import type { MessageToolCall, MessageToolCallChunk } from './toolsCalling';
 
 export type LLMRoleType = 'user' | 'system' | 'assistant' | 'function' | 'tool';
 
 export type ChatResponseFormat =
   | { type: 'json_object' }
   | {
-      json_schema: {
-        name: string;
-        schema: Record<string, any>;
-        strict?: boolean;
-      };
-      type: 'json_schema';
+    json_schema: {
+      name: string;
+      schema: Record<string, any>;
+      strict?: boolean;
     };
+    type: 'json_schema';
+  };
 
 interface UserMessageContentPartThinking {
   signature: string;
@@ -61,16 +61,17 @@ export interface OpenAIChatMessage {
  */
 export interface ChatStreamPayload {
   apiMode?: 'chatCompletion' | 'responses';
+  effort?: 'low' | 'medium' | 'high' | 'max';
   /**
-   * 开启上下文缓存
+   * Enable context caching
    */
   enabledContextCaching?: boolean;
   /**
-   * 是否开启搜索
+   * Whether to enable search
    */
   enabledSearch?: boolean;
   /**
-   * @title 控制生成文本中的惩罚系数，用于减少重复性
+   * @title Penalty coefficient for reducing repetitiveness in generated text
    * @default 0
    */
   frequency_penalty?: number;
@@ -79,27 +80,42 @@ export interface ChatStreamPayload {
    */
   imageAspectRatio?: string;
   /**
-   * @title Image resolution for image generation (e.g., '1K', '2K', '4K')
+   * @title Image resolution for image generation (e.g., '512px', '1K', '2K', '4K')
    */
-  imageResolution?: '1K' | '2K' | '4K';
+  imageResolution?: '512px' | '1K' | '2K' | '4K';
+  logprobs?: boolean;
   /**
-   * @title 生成文本的最大长度
+   * @title Maximum length of generated text
    */
   max_tokens?: number;
   /**
-   * @title 聊天信息列表
+   * @title List of chat messages
    */
   messages: OpenAIChatMessage[];
   /**
-   * @title 模型名称
+   * @title Custom text chunks for mock response
+   */
+  mockChunks?: string[];
+  /**
+   * @title Delay in milliseconds between mock chunks
+   * @default 50
+   */
+  mockDelayMs?: number;
+  /**
+   * @title Enable mock response for benchmark testing
+   * @description When true, returns a simulated SSE stream without calling real LLM API
+   */
+  mockResponse?: boolean;
+  /**
+   * @title Model name
    */
   model: string;
   /**
-   * @title 返回的文本数量
+   * @title Number of text responses to return
    */
   n?: number;
   /**
-   * @title 控制生成文本中的惩罚系数，用于减少主题的变化
+   * @title Penalty coefficient for reducing topic variation in generated text
    * @default 0
    */
   presence_penalty?: number;
@@ -108,16 +124,16 @@ export interface ChatStreamPayload {
     effort?: string;
     summary?: string;
   };
-  reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high';
-  responseMode?: 'stream' | 'json';
+  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   response_format?: ChatResponseFormat;
+  responseMode?: 'stream' | 'json';
   /**
-   * @title 是否开启流式请求
+   * @title Whether to enable streaming requests
    * @default true
    */
   stream?: boolean;
   /**
-   * @title 生成文本的随机度量，用于控制文本的创造性和多样性
+   * @title Randomness measure for generated text, controls creativity and diversity
    * @default 1
    */
   temperature?: number;
@@ -129,23 +145,24 @@ export interface ChatStreamPayload {
    */
   thinking?: {
     budget_tokens: number;
-    type: 'enabled' | 'disabled';
+    type?: 'enabled' | 'disabled' | 'adaptive';
   };
   thinkingBudget?: number;
   /**
    * Thinking level for Gemini models (e.g., gemini-3.0-pro)
    */
-  thinkingLevel?: 'low' | 'high';
+  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
   tool_choice?: string;
   tools?: ChatCompletionTool[];
   /**
-   * @title 控制生成文本中最高概率的单个令牌
+   * @title Controls the highest probability single token in generated text
    * @default 1
    */
+  top_logprobs?: number;
   top_p?: number;
   truncation?: 'auto' | 'disabled';
   /**
-   * @title Gemini URL 上下文获取工具开关
+   * @title Gemini URL context fetching tool toggle
    */
   urlContext?: boolean;
   verbosity?: 'low' | 'medium' | 'high';
@@ -157,6 +174,8 @@ export interface ChatMethodOptions {
    * response headers
    */
   headers?: Record<string, any>;
+  /** Metadata passed to hooks (billing, tracing, etc.) */
+  metadata?: Record<string, unknown>;
   /**
    * send the request to the ai api endpoint
    */
@@ -201,6 +220,7 @@ export interface ChatCompletionTool {
 }
 
 export interface OnFinishData {
+  error?: any;
   grounding?: any;
   speed?: ModelPerformance;
   text: string;
@@ -250,6 +270,8 @@ export interface ChatStreamCallbacks {
    * Used for models that return structured content with mixed text and images.
    */
   onContentPart?: (data: ContentPartData) => Promise<void> | void;
+  /** `onError`: Called when a stream error event is received from the provider. */
+  onError?: (error: any) => Promise<void> | void;
   /**
    * `onFinal`: Called once when the stream is closed with the final completion message.
    **/

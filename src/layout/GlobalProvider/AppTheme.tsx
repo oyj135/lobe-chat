@@ -1,30 +1,24 @@
 'use client';
 
-import {
-  ConfigProvider,
-  FontLoader,
-  type NeutralColors,
-  type PrimaryColors,
-  ThemeProvider,
-} from '@lobehub/ui';
-import { message as antdMessage } from 'antd';
-import { type ThemeAppearance, createStaticStyles, cx, useTheme } from 'antd-style';
 import 'antd/dist/reset.css';
+
+import { TITLE_BAR_HEIGHT } from '@lobechat/desktop-bridge';
+import { type NeutralColors, type PrimaryColors } from '@lobehub/ui';
+import { ConfigProvider, FontLoader, ThemeProvider } from '@lobehub/ui';
+import { message as antdMessage } from 'antd';
 import { AppConfigContext } from 'antd/es/app/context';
-import * as motion from 'motion/react-m';
-import Image from 'next/image';
-import Link from 'next/link';
-import { type ReactNode, memo, useEffect, useMemo, useState } from 'react';
+import { createStaticStyles, cx, useTheme } from 'antd-style';
+import * as m from 'motion/react-m';
+import { type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 
 import AntdStaticMethods from '@/components/AntdStaticMethods';
-import {
-  LOBE_THEME_APPEARANCE,
-  LOBE_THEME_NEUTRAL_COLOR,
-  LOBE_THEME_PRIMARY_COLOR,
-} from '@/const/theme';
+import Link from '@/components/Link';
+import { LOBE_THEME_NEUTRAL_COLOR, LOBE_THEME_PRIMARY_COLOR } from '@/const/theme';
 import { isDesktop } from '@/const/version';
-import { TITLE_BAR_HEIGHT } from '@/features/ElectronTitlebar';
+import { useIsDark } from '@/hooks/useIsDark';
 import { getUILocaleAndResources } from '@/libs/getUILocaleAndResources';
+import Image from '@/libs/next/Image';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { useUserStore } from '@/store/user';
@@ -45,7 +39,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     min-height: 100dvh;
     max-height: 100dvh;
 
-    @media (min-device-width: 576px) {
+    @media (device-width >= 576px) {
       overflow: hidden;
     }
   `,
@@ -92,7 +86,6 @@ export interface AppThemeProps {
   children?: ReactNode;
   customFontFamily?: string;
   customFontURL?: string;
-  defaultAppearance?: ThemeAppearance;
   defaultNeutralColor?: NeutralColors;
   defaultPrimaryColor?: PrimaryColors;
   globalCDN?: boolean;
@@ -101,16 +94,16 @@ export interface AppThemeProps {
 const AppTheme = memo<AppThemeProps>(
   ({
     children,
-    defaultAppearance,
     defaultPrimaryColor,
     defaultNeutralColor,
     globalCDN,
     customFontURL,
     customFontFamily,
   }) => {
-    const themeMode = useGlobalStore(systemStatusSelectors.themeMode);
     const language = useGlobalStore(systemStatusSelectors.language);
-    const theme = useTheme();
+    const antdTheme = useTheme();
+    const isDark = useIsDark();
+
     const [primaryColor, neutralColor, animationMode] = useUserStore((s) => [
       userGeneralSettingsSelectors.primaryColor(s),
       userGeneralSettingsSelectors.neutralColor(s),
@@ -154,48 +147,48 @@ const AppTheme = memo<AppThemeProps>(
       antdMessage.config({ top: messageTop });
     }, [messageTop]);
 
+    const currentAppearence = isDark ? 'dark' : 'light';
+
     return (
-      <AppConfigContext.Provider value={appConfig}>
+      <AppConfigContext value={appConfig}>
         <ThemeProvider
-          appearance={themeMode !== 'auto' ? themeMode : undefined}
+          appearance={currentAppearence}
           className={cx(styles.app, styles.scrollbar, styles.scrollbarPolyfill)}
+          defaultAppearance={currentAppearence}
+          defaultThemeMode={currentAppearence}
           customTheme={{
             neutralColor: neutralColor ?? defaultNeutralColor,
             primaryColor: primaryColor ?? defaultPrimaryColor,
           }}
-          defaultAppearance={defaultAppearance}
-          onAppearanceChange={(appearance) => {
-            if (themeMode !== 'auto') return;
-
-            setCookie(LOBE_THEME_APPEARANCE, appearance);
-          }}
           theme={{
+            cssVar: { key: 'lobe-vars' },
             token: {
-              fontFamily: customFontFamily ? `${customFontFamily},${theme.fontFamily}` : undefined,
+              fontFamily: customFontFamily
+                ? `${customFontFamily},${antdTheme.fontFamily}`
+                : undefined,
               motion: animationMode !== 'disabled',
               motionUnit: animationMode === 'agile' ? 0.05 : 0.1,
             },
           }}
-          themeMode={themeMode}
         >
           {!!customFontURL && <FontLoader url={customFontURL} />}
           <GlobalStyle />
           <AntdStaticMethods />
           <ConfigProvider
+            locale={uiLocale}
+            motion={m}
+            resources={uiResources}
             config={{
               aAs: Link,
               imgAs: Image,
               imgUnoptimized: true,
               proxy: globalCDN ? 'unpkg' : undefined,
             }}
-            locale={uiLocale}
-            motion={motion}
-            resources={uiResources}
           >
             {children}
           </ConfigProvider>
         </ThemeProvider>
-      </AppConfigContext.Provider>
+      </AppConfigContext>
     );
   },
 );

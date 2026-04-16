@@ -1,33 +1,32 @@
-import type { UserMemoryData, UserMemoryIdentityItem } from '@lobechat/context-engine';
-import type { RetrieveMemoryResult } from '@lobechat/types';
+import { type UserMemoryData } from '@lobechat/context-engine';
+import { type RetrieveMemoryResult } from '@lobechat/types';
 
-import { mutate } from '@/libs/swr';
-import { userMemoryService } from '@/services/userMemory';
 import { getChatStoreState } from '@/store/chat';
-import { getUserMemoryStoreState, useUserMemoryStore } from '@/store/userMemory';
-import { agentMemorySelectors, identitySelectors } from '@/store/userMemory/selectors';
+import { getUserMemoryStoreState } from '@/store/userMemory';
+import { agentMemorySelectors } from '@/store/userMemory/selectors';
+
+type UserMemoryPersona = UserMemoryData['persona'];
 
 const EMPTY_MEMORIES: RetrieveMemoryResult = {
+  activities: [],
   contexts: [],
   experiences: [],
   preferences: [],
 };
 
 /**
- * Resolves global identities from user memory store
- * Returns identities that apply across all topics
+ * Resolves user persona from user memory store
  */
-export const resolveGlobalIdentities = (): UserMemoryIdentityItem[] => {
+export const resolveUserPersona = (): UserMemoryPersona | undefined => {
   const memoryState = getUserMemoryStoreState();
-  const globalIdentities = identitySelectors.globalIdentities(memoryState);
+  const persona = memoryState.persona;
 
-  return globalIdentities.map((identity) => ({
-    capturedAt: identity.capturedAt,
-    description: identity.description,
-    id: identity.id,
-    role: identity.role,
-    type: identity.type,
-  }));
+  if (!persona?.content && !persona?.summary) return undefined;
+
+  return {
+    narrative: persona.content,
+    tagline: persona.summary,
+  };
 };
 
 /**
@@ -39,17 +38,13 @@ export interface TopicMemoryResolverContext {
 }
 
 /**
- * Resolves topic-based memories (contexts, experiences, preferences)
+ * Resolves topic-based memories (contexts, experiences, preferences) from cache only.
  *
- * This function handles:
- * 1. Getting the topic ID from context or active topic
- * 2. Checking if memories are already cached for the topic
- * 3. Fetching memories from the service if not cached
- * 4. Caching the fetched memories by topic ID
+ * This function only reads from cache and does NOT trigger network requests.
+ * Memory data is pre-loaded by SWR in ChatList via useFetchTopicMemories hook.
+ * This ensures sendMessage is not blocked by memory retrieval network calls.
  */
-export const resolveTopicMemories = async (
-  ctx?: TopicMemoryResolverContext,
-): Promise<RetrieveMemoryResult> => {
+export const resolveTopicMemories = (ctx?: TopicMemoryResolverContext): RetrieveMemoryResult => {
   // Get topic ID from context or active topic
   const topicId = ctx?.topicId ?? getChatStoreState().activeTopicId;
 
@@ -60,46 +55,24 @@ export const resolveTopicMemories = async (
 
   const userMemoryStoreState = getUserMemoryStoreState();
 
-  // Check if already have cached memories for this topic
+  // Only read from cache, do not trigger network request
+  // Memory data is pre-loaded by SWR in ChatList
   const cachedMemories = agentMemorySelectors.topicMemories(topicId)(userMemoryStoreState);
 
-  if (cachedMemories) {
-    return cachedMemories;
-  }
-
-  // Fetch memories for this topic
-  try {
-    const result = await userMemoryService.retrieveMemoryForTopic(topicId);
-    const memories = result ?? EMPTY_MEMORIES;
-
-    // Cache the fetched memories by topic ID
-    useUserMemoryStore.setState((state) => ({
-      topicMemoriesMap: {
-        ...state.topicMemoriesMap,
-        [topicId]: memories,
-      },
-    }));
-
-    // Also trigger SWR mutate to keep in sync
-    await mutate(['useFetchMemoriesForTopic', topicId]);
-
-    return memories;
-  } catch (error) {
-    console.error('Failed to retrieve memories for topic:', error);
-    return EMPTY_MEMORIES;
-  }
+  return cachedMemories ?? EMPTY_MEMORIES;
 };
 
 /**
- * Combines topic memories and global identities into UserMemoryData
+ * Combines topic memories and user persona into UserMemoryData
  * This is a utility for assembling the final memory data structure
  */
 export const combineUserMemoryData = (
   topicMemories: RetrieveMemoryResult,
-  identities: UserMemoryIdentityItem[],
+  persona?: UserMemoryPersona,
 ): UserMemoryData => ({
+  activities: topicMemories.activities,
   contexts: topicMemories.contexts,
   experiences: topicMemories.experiences,
-  identities,
+  persona,
   preferences: topicMemories.preferences,
 });

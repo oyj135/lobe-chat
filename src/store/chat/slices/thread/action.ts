@@ -1,72 +1,69 @@
-/* eslint-disable sort-keys-fix/sort-keys-fix, typescript-sort-keys/interface */
 // Disable the auto sort key eslint rule to make the code more logic and readable
 import { LOADING_FLAT } from '@lobechat/const';
 import { chainSummaryTitle } from '@lobechat/prompts';
-import { type CreateMessageParams, type IThreadType, type ThreadItem, type UIChatMessage } from '@lobechat/types';
+import {
+  type CreateMessageParams,
+  type IThreadType,
+  type ThreadItem,
+  type UIChatMessage,
+} from '@lobechat/types';
 import isEqual from 'fast-deep-equal';
-import type { SWRResponse } from 'swr';
-import { type StateCreator } from 'zustand/vanilla';
+import { type SWRResponse } from 'swr';
 
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import { chatService } from '@/services/chat';
 import { threadService } from '@/services/thread';
 import { threadSelectors } from '@/store/chat/selectors';
 import { type ChatStore } from '@/store/chat/store';
-import { globalHelpers } from '@/store/global/helpers';
+import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { type StoreSetter } from '@/store/types';
 import { useUserStore } from '@/store/user';
-import { systemAgentSelectors } from '@/store/user/selectors';
+import { systemAgentSelectors, userGeneralSettingsSelectors } from '@/store/user/selectors';
 import { merge } from '@/utils/merge';
 import { setNamespace } from '@/utils/storeDebug';
 
-import { displayMessageSelectors } from '../message/selectors';
-import { type ThreadDispatch, threadReducer } from './reducer';
+import { PortalViewType } from '../portal/initialState';
+import { type ThreadDispatch } from './reducer';
+import { threadReducer } from './reducer';
 import { genParentMessages } from './selectors';
 
 const n = setNamespace('thd');
 const SWR_USE_FETCH_THREADS = 'SWR_USE_FETCH_THREADS';
 
-export interface ChatThreadAction {
-  // update
-  updateThreadInputMessage: (message: string) => void;
-  refreshThreads: () => Promise<void>;
-  createThread: (params: {
-    message: CreateMessageParams;
-    sourceMessageId: string;
-    topicId: string;
-    type: IThreadType;
-  }) => Promise<{ threadId: string; messageId: string }>;
-  openThreadCreator: (messageId: string) => void;
-  openThreadInPortal: (threadId: string, sourceMessageId?: string | null) => void;
-  closeThreadPortal: () => void;
-  useFetchThreads: (enable: boolean, topicId?: string) => SWRResponse<ThreadItem[]>;
-  summaryThreadTitle: (threadId: string, messages: UIChatMessage[]) => Promise<void>;
-  updateThreadTitle: (id: string, title: string) => Promise<void>;
-  removeThread: (id: string) => Promise<void>;
-  switchThread: (id: string) => void;
+type Setter = StoreSetter<ChatStore>;
+export const chatThreadMessage = (set: Setter, get: () => ChatStore, _api?: unknown) =>
+  new ChatThreadActionImpl(set, get, _api);
 
-  internal_updateThreadTitleInSummary: (id: string, title: string) => void;
-  internal_updateThreadLoading: (id: string, loading: boolean) => void;
-  internal_updateThread: (id: string, data: Partial<ThreadItem>) => Promise<void>;
-  internal_dispatchThread: (payload: ThreadDispatch, action?: any) => void;
-}
+export class ChatThreadActionImpl {
+  readonly #get: () => ChatStore;
+  readonly #set: Setter;
 
-export const chatThreadMessage: StateCreator<
-  ChatStore,
-  [['zustand/devtools', never]],
-  [],
-  ChatThreadAction
-> = (set, get) => ({
-  updateThreadInputMessage: (message) => {
-    if (isEqual(message, get().threadInputMessage)) return;
+  constructor(set: Setter, get: () => ChatStore, _api?: unknown) {
+    void _api;
+    this.#set = set;
+    this.#get = get;
+  }
 
-    set({ threadInputMessage: message }, false, n(`updateThreadInputMessage`, message));
-  },
+  updateThreadInputMessage = (message: string): void => {
+    if (isEqual(message, this.#get().threadInputMessage)) return;
 
-  openThreadCreator: (messageId) => {
-    const { activeAgentId, activeTopicId, newThreadMode, replaceMessages } = get();
+    this.#set({ threadInputMessage: message }, false, n(`updateThreadInputMessage`, message));
+  };
 
-    // Get parent messages up to and including the source message
-    const displayMessages = displayMessageSelectors.activeDisplayMessages(get());
+  openThreadCreator = (messageId: string): void => {
+    const { activeAgentId, activeGroupId, activeTopicId, newThreadMode, replaceMessages } =
+      this.#get();
+
+    // Always use main scope key to get messages, not activeDisplayMessages,
+    // because activeDisplayMessages includes activeThreadId in the key.
+    // When inside a subtopic, that would return thread-scoped messages
+    // instead of main conversation messages, causing the fork to fail (LOBE-5023).
+    const mainKey = messageMapKey({
+      agentId: activeAgentId,
+      groupId: activeGroupId,
+      topicId: activeTopicId,
+    });
+    const displayMessages = this.#get().messagesMap[mainKey] || [];
     // Filter out messages that have threadId (they belong to other threads)
     const mainMessages = displayMessages.filter((m) => !m.threadId);
     const parentMessages = genParentMessages(mainMessages, messageId, newThreadMode);
@@ -83,32 +80,50 @@ export const chatThreadMessage: StateCreator<
       replaceMessages(parentMessages, { action: 'initThreadMessages', context });
     }
 
-    set(
+    this.#set(
       { threadStartMessageId: messageId, portalThreadId: undefined, startToForkThread: true },
       false,
       'openThreadCreator',
     );
-    get().togglePortal(true);
-  },
-  openThreadInPortal: (threadId, sourceMessageId) => {
-    set(
+    // Push Thread view to portal stack instead of togglePortal
+    this.#get().pushPortalView({ type: PortalViewType.Thread, startMessageId: messageId });
+  };
+
+  openThreadInPortal = (threadId: string, sourceMessageId?: string | null): void => {
+    this.#set(
       { portalThreadId: threadId, threadStartMessageId: sourceMessageId, startToForkThread: false },
       false,
       'openThreadInPortal',
     );
-    get().togglePortal(true);
-  },
+    // Push Thread view to portal stack with threadId
+    this.#get().pushPortalView({
+      type: PortalViewType.Thread,
+      threadId,
+      startMessageId: sourceMessageId ?? undefined,
+    });
+  };
 
-  closeThreadPortal: () => {
-    set(
+  closeThreadPortal = (): void => {
+    this.#set(
       { threadStartMessageId: undefined, portalThreadId: undefined, startToForkThread: undefined },
       false,
       'closeThreadPortal',
     );
-    get().togglePortal(false);
-  },
-  createThread: async ({ message, sourceMessageId, topicId, type }) => {
-    set({ isCreatingThread: true }, false, n('creatingThread/start'));
+    this.#get().clearPortalStack();
+  };
+
+  createThread = async ({
+    message,
+    sourceMessageId,
+    topicId,
+    type,
+  }: {
+    message: CreateMessageParams;
+    sourceMessageId: string;
+    topicId: string;
+    type: IThreadType;
+  }): Promise<{ threadId: string; messageId: string }> => {
+    this.#set({ isCreatingThread: true }, false, n('creatingThread/start'));
 
     const data = await threadService.createThreadWithMessage({
       topicId,
@@ -116,55 +131,59 @@ export const chatThreadMessage: StateCreator<
       type,
       message,
     });
-    set({ isCreatingThread: false }, false, n('creatingThread/end'));
+    this.#set({ isCreatingThread: false }, false, n('creatingThread/end'));
 
     return data;
-  },
+  };
 
-  useFetchThreads: (enable, topicId) =>
-    useClientDataSWR<ThreadItem[]>(
+  useFetchThreads = (enable: boolean, topicId?: string): SWRResponse<ThreadItem[]> => {
+    return useClientDataSWR<ThreadItem[]>(
       enable && !!topicId ? [SWR_USE_FETCH_THREADS, topicId] : null,
       async ([, topicId]: [string, string]) => threadService.getThreads(topicId),
       {
         onSuccess: (threads) => {
-          const nextMap = { ...get().threadMaps, [topicId!]: threads };
+          const nextMap = { ...this.#get().threadMaps, [topicId!]: threads };
 
           // no need to update map if the threads have been init and the map is the same
-          if (get().threadsInit && isEqual(nextMap, get().threadMaps)) return;
+          if (this.#get().threadsInit && isEqual(nextMap, this.#get().threadMaps)) return;
 
-          set(
+          this.#set(
             { threadMaps: nextMap, threadsInit: true },
             false,
             n('useFetchThreads(success)', { topicId }),
           );
         },
       },
-    ),
+    );
+  };
 
-  refreshThreads: async () => {
-    const topicId = get().activeTopicId;
+  refreshThreads = async (): Promise<void> => {
+    const topicId = this.#get().activeTopicId;
     if (!topicId) return;
 
     return mutate([SWR_USE_FETCH_THREADS, topicId]);
-  },
-  removeThread: async (id) => {
+  };
+
+  removeThread = async (id: string): Promise<void> => {
     await threadService.removeThread(id);
-    await get().refreshThreads();
+    await this.#get().refreshThreads();
 
-    if (get().activeThreadId === id) {
-      set({ activeThreadId: undefined });
+    if (this.#get().activeThreadId === id) {
+      this.#set({ activeThreadId: undefined });
     }
-  },
-  switchThread: async (id) => {
-    set({ activeThreadId: id }, false, n('toggleTopic'));
-  },
-  updateThreadTitle: async (id, title) => {
-    await get().internal_updateThread(id, { title });
-  },
+  };
 
-  summaryThreadTitle: async (threadId, messages) => {
-    const { internal_updateThreadTitleInSummary, internal_updateThreadLoading } = get();
-    const portalThread = threadSelectors.currentPortalThread(get());
+  switchThread = async (id: string): Promise<void> => {
+    this.#set({ activeThreadId: id }, false, n('toggleTopic'));
+  };
+
+  updateThreadTitle = async (id: string, title: string): Promise<void> => {
+    await this.#get().internal_updateThread(id, { title });
+  };
+
+  summaryThreadTitle = async (threadId: string, messages: UIChatMessage[]): Promise<void> => {
+    const { internal_updateThreadTitleInSummary, internal_updateThreadLoading } = this.#get();
+    const portalThread = threadSelectors.currentPortalThread(this.#get());
     if (!portalThread) return;
 
     internal_updateThreadTitleInSummary(threadId, LOADING_FLAT);
@@ -177,7 +196,7 @@ export const chatThreadMessage: StateCreator<
         internal_updateThreadTitleInSummary(threadId, portalThread.title);
       },
       onFinish: async (text) => {
-        await get().internal_updateThread(threadId, { title: text });
+        await this.#get().internal_updateThread(threadId, { title: text });
       },
       onLoadingChange: (loading) => {
         internal_updateThreadLoading(threadId, loading);
@@ -191,20 +210,25 @@ export const chatThreadMessage: StateCreator<
 
         internal_updateThreadTitleInSummary(threadId, output);
       },
-      params: merge(threadConfig, chainSummaryTitle(messages, globalHelpers.getCurrentLanguage())),
+      params: merge(
+        threadConfig,
+        chainSummaryTitle(
+          messages,
+          userGeneralSettingsSelectors.currentResponseLanguage(useUserStore.getState()),
+        ),
+      ),
     });
-  },
+  };
 
-  // Internal process method of the topics
-  internal_updateThreadTitleInSummary: (id, title) => {
-    get().internal_dispatchThread(
+  internal_updateThreadTitleInSummary = (id: string, title: string): void => {
+    this.#get().internal_dispatchThread(
       { type: 'updateThread', id, value: { title } },
       'updateThreadTitleInSummary',
     );
-  },
+  };
 
-  internal_updateThreadLoading: (id, loading) => {
-    set(
+  internal_updateThreadLoading = (id: string, loading: boolean): void => {
+    this.#set(
       (state) => {
         if (loading) return { threadLoadingIds: [...state.threadLoadingIds, id] };
 
@@ -213,24 +237,26 @@ export const chatThreadMessage: StateCreator<
       false,
       n('updateThreadLoading'),
     );
-  },
+  };
 
-  internal_updateThread: async (id, data) => {
-    get().internal_dispatchThread({ type: 'updateThread', id, value: data });
+  internal_updateThread = async (id: string, data: Partial<ThreadItem>): Promise<void> => {
+    this.#get().internal_dispatchThread({ type: 'updateThread', id, value: data });
 
-    get().internal_updateThreadLoading(id, true);
+    this.#get().internal_updateThreadLoading(id, true);
     await threadService.updateThread(id, data);
-    await get().refreshThreads();
-    get().internal_updateThreadLoading(id, false);
-  },
+    await this.#get().refreshThreads();
+    this.#get().internal_updateThreadLoading(id, false);
+  };
 
-  internal_dispatchThread: (payload, action) => {
-    const nextThreads = threadReducer(threadSelectors.currentTopicThreads(get()), payload);
-    const nextMap = { ...get().threadMaps, [get().activeTopicId!]: nextThreads };
+  internal_dispatchThread = (payload: ThreadDispatch, action?: any): void => {
+    const nextThreads = threadReducer(threadSelectors.currentTopicThreads(this.#get()), payload);
+    const nextMap = { ...this.#get().threadMaps, [this.#get().activeTopicId!]: nextThreads };
 
     // no need to update map if is the same
-    if (isEqual(nextMap, get().threadMaps)) return;
+    if (isEqual(nextMap, this.#get().threadMaps)) return;
 
-    set({ threadMaps: nextMap }, false, action ?? n(`dispatchThread/${payload.type}`));
-  },
-});
+    this.#set({ threadMaps: nextMap }, false, action ?? n(`dispatchThread/${payload.type}`));
+  };
+}
+
+export type ChatThreadAction = Pick<ChatThreadActionImpl, keyof ChatThreadActionImpl>;

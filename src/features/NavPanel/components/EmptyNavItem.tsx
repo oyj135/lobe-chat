@@ -1,4 +1,4 @@
-import { ActionIcon, Block, Center, Text } from '@lobehub/ui';
+import { Block, Center, Icon, Text } from '@lobehub/ui';
 import { PlusIcon } from 'lucide-react';
 import { memo } from 'react';
 
@@ -11,18 +11,18 @@ interface EmptyStatusProps {
 const EmptyNavItem = memo<EmptyStatusProps>(({ title, onClick, className }) => {
   return (
     <Block
+      clickable
+      horizontal
       align={'center'}
       className={className}
-      clickable
       gap={8}
       height={32}
-      horizontal
-      onClick={onClick}
       paddingInline={2}
       variant={'borderless'}
+      onClick={onClick}
     >
       <Center flex={'none'} height={28} width={28}>
-        <ActionIcon icon={PlusIcon} size={'small'} />
+        <Icon icon={PlusIcon} size={'small'} />
       </Center>
       <Text align={'center'} type={'secondary'}>
         {title}

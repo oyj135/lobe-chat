@@ -3,10 +3,10 @@ import {
   DEFAULT_CHAT_GROUP_CHAT_CONFIG,
   DEFAULT_CHAT_GROUP_META_CONFIG,
 } from '@lobechat/const';
-import type { AgentGroupDetail, AgentGroupMember, AgentItem } from '@lobechat/types';
+import { type AgentGroupDetail, type AgentGroupMember } from '@lobechat/types';
 
-import type { ChatGroupState } from '../initialState';
-import type { ChatGroupStore } from '../store';
+import { type ChatGroupState } from '../initialState';
+import { type ChatGroupStore } from '../store';
 import { agentGroupByIdSelectors } from './byId';
 
 const activeGroupId = (s: ChatGroupState): string | undefined => s.activeGroupId;
@@ -36,7 +36,7 @@ const currentGroupMeta = (s: ChatGroupStore) => {
   return groupId ? agentGroupByIdSelectors.groupMeta(groupId)(s) : DEFAULT_CHAT_GROUP_META_CONFIG;
 };
 
-const currentGroupAgents = (s: ChatGroupStore): AgentItem[] => {
+const currentGroupAgents = (s: ChatGroupStore): AgentGroupMember[] => {
   const groupId = activeGroupId(s);
   return groupId ? agentGroupByIdSelectors.groupAgents(groupId)(s) : [];
 };

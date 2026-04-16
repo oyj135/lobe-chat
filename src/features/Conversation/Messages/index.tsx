@@ -4,9 +4,11 @@ import { isDesktop } from '@lobechat/const';
 import { Flexbox } from '@lobehub/ui';
 import { createStaticStyles, cx } from 'antd-style';
 import isEqual from 'fast-deep-equal';
-import { type MouseEvent, type ReactNode, Suspense, memo, useCallback } from 'react';
+import { type MouseEvent, type ReactNode } from 'react';
+import { memo, Suspense, useCallback } from 'react';
 
 import BubblesLoading from '@/components/BubblesLoading';
+import SafeBoundary from '@/components/ErrorBoundary';
 
 import History from '../components/History';
 import { useChatItemContextMenu } from '../hooks/useChatItemContextMenu';
@@ -14,6 +16,8 @@ import { dataSelectors, messageStateSelectors, useConversationStore } from '../s
 import AgentCouncilMessage from './AgentCouncil';
 import AssistantMessage from './Assistant';
 import AssistantGroupMessage from './AssistantGroup';
+import CompressedGroupMessage from './CompressedGroup';
+import GroupTasksMessage from './GroupTasks';
 import SupervisorMessage from './Supervisor';
 import TaskMessage from './Task';
 import TasksMessage from './Tasks';
@@ -37,18 +41,20 @@ const styles = createStaticStyles(({ css }) => ({
 
 export interface MessageItemProps {
   className?: string;
+  defaultWorkflowExpanded?: boolean;
   disableEditing?: boolean;
   enableHistoryDivider?: boolean;
   endRender?: ReactNode;
   id: string;
-  inPortalThread?: boolean;
   index: number;
+  inPortalThread?: boolean;
   isLatestItem?: boolean;
 }
 
 const MessageItem = memo<MessageItemProps>(
   ({
     className,
+    defaultWorkflowExpanded,
     enableHistoryDivider,
     id,
     endRender,
@@ -84,12 +90,17 @@ const MessageItem = memo<MessageItemProps>(
         if (isDesktop) {
           const { electronSystemService } = await import('@/services/electron/system');
 
+          // Get selected text for context menu features like Look Up and Search
+          const selection = window.getSelection();
+          const selectionText = selection?.toString() || '';
+
           electronSystemService.showContextMenu('chat', {
             content: message.content,
             hasError: !!message.error,
             messageId: id,
             // For assistantGroup, we treat it as assistant for context menu purposes
             role: message.role === 'assistantGroup' ? 'assistant' : message.role,
+            selectionText,
           });
 
           return;
@@ -120,6 +131,7 @@ const MessageItem = memo<MessageItemProps>(
         case 'assistantGroup': {
           return (
             <AssistantGroupMessage
+              defaultWorkflowExpanded={defaultWorkflowExpanded}
               disableEditing={disableEditing}
               id={id}
               index={index}
@@ -153,17 +165,25 @@ const MessageItem = memo<MessageItemProps>(
           return <TasksMessage id={id} index={index} />;
         }
 
+        case 'groupTasks': {
+          return <GroupTasksMessage id={id} index={index} />;
+        }
+
         case 'agentCouncil': {
           return <AgentCouncilMessage id={id} index={index} />;
         }
 
+        case 'compressedGroup': {
+          return <CompressedGroupMessage id={id} index={index} />;
+        }
+
         case 'tool': {
-          return <ToolMessage id={id} index={index} />;
+          return <ToolMessage disableEditing={disableEditing} id={id} index={index} />;
         }
       }
 
       return null;
-    }, [role, disableEditing, id, index, isLatestItem]);
+    }, [role, defaultWorkflowExpanded, disableEditing, id, index, isLatestItem]);
 
     if (!role) return;
 
@@ -175,7 +195,9 @@ const MessageItem = memo<MessageItemProps>(
           data-index={index}
           onContextMenu={onContextMenu}
         >
-          <Suspense fallback={<BubblesLoading />}>{renderContent()}</Suspense>
+          <SafeBoundary variant="alert">
+            <Suspense fallback={<BubblesLoading />}>{renderContent()}</Suspense>
+          </SafeBoundary>
           {endRender}
         </Flexbox>
       </>

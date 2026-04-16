@@ -1,5 +1,36 @@
 import type { HelperMaps, Message, MessageGroupMetadata } from './types';
 
+interface CompressedDisplayNode {
+  children?: CompressedDisplayNode[];
+  compressedMessages?: CompressedDisplayNode[];
+  id?: string;
+  lastMessageId?: string;
+  tools?: Array<{ result_msg_id?: string }>;
+}
+
+const getLastMessageIdFromCompressedDisplay = (
+  message: CompressedDisplayNode | undefined,
+): string | undefined => {
+  if (!message) return;
+
+  if (message.lastMessageId) return message.lastMessageId;
+
+  const compressedMessages = message.compressedMessages;
+  if (compressedMessages && compressedMessages.length > 0) {
+    return getLastMessageIdFromCompressedDisplay(compressedMessages.at(-1));
+  }
+
+  if (message.children && message.children.length > 0) {
+    return getLastMessageIdFromCompressedDisplay(message.children.at(-1));
+  }
+
+  if (message.tools && message.tools.length > 0) {
+    return message.tools.at(-1)?.result_msg_id ?? message.id;
+  }
+
+  return message.id;
+};
+
 /**
  * Phase 1: Indexing
  * Builds helper maps for efficient querying during parsing
@@ -16,6 +47,23 @@ export function buildHelperMaps(
   const childrenMap = new Map<string | null, string[]>();
   const threadMap = new Map<string, Message[]>();
   const messageGroupMap = new Map<string, MessageGroupMetadata>();
+  const messageIds = new Set(messages.map((message) => message.id));
+
+  // Build a map of lastMessageId -> compressedGroup.id for parent redirection
+  // This handles the case where messages are created after compression:
+  // - The new message's parentId points to the last compressed message (lastMessageId)
+  // - But the lastMessageId is hidden inside the compressedGroup
+  // - We need to redirect children of lastMessageId to be children of compressedGroup
+  const lastMessageIdToGroupId = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role === 'compressedGroup') {
+      const lastMessageId = getLastMessageIdFromCompressedDisplay(message);
+
+      if (lastMessageId) {
+        lastMessageIdToGroupId.set(lastMessageId, message.id);
+      }
+    }
+  }
 
   // Single pass through messages to build all maps
   for (const message of messages) {
@@ -23,7 +71,20 @@ export function buildHelperMaps(
     messageMap.set(message.id, message);
 
     // 2. Build childrenMap for parent -> children lookup
-    const parentId = message.parentId ?? null;
+    let parentId = message.parentId ?? null;
+
+    // Redirect parentId if it points to a compressed message's lastMessageId
+    // This ensures messages created after compression become children of the compressedGroup
+    if (parentId && lastMessageIdToGroupId.has(parentId)) {
+      parentId = lastMessageIdToGroupId.get(parentId)!;
+    } else if (parentId && !messageIds.has(parentId)) {
+      // Orphan fallback:
+      // If parent is not present in the current queried message set,
+      // treat this message as a root so post-compression follow-up chains
+      // remain visible instead of being dropped entirely.
+      parentId = null;
+    }
+
     const siblings = childrenMap.get(parentId);
     if (siblings) {
       siblings.push(message.id);

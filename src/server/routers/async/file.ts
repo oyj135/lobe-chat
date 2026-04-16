@@ -1,10 +1,11 @@
 import { ASYNC_TASK_TIMEOUT } from '@lobechat/business-config/server';
+import { RequestTrigger } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import { chunk } from 'es-toolkit/compat';
 import pMap from 'p-map';
 import { z } from 'zod';
 
-import { checkBudgetsUsage, checkEmbeddingUsage } from '@/business/server/trpc-middlewares/async';
+import { checkEmbeddingUsage } from '@/business/server/trpc-middlewares/async';
 import { serverDBEnv } from '@/config/db';
 import { DEFAULT_FILE_EMBEDDING_MODEL_ITEM } from '@/const/settings/knowledge';
 import { AsyncTaskModel } from '@/database/models/asyncTask';
@@ -17,13 +18,10 @@ import { asyncAuthedProcedure, asyncRouter as router } from '@/libs/trpc/async';
 import { getServerDefaultFilesConfig } from '@/server/globalConfig';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { ChunkService } from '@/server/services/chunk';
+import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
-import {
-  AsyncTaskError,
-  AsyncTaskErrorType,
-  AsyncTaskStatus,
-  type IAsyncTaskError,
-} from '@/types/asyncTask';
+import { type IAsyncTaskError } from '@/types/asyncTask';
+import { AsyncTaskError, AsyncTaskErrorType, AsyncTaskStatus } from '@/types/asyncTask';
 import { safeParseJSON } from '@/utils/safeParseJSON';
 import { sanitizeUTF8 } from '@/utils/sanitizeUTF8';
 
@@ -35,6 +33,7 @@ const fileProcedure = asyncAuthedProcedure.use(async (opts) => {
       asyncTaskModel: new AsyncTaskModel(ctx.serverDB, ctx.userId),
       chunkModel: new ChunkModel(ctx.serverDB, ctx.userId),
       chunkService: new ChunkService(ctx.serverDB, ctx.userId),
+      documentService: new DocumentService(ctx.serverDB, ctx.userId),
       embeddingModel: new EmbeddingModel(ctx.serverDB, ctx.userId),
       fileModel: new FileModel(ctx.serverDB, ctx.userId),
       fileService: new FileService(ctx.serverDB, ctx.userId),
@@ -45,7 +44,6 @@ const fileProcedure = asyncAuthedProcedure.use(async (opts) => {
 export const fileRouter = router({
   embeddingChunks: fileProcedure
     .use(checkEmbeddingUsage)
-    .use(checkBudgetsUsage)
     .input(
       z.object({
         fileId: z.string(),
@@ -86,8 +84,8 @@ export const fileRouter = router({
 
           const startAt = Date.now();
 
-          const CHUNK_SIZE = 50;
-          const CONCURRENCY = 10;
+          const CHUNK_SIZE = fileEnv.EMBEDDING_BATCH_SIZE;
+          const CONCURRENCY = fileEnv.EMBEDDING_CONCURRENCY;
 
           const chunks = await ctx.chunkModel.getChunksTextByFileId(input.fileId);
           const requestArray = chunk(chunks, CHUNK_SIZE);
@@ -102,11 +100,14 @@ export const fileRouter = router({
                   provider,
                 );
 
-                const embeddings = await modelRuntime.embeddings({
-                  dimensions: 1024,
-                  input: chunks.map((c) => c.text),
-                  model,
-                });
+                const embeddings = await modelRuntime.embeddings(
+                  {
+                    dimensions: 1024,
+                    input: chunks.map((c) => c.text),
+                    model,
+                  },
+                  { metadata: { trigger: RequestTrigger.FileEmbedding }, user: ctx.userId },
+                );
 
                 const items: NewEmbeddingsItem[] =
                   embeddings?.map((e, idx) => ({
@@ -203,6 +204,17 @@ export const fileRouter = router({
           const chunkService = ctx.chunkService;
           // update the task status to processing
           await ctx.asyncTaskModel.update(input.taskId, { status: AsyncTaskStatus.Processing });
+
+          // parse file to document record first (for detailed content viewing)
+          try {
+            await ctx.documentService.parseFile(input.fileId);
+          } catch (e) {
+            // document parsing failure should not block chunking
+            console.warn(
+              '[parseFileToChunks] document parsing failed, continuing with chunking:',
+              e,
+            );
+          }
 
           // partition file to chunks
           const chunkResult = await chunkService.chunkContent({

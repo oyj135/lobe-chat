@@ -1,11 +1,11 @@
-import { ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { z } from 'zod';
 
-import type { RuntimeStepContext } from '../stepContext';
+import { type RuntimeStepContext } from '../stepContext';
+import { type HumanInterventionConfig, type HumanInterventionPolicy } from './intervention';
 import { HumanInterventionConfigSchema, HumanInterventionPolicySchema } from './intervention';
-import type { HumanInterventionConfig, HumanInterventionPolicy } from './intervention';
 
-interface Meta {
+export interface Meta {
   /**
    * avatar
    * @desc Avatar of the plugin
@@ -21,6 +21,11 @@ interface Meta {
    */
   description?: string;
   /**
+   * readme
+   * @desc Long-form readme content for the plugin
+   */
+  readme?: string;
+  /**
    * tags
    * @desc Tags of the plugin
    * @nameEN Tags
@@ -30,9 +35,10 @@ interface Meta {
   title: string;
 }
 
-const MetaSchema = z.object({
+export const MetaSchema = z.object({
   avatar: z.string().optional(),
   description: z.string().optional(),
+  readme: z.string().optional(),
   tags: z.array(z.string()).optional(),
   title: z.string(),
 });
@@ -47,6 +53,86 @@ export type RenderDisplayControl = 'alwaysExpand' | 'collapsed' | 'expand';
 
 export const RenderDisplayControlSchema = z.enum(['collapsed', 'expand', 'alwaysExpand']);
 
+/**
+ * Dynamic intervention resolver function type
+ * Receives tool args and state metadata to determine if condition is met
+ * @returns true if intervention is required, false otherwise
+ */
+export type DynamicInterventionResolver = (
+  toolArgs: Record<string, any>,
+  metadata?: Record<string, any>,
+) => Promise<boolean>;
+
+/**
+ * Global intervention audit configuration
+ * Global audits run for EVERY tool call, not just tools with dynamic config.
+ * They are evaluated before per-tool dynamic audits in the intervention chain.
+ */
+export interface GlobalInterventionAuditConfig {
+  /**
+   * Policy to apply when audit condition is met (returns true)
+   * - 'always': cannot be bypassed by auto-run; in headless mode the tool is skipped entirely
+   * - 'required': requires intervention but can be bypassed by auto-run
+   * @default 'always'
+   */
+  policy?: HumanInterventionPolicy;
+
+  /**
+   * The audit function, reuses DynamicInterventionResolver signature
+   */
+  resolver: DynamicInterventionResolver;
+
+  /**
+   * Unique type identifier for this global audit
+   */
+  type: string;
+}
+
+/**
+ * Dynamic intervention configuration
+ * Used to dynamically determine intervention policy based on runtime context
+ *
+ * The resolver is referenced by type identifier and looked up from
+ * the dynamicInterventionAudits registry at runtime.
+ */
+export interface DynamicInterventionConfig {
+  /**
+   * Default policy when resolver returns false or no resolver is available
+   * @default 'never'
+   */
+  default?: HumanInterventionPolicy;
+
+  /**
+   * Policy to apply when resolver condition is met
+   * @default 'always'
+   */
+  policy?: HumanInterventionPolicy;
+
+  /**
+   * Resolver type identifier for external resolver lookup
+   * The resolver function is registered in dynamicInterventionAudits
+   */
+  type: string;
+}
+
+export const DynamicInterventionConfigSchema = z.object({
+  default: HumanInterventionPolicySchema.optional(),
+  policy: HumanInterventionPolicySchema.optional(),
+  type: z.string(),
+});
+
+/**
+ * Extended human intervention config that supports dynamic evaluation
+ */
+export type ExtendedHumanInterventionConfig =
+  | HumanInterventionConfig
+  | { dynamic: DynamicInterventionConfig };
+
+export const ExtendedHumanInterventionConfigSchema = z.union([
+  HumanInterventionConfigSchema,
+  z.object({ dynamic: DynamicInterventionConfigSchema }),
+]);
+
 export interface LobeChatPluginApi {
   description: string;
   /**
@@ -54,14 +140,17 @@ export interface LobeChatPluginApi {
    * Controls when and how the tool requires human approval/selection
    *
    * Can be either:
-   * - Simple: A policy string ('never', 'always', 'first')
+   * - Simple: A policy string ('never', 'always', 'required')
    * - Complex: Array of rules for parameter-level control
+   * - Dynamic: { dynamic: DynamicInterventionConfig } for runtime evaluation
    *
    * Examples:
    * - 'always' - always require intervention
    * - [{ match: { command: "git add:*" }, policy: "never" }, { policy: "always" }]
+   * - { dynamic: { default: 'never', policy: 'required', type: 'exampleResolver' } } - exampleResolver should register in `GeneralChatAgent.dynamicInterventionAudits`
+   *
    */
-  humanIntervention?: HumanInterventionConfig;
+  humanIntervention?: ExtendedHumanInterventionConfig;
   name: string;
   parameters: Record<string, any>;
   /**
@@ -78,7 +167,7 @@ export interface LobeChatPluginApi {
 
 export const LobeChatPluginApiSchema = z.object({
   description: z.string(),
-  humanIntervention: HumanInterventionConfigSchema.optional(),
+  humanIntervention: ExtendedHumanInterventionConfigSchema.optional(),
   name: z.string(),
   parameters: z.record(z.string(), z.any()),
   renderDisplayControl: RenderDisplayControlSchema.optional(),
@@ -87,6 +176,19 @@ export const LobeChatPluginApiSchema = z.object({
 
 export interface BuiltinToolManifest {
   api: LobeChatPluginApi[];
+
+  /**
+   * Supported execution environments for this tool.
+   * - `'client'`: dispatched to the client via Agent Gateway WebSocket
+   *   (requires Electron / desktop runtime). For tools that depend on
+   *   local resources (filesystem, EditorRuntime, stdio MCP, etc.).
+   * - `'server'`: executed server-side by ToolExecutionService.
+   *
+   * When both are present, the server picks based on `clientRuntime`:
+   * desktop callers get `'client'` dispatch; web callers get `'server'`.
+   * When omitted, defaults to server-only execution.
+   */
+  executors?: ('client' | 'server')[];
 
   /**
    * Tool-level default human intervention policy
@@ -115,7 +217,8 @@ export interface BuiltinToolManifest {
 
 export const BuiltinToolManifestSchema = z.object({
   api: z.array(LobeChatPluginApiSchema),
-  humanIntervention: HumanInterventionPolicySchema.optional(),
+  executors: z.array(z.enum(['client', 'server'])).optional(),
+  humanIntervention: ExtendedHumanInterventionConfigSchema.optional(),
   identifier: z.string(),
   meta: MetaSchema,
   systemRole: z.string(),
@@ -123,6 +226,7 @@ export const BuiltinToolManifestSchema = z.object({
 });
 
 export interface LobeBuiltinTool {
+  discoverable?: boolean;
   hidden?: boolean;
   identifier: string;
   manifest: BuiltinToolManifest;
@@ -130,6 +234,7 @@ export interface LobeBuiltinTool {
 }
 
 export const LobeBuiltinToolSchema = z.object({
+  discoverable: z.boolean().optional(),
   hidden: z.boolean().optional(),
   identifier: z.string(),
   manifest: BuiltinToolManifestSchema,
@@ -219,6 +324,7 @@ export interface BuiltinInterventionProps<Arguments = any> {
   apiName?: string;
   args: Arguments;
   identifier?: string;
+  interactionMode?: 'approval' | 'custom';
   messageId: string;
   /**
    * Callback to update the arguments before approval
@@ -226,6 +332,12 @@ export interface BuiltinInterventionProps<Arguments = any> {
    * The approve action will wait for this async callback to complete
    */
   onArgsChange?: (args: Arguments) => void | Promise<void>;
+  onInteractionAction?: (
+    action:
+      | { type: 'submit'; payload: Record<string, unknown> }
+      | { type: 'skip'; reason?: string }
+      | { type: 'cancel' },
+  ) => Promise<void>;
   /**
    * Register a callback to be called before approval
    * Used by intervention components that need to flush pending saves (e.g., debounced saves)
@@ -351,6 +463,12 @@ export interface BuiltinToolContext {
    * Used by tools that need to create messages or operations within a topic
    */
   topicId?: string | null;
+
+  /**
+   * The working directory configured for file operations
+   * When set, file operations should be restricted to this directory
+   */
+  workingDirectory?: string;
 }
 
 /**
@@ -434,20 +552,66 @@ export interface TriggerExecuteTaskParams extends GroupOrchestrationBaseParams {
    */
   agentId: string;
   /**
+   * The instruction/task description for the agent
+   */
+  instruction: string;
+  /**
+   * Whether to run on the desktop client (for local file/shell access).
+   * MUST be true when task requires local-system tools. Default is false (server execution).
+   */
+  runInClient?: boolean;
+  /**
    * If true, the orchestration will end after the task completes,
    * without calling the supervisor again.
    */
   skipCallSupervisor?: boolean;
-  /**
-   * The task description for the agent
-   */
-  task: string;
   /**
    * Optional timeout in milliseconds
    */
   timeout?: number;
   /**
    * The tool message ID that triggered the task
+   */
+  toolMessageId: string;
+}
+
+/**
+ * Task item for triggerExecuteTasks callback
+ */
+export interface TriggerExecuteTaskItem {
+  /**
+   * The agent ID to execute this task
+   */
+  agentId: string;
+  /**
+   * Detailed instruction for the agent to execute
+   */
+  instruction: string;
+  /**
+   * Optional timeout in milliseconds for this specific task
+   */
+  timeout?: number;
+  /**
+   * Brief title describing what this task does (shown in UI)
+   */
+  title: string;
+}
+
+/**
+ * Params for triggerExecuteTasks callback (multiple tasks)
+ */
+export interface TriggerExecuteTasksParams extends GroupOrchestrationBaseParams {
+  /**
+   * If true, the orchestration will end after all tasks complete,
+   * without calling the supervisor again.
+   */
+  skipCallSupervisor?: boolean;
+  /**
+   * Array of tasks to execute, each assigned to a specific agent
+   */
+  tasks: TriggerExecuteTaskItem[];
+  /**
+   * The tool message ID that triggered the tasks
    */
   toolMessageId: string;
 }
@@ -473,6 +637,11 @@ export interface GroupOrchestrationCallbacks {
   triggerExecuteTask: (params: TriggerExecuteTaskParams) => Promise<void>;
 
   /**
+   * Trigger async execution of multiple tasks in parallel
+   */
+  triggerExecuteTasks: (params: TriggerExecuteTasksParams) => Promise<void>;
+
+  /**
    * Trigger speak to a specific agent
    */
   triggerSpeak: (params: TriggerSpeakParams) => Promise<void>;
@@ -496,7 +665,7 @@ export interface IBuiltinToolExecutor {
    *
    * @returns Array of supported API names
    */
-  getApiNames(): string[];
+  getApiNames: () => string[];
 
   /**
    * Check if this executor supports the given API
@@ -504,7 +673,7 @@ export interface IBuiltinToolExecutor {
    * @param apiName - The API name to check
    * @returns Whether the API is supported
    */
-  hasApi(apiName: string): boolean;
+  hasApi: (apiName: string) => boolean;
 
   /**
    * The tool identifier (e.g., 'lobe-group-management')
@@ -519,7 +688,7 @@ export interface IBuiltinToolExecutor {
    * @param ctx - Execution context
    * @returns The execution result
    */
-  invoke(apiName: string, params: any, ctx: BuiltinToolContext): Promise<BuiltinToolResult>;
+  invoke: (apiName: string, params: any, ctx: BuiltinToolContext) => Promise<BuiltinToolResult>;
 }
 
 /**

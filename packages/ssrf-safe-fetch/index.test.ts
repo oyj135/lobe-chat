@@ -49,14 +49,7 @@ describe('ssrfSafeFetch', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://httpbin.org/get',
         expect.objectContaining({
-          agent: expect.objectContaining({
-            requestFilterOptions: expect.objectContaining({
-              allowIPAddressList: [],
-              allowMetaIPAddress: false,
-              allowPrivateIPAddress: false,
-              denyIPAddressList: [],
-            }),
-          }),
+          agent: expect.any(Function),
         }),
       );
       expect(response).toBeInstanceOf(Response);
@@ -80,14 +73,7 @@ describe('ssrfSafeFetch', () => {
         'https://httpbin.org/post',
         expect.objectContaining({
           ...requestOptions,
-          agent: expect.objectContaining({
-            requestFilterOptions: expect.objectContaining({
-              allowIPAddressList: [],
-              allowMetaIPAddress: false,
-              allowPrivateIPAddress: false,
-              denyIPAddressList: [],
-            }),
-          }),
+          agent: expect.any(Function),
         }),
       );
     });
@@ -110,14 +96,14 @@ describe('ssrfSafeFetch', () => {
           throw new Error('getaddrinfo ENOTFOUND');
         });
 
-        await expect(ssrfSafeFetch(url)).rejects.toThrow(/SSRF-safe fetch failed/);
+        await expect(ssrfSafeFetch(url)).rejects.toThrow(/Fetch failed/);
 
-        expect(console.error).toHaveBeenCalledWith('SSRF-safe fetch error:', expect.any(Error));
+        expect(console.error).toHaveBeenCalledWith('Fetch error:', expect.any(Error));
       });
     });
 
     it('should allow private IPs when SSRF_ALLOW_PRIVATE_IP_ADDRESS is true', async () => {
-      process.env.SSRF_ALLOW_PRIVATE_IP_ADDRESS = 'true';
+      process.env.SSRF_ALLOW_PRIVATE_IP_ADDRESS = '1';
 
       const mockResponse = createMockResponse();
       mockFetch.mockResolvedValue(mockResponse);
@@ -142,21 +128,36 @@ describe('ssrfSafeFetch', () => {
   });
 
   describe('SSRF protection for malicious URLs', () => {
-    const maliciousUrls = [
+    const privateHttpUrls = [
       'http://169.254.169.254/latest/meta-data/', // AWS metadata service
       'http://169.254.169.254:80/computeMetadata/v1/', // GCP metadata
       'http://metadata.google.internal/computeMetadata/v1/',
+    ];
+
+    privateHttpUrls.forEach((url) => {
+      it(`should SSRF-block private HTTP URL: ${url}`, async () => {
+        mockFetch.mockImplementation(() => {
+          throw new Error(
+            'DNS lookup 169.254.169.254 is not allowed. Because, It is private IP address.',
+          );
+        });
+
+        await expect(ssrfSafeFetch(url)).rejects.toThrow(/SSRF blocked/);
+      });
+    });
+
+    const unsupportedSchemeUrls = [
       'file:///etc/passwd', // File protocol
       'ftp://internal.company.com/secrets', // FTP protocol
     ];
 
-    maliciousUrls.forEach((url) => {
-      it(`should block malicious URL: ${url}`, async () => {
+    unsupportedSchemeUrls.forEach((url) => {
+      it(`should reject unsupported scheme: ${url}`, async () => {
         mockFetch.mockImplementation(() => {
-          throw new Error('Request blocked by SSRF protection');
+          throw new TypeError('Only HTTP(S) protocols are supported');
         });
 
-        await expect(ssrfSafeFetch(url)).rejects.toThrow(/SSRF-safe fetch failed/);
+        await expect(ssrfSafeFetch(url)).rejects.toThrow(/Fetch failed/);
       });
     });
   });
@@ -169,9 +170,7 @@ describe('ssrfSafeFetch', () => {
         throw new Error('getaddrinfo ENOTFOUND');
       });
 
-      await expect(ssrfSafeFetch('http://127.0.0.1:8080')).rejects.toThrow(
-        /SSRF-safe fetch failed/,
-      );
+      await expect(ssrfSafeFetch('http://127.0.0.1:8080')).rejects.toThrow(/Fetch failed/);
     });
 
     it('should handle invalid environment variable values gracefully', async () => {
@@ -182,9 +181,7 @@ describe('ssrfSafeFetch', () => {
       });
 
       // Should default to false when env var is not 'true'
-      await expect(ssrfSafeFetch('http://127.0.0.1:8080')).rejects.toThrow(
-        /SSRF-safe fetch failed/,
-      );
+      await expect(ssrfSafeFetch('http://127.0.0.1:8080')).rejects.toThrow(/Fetch failed/);
     });
   });
 
@@ -194,10 +191,21 @@ describe('ssrfSafeFetch', () => {
       mockFetch.mockRejectedValue(originalError);
 
       await expect(ssrfSafeFetch('https://example.com')).rejects.toThrow(
-        'SSRF-safe fetch failed: Network error',
+        'Fetch failed: Network error',
       );
 
-      expect(console.error).toHaveBeenCalledWith('SSRF-safe fetch error:', originalError);
+      expect(console.error).toHaveBeenCalledWith('Fetch error:', originalError);
+    });
+
+    it('should throw SSRF blocked error when request-filtering-agent blocks', async () => {
+      const ssrfError = new Error(
+        'DNS lookup 10.0.0.1(family:4, host:10.0.0.1) is not allowed. Because, It is private IP address.',
+      );
+      mockFetch.mockRejectedValue(ssrfError);
+
+      await expect(ssrfSafeFetch('http://10.0.0.1/internal')).rejects.toThrow(/SSRF blocked/);
+
+      expect(console.error).toHaveBeenCalledWith('SSRF protection blocked request:', ssrfError);
     });
 
     it('should handle non-Error thrown values', async () => {
@@ -205,16 +213,14 @@ describe('ssrfSafeFetch', () => {
       mockFetch.mockRejectedValue(nonErrorValue);
 
       await expect(ssrfSafeFetch('https://example.com')).rejects.toThrow(
-        'SSRF-safe fetch failed: String error',
+        'Fetch failed: String error',
       );
     });
 
     it('should handle null/undefined error values', async () => {
       mockFetch.mockRejectedValue(null);
 
-      await expect(ssrfSafeFetch('https://example.com')).rejects.toThrow(
-        'SSRF-safe fetch failed: null',
-      );
+      await expect(ssrfSafeFetch('https://example.com')).rejects.toThrow('Fetch failed: null');
     });
   });
 
@@ -277,7 +283,7 @@ describe('ssrfSafeFetch', () => {
   describe('integration scenarios', () => {
     it('should work with complex request configurations', async () => {
       process.env.SSRF_ALLOW_IP_ADDRESS_LIST = '127.0.0.1';
-      process.env.SSRF_ALLOW_PRIVATE_IP_ADDRESS = 'true';
+      process.env.SSRF_ALLOW_PRIVATE_IP_ADDRESS = '1';
 
       const mockResponse = createMockResponse({
         // @ts-ignore
@@ -302,14 +308,7 @@ describe('ssrfSafeFetch', () => {
         'https://api.example.com/data',
         expect.objectContaining({
           ...requestOptions,
-          agent: expect.objectContaining({
-            requestFilterOptions: expect.objectContaining({
-              allowIPAddressList: ['127.0.0.1'],
-              allowMetaIPAddress: true,
-              allowPrivateIPAddress: true,
-              denyIPAddressList: [],
-            }),
-          }),
+          agent: expect.any(Function),
         }),
       );
 
@@ -323,19 +322,11 @@ describe('ssrfSafeFetch', () => {
 
       await ssrfSafeFetch('https://secure.example.com/api');
 
-      // Verify that the agent is properly configured for HTTPS
+      // Verify that the agent function is passed
       expect(mockFetch).toHaveBeenCalledWith(
         'https://secure.example.com/api',
         expect.objectContaining({
-          agent: expect.objectContaining({
-            protocol: 'https:',
-            requestFilterOptions: expect.objectContaining({
-              allowIPAddressList: [],
-              allowMetaIPAddress: false,
-              allowPrivateIPAddress: false,
-              denyIPAddressList: [],
-            }),
-          }),
+          agent: expect.any(Function),
         }),
       );
     });

@@ -1,4 +1,4 @@
-import { AIChatModelCard } from '../types/aiModel';
+import type { AIChatModelCard } from '../types/aiModel';
 
 const bedrockChatModels: AIChatModelCard[] = [
   {
@@ -8,11 +8,81 @@ const bedrockChatModels: AIChatModelCard[] = [
       structuredOutput: true,
       vision: true,
     },
+    contextWindowTokens: 1_000_000,
+    description:
+      "Claude Opus 4.6 is Anthropic's most intelligent model for building agents and coding.",
+    displayName: 'Claude Opus 4.6',
+    enabled: true,
+    id: 'global.anthropic.claude-opus-4-6-v1',
+    maxOutput: 128_000,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 25, strategy: 'fixed', unit: 'millionTokens' },
+        {
+          lookup: { prices: { '1h': 10, '5m': 6.25 }, pricingParams: ['ttl'] },
+          name: 'textInput_cacheWrite',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-02-05',
+    settings: {
+      extendParams: ['disableContextCaching', 'enableAdaptiveThinking', 'effort'],
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      structuredOutput: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_000_000,
+    description: 'Claude Sonnet 4.6 is Anthropic’s best combination of speed and intelligence.',
+    displayName: 'Claude Sonnet 4.6',
+    enabled: true,
+    id: 'global.anthropic.claude-sonnet-4-6',
+    maxOutput: 64_000,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.3, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 15, strategy: 'fixed', unit: 'millionTokens' },
+        {
+          lookup: { prices: { '1h': 6, '5m': 3.75 }, pricingParams: ['ttl'] },
+          name: 'textInput_cacheWrite',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-02-17',
+    settings: {
+      extendParams: [
+        'disableContextCaching',
+        'enableAdaptiveThinking',
+        'enableReasoning',
+        'reasoningBudgetToken',
+        'effort',
+      ],
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      structuredOutput: true,
+      vision: true,
+    },
     contextWindowTokens: 200_000,
     description:
-      'Claude Opus 4.5 is Anthropic’s flagship model, combining exceptional intelligence and scalable performance for complex tasks requiring the highest-quality responses and reasoning.',
+      "Claude Opus 4.5 is Anthropic's flagship model, combining exceptional intelligence and scalable performance for complex tasks requiring the highest-quality responses and reasoning.",
     displayName: 'Claude Opus 4.5',
-    enabled: true,
     id: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
     maxOutput: 64_000,
     pricing: {
@@ -36,10 +106,9 @@ const bedrockChatModels: AIChatModelCard[] = [
       vision: true,
     },
     contextWindowTokens: 200_000,
-    description: 'Claude Sonnet 4.5 is Anthropic’s most intelligent model to date.',
+    description: "Claude Sonnet 4.5 is Anthropic's most intelligent model to date.",
     displayName: 'Claude Sonnet 4.5',
-    enabled: true,
-    id: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    id: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
     maxOutput: 64_000,
     pricing: {
       units: [
@@ -62,10 +131,10 @@ const bedrockChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      'Claude Haiku 4.5 is Anthropic’s fastest and most intelligent Haiku model, with lightning speed and extended thinking.',
+      "Claude Haiku 4.5 is Anthropic's fastest and most intelligent Haiku model, with lightning speed and extended thinking.",
     displayName: 'Claude Haiku 4.5',
     enabled: true,
-    id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    id: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
     maxOutput: 64_000,
     pricing: {
       units: [
@@ -109,7 +178,7 @@ const bedrockChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      'Claude 3.7 Sonnet is Anthropic’s fastest next-gen model. Compared to Claude 3 Haiku, it improves across skills and surpasses the previous flagship Claude 3 Opus on many intelligence benchmarks.',
+      "Claude 3.7 Sonnet is Anthropic's fastest next-gen model. Compared to Claude 3 Haiku, it improves across skills and surpasses the previous flagship Claude 3 Opus on many intelligence benchmarks.",
     displayName: 'Claude 3.7 Sonnet',
     id: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
     maxOutput: 64_000,

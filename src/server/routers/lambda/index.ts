@@ -1,6 +1,7 @@
 /**
  * This file contains the root router of Lobe Chat tRPC-backend
  */
+import { accountDeletionRouter } from '@/business/server/lambda-routers/accountDeletion';
 import { referralRouter } from '@/business/server/lambda-routers/referral';
 import { spendRouter } from '@/business/server/lambda-routers/spend';
 import { subscriptionRouter } from '@/business/server/lambda-routers/subscription';
@@ -8,15 +9,25 @@ import { topUpRouter } from '@/business/server/lambda-routers/topUp';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
 
 import { agentRouter } from './agent';
+import { agentBotProviderRouter } from './agentBotProvider';
+import { agentCronJobRouter } from './agentCronJob';
+import { agentDocumentRouter } from './agentDocument';
+import { agentEvalRouter } from './agentEval';
+import { agentEvalExternalRouter } from './agentEvalExternal';
 import { agentGroupRouter } from './agentGroup';
+import { agentNotifyRouter } from './agentNotify';
+import { agentSkillsRouter } from './agentSkills';
 import { aiAgentRouter } from './aiAgent';
 import { aiChatRouter } from './aiChat';
 import { aiModelRouter } from './aiModel';
 import { aiProviderRouter } from './aiProvider';
 import { apiKeyRouter } from './apiKey';
+import { botMessageRouter } from './botMessage';
+import { briefRouter } from './brief';
 import { chunkRouter } from './chunk';
 import { comfyuiRouter } from './comfyui';
 import { configRouter } from './config';
+import { deviceRouter } from './device';
 import { documentRouter } from './document';
 import { exporterRouter } from './exporter';
 import { fileRouter } from './file';
@@ -27,15 +38,21 @@ import { homeRouter } from './home';
 import { imageRouter } from './image';
 import { importerRouter } from './importer';
 import { klavisRouter } from './klavis';
+import { knowledgeRouter } from './knowledge';
 import { knowledgeBaseRouter } from './knowledgeBase';
 import { marketRouter } from './market';
 import { messageRouter } from './message';
 import { notebookRouter } from './notebook';
+import { notificationRouter } from './notification';
+import { oauthDeviceFlowRouter } from './oauthDeviceFlow';
 import { pluginRouter } from './plugin';
 import { ragEvalRouter } from './ragEval';
+import { recentRouter } from './recent';
 import { searchRouter } from './search';
 import { sessionRouter } from './session';
 import { sessionGroupRouter } from './sessionGroup';
+import { shareRouter } from './share';
+import { taskRouter } from './task';
 import { threadRouter } from './thread';
 import { topicRouter } from './topic';
 import { uploadRouter } from './upload';
@@ -43,9 +60,20 @@ import { usageRouter } from './usage';
 import { userRouter } from './user';
 import { userMemoriesRouter } from './userMemories';
 import { userMemoryRouter } from './userMemory';
+import { videoRouter } from './video';
 
 export const lambdaRouter = router({
   agent: agentRouter,
+  agentBotProvider: agentBotProviderRouter,
+  agentNotify: agentNotifyRouter,
+  botMessage: botMessageRouter,
+  agentCronJob: agentCronJobRouter,
+  agentDocument: agentDocumentRouter,
+  agentEval: agentEvalRouter,
+  agentEvalExternal: agentEvalExternalRouter,
+  agentSkills: agentSkillsRouter,
+  task: taskRouter,
+  brief: briefRouter,
   aiAgent: aiAgentRouter,
   aiChat: aiChatRouter,
   aiModel: aiModelRouter,
@@ -54,6 +82,7 @@ export const lambdaRouter = router({
   chunk: chunkRouter,
   comfyui: comfyuiRouter,
   config: configRouter,
+  device: deviceRouter,
   document: documentRouter,
   exporter: exporterRouter,
   file: fileRouter,
@@ -66,15 +95,20 @@ export const lambdaRouter = router({
   image: imageRouter,
   importer: importerRouter,
   klavis: klavisRouter,
+  knowledge: knowledgeRouter,
   knowledgeBase: knowledgeBaseRouter,
   market: marketRouter,
   message: messageRouter,
   notebook: notebookRouter,
+  notification: notificationRouter,
+  oauthDeviceFlow: oauthDeviceFlowRouter,
   plugin: pluginRouter,
   ragEval: ragEvalRouter,
+  recent: recentRouter,
   search: searchRouter,
   session: sessionRouter,
   sessionGroup: sessionGroupRouter,
+  share: shareRouter,
   thread: threadRouter,
   topic: topicRouter,
   upload: uploadRouter,
@@ -82,12 +116,12 @@ export const lambdaRouter = router({
   user: userRouter,
   userMemories: userMemoriesRouter,
   userMemory: userMemoryRouter,
-  /* eslint-disable sort-keys-fix/sort-keys-fix */
+  video: videoRouter,
+  accountDeletion: accountDeletionRouter,
   referral: referralRouter,
   spend: spendRouter,
   subscription: subscriptionRouter,
   topUp: topUpRouter,
-  /* eslint-enable sort-keys-fix/sort-keys-fix */
 });
 
 export type LambdaRouter = typeof lambdaRouter;

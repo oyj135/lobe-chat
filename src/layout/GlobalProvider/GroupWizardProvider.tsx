@@ -1,6 +1,7 @@
 'use client';
 
-import { type ReactNode, Suspense, createContext, lazy, memo, useContext, useState } from 'react';
+import { type ReactNode } from 'react';
+import { createContext, lazy, memo, Suspense, use, useState } from 'react';
 
 // Lazy load ChatGroupWizard to avoid bundling it globally
 const ChatGroupWizard = lazy(() =>
@@ -9,17 +10,8 @@ const ChatGroupWizard = lazy(() =>
 
 interface GroupWizardCallbacks {
   onCancel?: () => void;
-  onCreateCustom?: (
-    selectedAgents: string[],
-    hostConfig?: { model?: string; provider?: string },
-    enableSupervisor?: boolean,
-  ) => Promise<void>;
-  onCreateFromTemplate?: (
-    templateId: string,
-    hostConfig?: { model?: string; provider?: string },
-    enableSupervisor?: boolean,
-    selectedMemberTitles?: string[],
-  ) => Promise<void>;
+  onCreateCustom?: (selectedAgents: string[]) => Promise<void>;
+  onCreateFromTemplate?: (templateId: string, selectedMemberTitles?: string[]) => Promise<void>;
 }
 
 interface GroupWizardContextValue {
@@ -30,7 +22,7 @@ interface GroupWizardContextValue {
 const GroupWizardContext = createContext<GroupWizardContextValue | null>(null);
 
 export const useGroupWizard = () => {
-  const context = useContext(GroupWizardContext);
+  const context = use(GroupWizardContext);
   if (!context) {
     throw new Error('useGroupWizard must be used within GroupWizardProvider');
   }
@@ -56,32 +48,18 @@ const GroupWizardProviderInner = memo<GroupWizardProviderProps>(({ children }) =
     setIsLoading(false);
   };
 
-  const handleCreateCustom = async (
-    selectedAgents: string[],
-    hostConfig?: { model?: string; provider?: string },
-    enableSupervisor?: boolean,
-  ) => {
+  const handleCreateCustom = async (selectedAgents: string[]) => {
     if (callbacks.onCreateCustom) {
-      await callbacks.onCreateCustom(selectedAgents, hostConfig, enableSupervisor);
+      await callbacks.onCreateCustom(selectedAgents);
       closeGroupWizard();
     }
   };
 
-  const handleCreateFromTemplate = async (
-    templateId: string,
-    hostConfig?: { model?: string; provider?: string },
-    enableSupervisor?: boolean,
-    selectedMemberTitles?: string[],
-  ) => {
+  const handleCreateFromTemplate = async (templateId: string, selectedMemberTitles?: string[]) => {
     if (callbacks.onCreateFromTemplate) {
       setIsLoading(true);
       try {
-        await callbacks.onCreateFromTemplate(
-          templateId,
-          hostConfig,
-          enableSupervisor,
-          selectedMemberTitles,
-        );
+        await callbacks.onCreateFromTemplate(templateId, selectedMemberTitles);
         closeGroupWizard();
       } finally {
         setIsLoading(false);
@@ -95,20 +73,20 @@ const GroupWizardProviderInner = memo<GroupWizardProviderProps>(({ children }) =
   };
 
   return (
-    <GroupWizardContext.Provider value={{ closeGroupWizard, openGroupWizard }}>
+    <GroupWizardContext value={{ closeGroupWizard, openGroupWizard }}>
       {children}
       <Suspense fallback={null}>
         {isOpen && (
           <ChatGroupWizard
             isCreatingFromTemplate={isLoading}
+            open={isOpen}
             onCancel={handleCancel}
             onCreateCustom={handleCreateCustom}
             onCreateFromTemplate={handleCreateFromTemplate}
-            open={isOpen}
           />
         )}
       </Suspense>
-    </GroupWizardContext.Provider>
+    </GroupWizardContext>
   );
 });
 

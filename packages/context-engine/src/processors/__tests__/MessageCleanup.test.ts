@@ -143,7 +143,7 @@ describe('MessageCleanupProcessor', () => {
           content: 'Here is the answer',
           extraField: 'remove',
           id: 'msg5',
-          reasoning: reasoning,
+          reasoning,
           role: 'assistant',
           timestamp: Date.now(),
         },
@@ -154,7 +154,7 @@ describe('MessageCleanupProcessor', () => {
       expect(result.messages).toHaveLength(1);
       expect(result.messages[0]).toEqual({
         content: 'Here is the answer',
-        reasoning: reasoning,
+        reasoning,
         role: 'assistant',
       });
     });
@@ -301,8 +301,8 @@ describe('MessageCleanupProcessor', () => {
       const result = await processor.process(context);
 
       // Both messages are "cleaned" because comparison is done by reference
-      expect(result.metadata.messageCleanup.cleanedCount).toBe(2);
-      expect(result.metadata.messageCleanup.totalMessages).toBe(2);
+      expect(result.metadata.messageCleanup!.cleanedCount).toBe(2);
+      expect(result.metadata.messageCleanup!.totalMessages).toBe(2);
     });
 
     it('should handle empty messages array', async () => {

@@ -1,19 +1,33 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 
-import { agents, documents, files, knowledgeBaseFiles, messages, topics } from '../../schemas';
-import { LobeChatDatabase } from '../../type';
+import {
+  agents,
+  chatGroups,
+  documents,
+  files,
+  knowledgeBaseFiles,
+  knowledgeBases,
+  messages,
+  topics,
+  userMemories,
+} from '../../schemas';
+import type { LobeChatDatabase } from '../../type';
+import { sanitizeBm25Query } from '../../utils/bm25';
 
 export type SearchResultType =
   | 'page'
   | 'pageContent'
   | 'agent'
   | 'topic'
+  | 'chatGroup'
   | 'file'
+  | 'folder'
   | 'memory'
   | 'message'
   | 'mcp'
   | 'plugin'
-  | 'communityAgent';
+  | 'communityAgent'
+  | 'knowledgeBase';
 
 export interface BaseSearchResult {
   // 1=exact, 2=prefix, 3=contains
@@ -44,6 +58,12 @@ export interface AgentSearchResult extends BaseSearchResult {
   type: 'agent';
 }
 
+export interface ChatGroupSearchResult extends BaseSearchResult {
+  avatar: string | null;
+  backgroundColor: string | null;
+  type: 'chatGroup';
+}
+
 export interface TopicSearchResult extends BaseSearchResult {
   agentId: string | null;
   favorite: boolean | null;
@@ -60,6 +80,12 @@ export interface FileSearchResult extends BaseSearchResult {
   url: string | null;
 }
 
+export interface FolderSearchResult extends BaseSearchResult {
+  knowledgeBaseId: string | null;
+  slug: string | null;
+  type: 'folder';
+}
+
 export interface MessageSearchResult extends BaseSearchResult {
   agentId: string | null;
   content: string;
@@ -67,6 +93,11 @@ export interface MessageSearchResult extends BaseSearchResult {
   role: string;
   topicId: string | null;
   type: 'message';
+}
+
+export interface MemorySearchResult extends BaseSearchResult {
+  memoryLayer: string | null;
+  type: 'memory';
 }
 
 export interface MCPSearchResult extends BaseSearchResult {
@@ -91,6 +122,11 @@ export interface PluginSearchResult extends BaseSearchResult {
   type: 'plugin';
 }
 
+export interface KnowledgeBaseSearchResult extends BaseSearchResult {
+  avatar: string | null;
+  type: 'knowledgeBase';
+}
+
 export interface AssistantSearchResult extends BaseSearchResult {
   author: string;
   avatar?: string | null;
@@ -104,12 +140,16 @@ export type SearchResult =
   | PageSearchResult
   | PageContentSearchResult
   | AgentSearchResult
+  | ChatGroupSearchResult
   | TopicSearchResult
   | FileSearchResult
+  | FolderSearchResult
   | MessageSearchResult
+  | MemorySearchResult
   | MCPSearchResult
   | PluginSearchResult
-  | AssistantSearchResult;
+  | AssistantSearchResult
+  | KnowledgeBaseSearchResult;
 
 export interface SearchOptions {
   agentId?: string;
@@ -142,58 +182,51 @@ export class SearchRepo {
     if (!query || query.trim() === '') return [];
 
     const trimmedQuery = query.trim();
-    const searchTerm = `%${trimmedQuery}%`;
-    const exactQuery = trimmedQuery;
-    const prefixQuery = `${trimmedQuery}%`;
 
     // Context-aware limits: prioritize relevant types based on context
     const limits = this.calculateLimits(limitPerType, type, agentId, contextType);
 
-    // Build queries based on type filter
-    const queries = [];
+    // Run searches in parallel for better performance
+    const searchPromises: Promise<SearchResult[]>[] = [];
+
     if ((!type || type === 'agent') && limits.agent > 0) {
-      queries.push(this.buildAgentQuery(searchTerm, exactQuery, prefixQuery, limits.agent));
+      searchPromises.push(this.searchAgents(trimmedQuery, limits.agent));
+    }
+    if ((!type || type === 'chatGroup') && limits.chatGroup > 0) {
+      searchPromises.push(this.searchChatGroups(trimmedQuery, limits.chatGroup));
     }
     if ((!type || type === 'topic') && limits.topic > 0) {
-      queries.push(
-        this.buildTopicQuery(searchTerm, exactQuery, prefixQuery, limits.topic, agentId),
-      );
+      searchPromises.push(this.searchTopics(trimmedQuery, limits.topic, agentId));
     }
     if ((!type || type === 'message') && limits.message > 0) {
-      queries.push(
-        this.buildMessageQuery(searchTerm, exactQuery, prefixQuery, limits.message, agentId),
-      );
+      searchPromises.push(this.searchMessages(trimmedQuery, limits.message, agentId));
     }
     if ((!type || type === 'file') && limits.file > 0) {
-      queries.push(this.buildFileQuery(searchTerm, exactQuery, prefixQuery, limits.file));
+      searchPromises.push(this.searchFiles(trimmedQuery, limits.file));
+    }
+    if ((!type || type === 'folder') && limits.folder > 0) {
+      searchPromises.push(this.searchFolders(trimmedQuery, limits.folder));
     }
     if ((!type || type === 'page') && limits.page > 0) {
-      queries.push(this.buildPageQuery(searchTerm, exactQuery, prefixQuery, limits.page));
+      searchPromises.push(this.searchPages(trimmedQuery, limits.page));
+    }
+    if ((!type || type === 'memory') && limits.memory > 0) {
+      searchPromises.push(this.searchMemories(trimmedQuery, limits.memory));
+    }
+    if ((!type || type === 'knowledgeBase') && limits.knowledgeBase > 0) {
+      searchPromises.push(this.searchKnowledgeBases(trimmedQuery, limits.knowledgeBase));
     }
 
-    if (queries.length === 0) return [];
+    const results = await Promise.all(searchPromises);
 
-    // Combine with UNION ALL (pattern from KnowledgeRepo)
-    const unionQuery = sql.join(
-      queries.map((q) => sql`(${q})`),
-      sql` UNION ALL `,
-    );
-
-    const finalQuery = sql`
-      SELECT * FROM (${unionQuery}) as combined
-      ORDER BY relevance ASC, updated_at DESC
-    `;
-
-    const result = await this.db.execute(finalQuery);
-    return this.mapResults(result.rows as any[]);
+    // Flatten and sort by relevance ASC, then by updatedAt DESC
+    return results
+      .flat()
+      .sort((a, b) => a.relevance - b.relevance || b.updatedAt.getTime() - a.updatedAt.getTime());
   }
 
   /**
    * Calculate result limits based on context
-   * - Agent context: expand topics (6) and messages (6), limit others (3 each)
-   * - Page context: expand pages (6), limit others (3 each)
-   * - Resource context: expand files (6), limit others (3 each)
-   * - General context: limit all types to 3 each
    */
   private calculateLimits(
     baseLimit: number,
@@ -202,7 +235,11 @@ export class SearchRepo {
     contextType?: 'agent' | 'resource' | 'page',
   ): {
     agent: number;
+    chatGroup: number;
     file: number;
+    folder: number;
+    knowledgeBase: number;
+    memory: number;
     message: number;
     page: number;
     pageContent: number;
@@ -212,7 +249,11 @@ export class SearchRepo {
     if (type) {
       return {
         agent: type === 'agent' ? baseLimit : 0,
+        chatGroup: type === 'chatGroup' ? baseLimit : 0,
         file: type === 'file' ? baseLimit : 0,
+        folder: type === 'folder' ? baseLimit : 0,
+        knowledgeBase: type === 'knowledgeBase' ? baseLimit : 0,
+        memory: type === 'memory' ? baseLimit : 0,
         message: type === 'message' ? baseLimit : 0,
         page: type === 'page' ? baseLimit : 0,
         pageContent: type === 'pageContent' ? baseLimit : 0,
@@ -224,22 +265,30 @@ export class SearchRepo {
     if (contextType === 'page') {
       return {
         agent: 3,
+        chatGroup: 3,
         file: 3,
+        folder: 3,
+        knowledgeBase: 3,
+        memory: 3,
         message: 3,
         page: 6,
-        pageContent: 0, // Not available yet
+        pageContent: 0,
         topic: 3,
       };
     }
 
-    // Resource context: expand files to 6, limit others to 3
+    // Resource context: expand files and folders to 6, limit others to 3
     if (contextType === 'resource') {
       return {
         agent: 3,
+        chatGroup: 3,
         file: 6,
+        folder: 6,
+        knowledgeBase: 6,
+        memory: 3,
         message: 3,
         page: 3,
-        pageContent: 0, // Not available yet
+        pageContent: 0,
         topic: 3,
       };
     }
@@ -248,10 +297,14 @@ export class SearchRepo {
     if (agentId || contextType === 'agent') {
       return {
         agent: 3,
+        chatGroup: 3,
         file: 3,
+        folder: 3,
+        knowledgeBase: 3,
+        memory: 3,
         message: 6,
         page: 3,
-        pageContent: 0, // Not available yet
+        pageContent: 0,
         topic: 6,
       };
     }
@@ -259,499 +312,448 @@ export class SearchRepo {
     // General context: limit all types to 3
     return {
       agent: 3,
+      chatGroup: 3,
       file: 3,
+      folder: 3,
+      knowledgeBase: 3,
+      memory: 3,
       message: 3,
       page: 3,
-      pageContent: 0, // Not available yet
+      pageContent: 0,
       topic: 3,
     };
   }
 
   /**
-   * Build agent search query
-   * Searches: title, description, slug, tags (JSONB array)
+   * Map BM25 scores to relevance values compatible with the existing sort system.
+   * BM25 score (higher=better) → relevance (1-3, lower=better)
    */
-  private buildAgentQuery(
-    searchTerm: string,
-    exactQuery: string,
-    prefixQuery: string,
-    limit: number,
-  ): ReturnType<typeof sql> {
-    return sql`
-      SELECT
-        a.id,
-        'agent' as type,
-        a.title,
-        a.description,
-        a.slug,
-        a.avatar,
-        a.background_color,
-        a.tags,
-        a.created_at,
-        a.updated_at,
-        CASE
-          WHEN a.title ILIKE ${exactQuery} THEN 1
-          WHEN a.title ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END as relevance,
-        NULL::boolean as favorite,
-        NULL::text as session_id,
-        NULL::text as agent_id,
-        NULL::text as name,
-        NULL::varchar(255) as file_type,
-        NULL::integer as size,
-        NULL::text as url,
-        NULL::text as knowledge_base_id
-      FROM ${agents} a
-      WHERE a.user_id = ${this.userId}
-        AND (
-          a.title ILIKE ${searchTerm}
-          OR COALESCE(a.description, '') ILIKE ${searchTerm}
-          OR COALESCE(a.slug, '') ILIKE ${searchTerm}
-          OR (
-            a.tags IS NOT NULL
-            AND EXISTS (
-              SELECT 1 FROM jsonb_array_elements_text(a.tags) AS tag
-              WHERE tag ILIKE ${searchTerm}
-            )
-          )
-        )
-      LIMIT ${limit}
-    `;
+  private mapScoresToRelevance<T extends { score: number }>(
+    rows: T[],
+  ): (Omit<T, 'score'> & { relevance: number })[] {
+    if (rows.length === 0) return [];
+    const maxScore = Math.max(...rows.map((r) => r.score));
+    return rows.map(({ score, ...rest }) => ({
+      ...rest,
+      relevance: maxScore > 0 ? 1 + 2 * (1 - score / maxScore) : 3,
+    }));
   }
 
   /**
-   * Build topic search query with optional agent-context boosting
-   * Searches: title, content, historySummary
-   * When agentId is provided:
-   * - Current agent's topics: relevance 0.5-0.7 (highest priority)
-   * - Other topics: relevance 1-3 (normal priority)
+   * Truncate content with ellipsis
    */
-  private buildTopicQuery(
-    searchTerm: string,
-    exactQuery: string,
-    prefixQuery: string,
-    limit: number,
-    agentId?: string,
-  ): ReturnType<typeof sql> {
-    // Build relevance CASE statement with agent boosting
-    const relevanceCase = agentId
-      ? sql`
-        CASE
-          WHEN t.agent_id = ${agentId} THEN
-            CASE
-              WHEN t.title ILIKE ${exactQuery} THEN 0.5
-              WHEN t.title ILIKE ${prefixQuery} THEN 0.6
-              ELSE 0.7
-            END
-          WHEN t.title ILIKE ${exactQuery} THEN 1
-          WHEN t.title ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END
-      `
-      : sql`
-        CASE
-          WHEN t.title ILIKE ${exactQuery} THEN 1
-          WHEN t.title ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END
-      `;
-
-    return sql`
-      SELECT
-        t.id,
-        'topic' as type,
-        t.title,
-        t.content as description,
-        NULL::varchar(100) as slug,
-        NULL::text as avatar,
-        NULL::text as background_color,
-        NULL::jsonb as tags,
-        t.created_at,
-        t.updated_at,
-        ${relevanceCase} as relevance,
-        t.favorite,
-        t.session_id,
-        t.agent_id,
-        NULL::text as name,
-        NULL::varchar(255) as file_type,
-        NULL::integer as size,
-        NULL::text as url,
-        NULL::text as knowledge_base_id
-      FROM ${topics} t
-      WHERE t.user_id = ${this.userId}
-        AND (
-          COALESCE(t.title, '') ILIKE ${searchTerm}
-          OR COALESCE(t.content, '') ILIKE ${searchTerm}
-          OR COALESCE(t.history_summary, '') ILIKE ${searchTerm}
-        )
-      ORDER BY relevance ASC, t.updated_at DESC
-      LIMIT ${limit}
-    `;
+  private truncate(content: string | null | undefined, maxLength: number = 200): string | null {
+    if (!content) return null;
+    if (content.length <= maxLength) return content;
+    return content.slice(0, maxLength) + '...';
   }
 
   /**
-   * Build message search query with optional agent-context boosting
-   * Searches: message content (supports multi-word queries)
-   * When agentId is provided:
-   * - Current agent's messages: relevance 0.5-0.7 (highest priority)
-   * - Other messages: relevance 1-3 (normal priority)
+   * Search agents by title, description, slug, tags (BM25)
    */
-  private buildMessageQuery(
-    searchTerm: string,
-    exactQuery: string,
-    prefixQuery: string,
+  private async searchAgents(query: string, limit: number): Promise<AgentSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        avatar: agents.avatar,
+        backgroundColor: agents.backgroundColor,
+        createdAt: agents.createdAt,
+        description: agents.description,
+        id: agents.id,
+        score: sql<number>`paradedb.score(${agents.id})`,
+        slug: agents.slug,
+        tags: agents.tags,
+        title: agents.title,
+        updatedAt: agents.updatedAt,
+      })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.userId, this.userId),
+          sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query} OR ${agents.slug} @@@ ${bm25Query} OR ${agents.tags} @@@ ${bm25Query} OR ${agents.systemRole} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${agents.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      avatar: row.avatar,
+      backgroundColor: row.backgroundColor,
+      createdAt: row.createdAt,
+      description: row.description,
+      id: row.id,
+      relevance: row.relevance,
+      slug: row.slug,
+      tags: (row.tags as string[]) || [],
+      title: row.title || '',
+      type: 'agent' as const,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  /**
+   * Search topics by title, content, description (BM25)
+   */
+  private async searchTopics(
+    query: string,
     limit: number,
     agentId?: string,
-  ): ReturnType<typeof sql> {
-    // Split search query into words for better multi-word search
-    const words = exactQuery
-      .trim()
-      .split(/\s+/)
-      .filter((w) => w.length > 0);
+  ): Promise<TopicSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
 
-    // Build WHERE clause: search for any of the words
-    const wordConditions =
-      words.length > 1
-        ? sql.join(
-            words.map((word) => sql`COALESCE(m.content, '') ILIKE ${`%${word}%`}`),
-            sql` OR `,
-          )
-        : sql`COALESCE(m.content, '') ILIKE ${searchTerm}`;
+    const rows = await this.db
+      .select({
+        agentId: topics.agentId,
+        content: topics.content,
+        createdAt: topics.createdAt,
+        favorite: topics.favorite,
+        id: topics.id,
+        score: sql<number>`paradedb.score(${topics.id})`,
+        sessionId: topics.sessionId,
+        title: topics.title,
+        updatedAt: topics.updatedAt,
+      })
+      .from(topics)
+      .where(
+        and(
+          eq(topics.userId, this.userId),
+          sql`(${topics.title} @@@ ${bm25Query} OR ${topics.content} @@@ ${bm25Query} OR ${topics.description} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${topics.id}) DESC`)
+      .limit(limit);
 
-    // Build relevance CASE statement with agent boosting
-    const relevanceCase = agentId
-      ? sql`
-        CASE
-          WHEN m.agent_id = ${agentId} THEN
-            CASE
-              WHEN m.content ILIKE ${exactQuery} THEN 0.5
-              WHEN m.content ILIKE ${prefixQuery} THEN 0.6
-              ELSE 0.7
-            END
-          WHEN m.content ILIKE ${exactQuery} THEN 1
-          WHEN m.content ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END
-      `
-      : sql`
-        CASE
-          WHEN m.content ILIKE ${exactQuery} THEN 1
-          WHEN m.content ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END
-      `;
+    return this.mapScoresToRelevance(rows).map((row) => {
+      let { relevance } = row;
+      if (agentId && row.agentId === agentId) {
+        relevance = relevance * 0.5;
+      }
 
-    return sql`
-      SELECT
-        m.id,
-        'message' as type,
-        CASE
-          WHEN length(m.content) > 100 THEN substring(m.content, 1, 100) || '...'
-          ELSE m.content
-        END as title,
-        COALESCE(a.title, 'General Chat') as description,
-        m.model as slug,
-        NULL::text as avatar,
-        NULL::text as background_color,
-        NULL::jsonb as tags,
-        m.created_at,
-        m.updated_at,
-        ${relevanceCase} as relevance,
-        NULL::boolean as favorite,
-        m.topic_id as session_id,
-        m.agent_id,
-        m.role as name,
-        NULL::varchar(255) as file_type,
-        NULL::integer as size,
-        NULL::text as url,
-        NULL::text as knowledge_base_id
-      FROM ${messages} m
-      LEFT JOIN ${agents} a ON m.agent_id = a.id
-      WHERE m.user_id = ${this.userId}
-        AND m.role != 'tool'
-        AND (${wordConditions})
-      ORDER BY relevance ASC, m.created_at DESC
-      LIMIT ${limit}
-    `;
+      return {
+        agentId: row.agentId,
+        createdAt: row.createdAt,
+        description: this.truncate(row.content),
+        favorite: row.favorite,
+        id: row.id,
+        relevance,
+        sessionId: row.sessionId,
+        title: row.title || '',
+        type: 'topic' as const,
+        updatedAt: row.updatedAt,
+      };
+    });
   }
 
   /**
-   * Build file search query
-   * Searches files and their linked documents, excluding pages (file_type='custom/document')
+   * Search messages by content (BM25)
    */
-  private buildFileQuery(
-    searchTerm: string,
-    exactQuery: string,
-    prefixQuery: string,
+  private async searchMessages(
+    query: string,
     limit: number,
-  ): ReturnType<typeof sql> {
-    // Query for files (with optional linked documents), excluding custom/document files
-    const fileQuery = sql`
-      SELECT
-        f.id,
-        'file' as type,
-        f.name as title,
-        d.content as description,
-        NULL::varchar(100) as slug,
-        NULL::text as avatar,
-        NULL::text as background_color,
-        NULL::jsonb as tags,
-        f.created_at,
-        f.updated_at,
-        CASE
-          WHEN f.name ILIKE ${exactQuery} THEN 1
-          WHEN f.name ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END as relevance,
-        NULL::boolean as favorite,
-        NULL::text as session_id,
-        NULL::text as agent_id,
-        f.name,
-        f.file_type,
-        f.size,
-        f.url,
-        kbf.knowledge_base_id
-      FROM ${files} f
-      LEFT JOIN ${documents} d ON f.id = d.file_id
-      LEFT JOIN ${knowledgeBaseFiles} kbf ON f.id = kbf.file_id
-      WHERE f.user_id = ${this.userId}
-        AND f.file_type != 'custom/document'
-        AND f.name ILIKE ${searchTerm}
-    `;
+    agentId?: string,
+  ): Promise<MessageSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
 
-    // Query for standalone documents (not pages and not linked to files)
-    const documentQuery = sql`
-      SELECT
-        d.id,
-        'file' as type,
-        COALESCE(d.title, d.filename, 'Untitled') as title,
-        d.content as description,
-        NULL::varchar(100) as slug,
-        NULL::text as avatar,
-        NULL::text as background_color,
-        NULL::jsonb as tags,
-        d.created_at,
-        d.updated_at,
-        CASE
-          WHEN COALESCE(d.title, d.filename) ILIKE ${exactQuery} THEN 1
-          WHEN COALESCE(d.title, d.filename) ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END as relevance,
-        NULL::boolean as favorite,
-        NULL::text as session_id,
-        NULL::text as agent_id,
-        COALESCE(d.title, d.filename, 'Untitled') as name,
-        d.file_type,
-        d.total_char_count as size,
-        d.source as url,
-        kbf.knowledge_base_id
-      FROM ${documents} d
-      LEFT JOIN ${files} f ON d.file_id = f.id
-      LEFT JOIN ${knowledgeBaseFiles} kbf ON f.id = kbf.file_id
-      WHERE d.user_id = ${this.userId}
-        AND d.source_type != 'file'
-        AND d.file_type != 'custom/document'
-        AND (
-          COALESCE(d.title, '') ILIKE ${searchTerm}
-          OR COALESCE(d.filename, '') ILIKE ${searchTerm}
-          OR COALESCE(d.content, '') ILIKE ${searchTerm}
-        )
-    `;
+    const rows = await this.db
+      .select({
+        agentId: messages.agentId,
+        agentTitle: agents.title,
+        content: messages.content,
+        createdAt: messages.createdAt,
+        id: messages.id,
+        model: messages.model,
+        role: messages.role,
+        score: sql<number>`paradedb.score(${messages.id})`,
+        topicId: messages.topicId,
+        updatedAt: messages.updatedAt,
+      })
+      .from(messages)
+      .leftJoin(agents, eq(messages.agentId, agents.id))
+      .where(
+        and(
+          eq(messages.userId, this.userId),
+          ne(messages.role, 'tool'),
+          sql`${messages.content} @@@ ${bm25Query}`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${messages.id}) DESC`)
+      .limit(limit);
 
-    // Combine both queries
-    return sql`
-      SELECT * FROM (
-        (${fileQuery})
-        UNION ALL
-        (${documentQuery})
-      ) as combined
-      ORDER BY relevance ASC, updated_at DESC
-      LIMIT ${limit}
-    `;
+    return this.mapScoresToRelevance(rows).map((row) => {
+      let { relevance } = row;
+      if (agentId && row.agentId === agentId) {
+        relevance = relevance * 0.5;
+      }
+
+      return {
+        agentId: row.agentId,
+        content: row.content || '',
+        createdAt: row.createdAt,
+        description: row.agentTitle || 'General Chat',
+        id: row.id,
+        model: row.model,
+        relevance,
+        role: row.role,
+        title: this.truncate(row.content) || '',
+        topicId: row.topicId,
+        type: 'message' as const,
+        updatedAt: row.updatedAt,
+      };
+    });
   }
 
   /**
-   * Build page search query
-   * Fast search on page titles only (no content search for better performance)
-   * Searches standalone documents with type='custom/document'
+   * Search files by name (BM25)
+   * Note: ICU tokenizer treats hyphenated/dotted names (e.g. "react-component.jsx") as single tokens,
+   * so partial searches like "component" won't match. Full words or prefixes work fine.
    */
-  private buildPageQuery(
-    searchTerm: string,
-    exactQuery: string,
-    prefixQuery: string,
-    limit: number,
-  ): ReturnType<typeof sql> {
-    return sql`
-      SELECT
-        d.id,
-        'page' as type,
-        COALESCE(d.title, d.filename, 'Untitled') as title,
-        NULL::text as description,
-        NULL::varchar(100) as slug,
-        NULL::text as avatar,
-        NULL::text as background_color,
-        NULL::jsonb as tags,
-        d.created_at,
-        d.updated_at,
-        CASE
-          WHEN COALESCE(d.title, d.filename) ILIKE ${exactQuery} THEN 1
-          WHEN COALESCE(d.title, d.filename) ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END as relevance,
-        NULL::boolean as favorite,
-        NULL::text as session_id,
-        NULL::text as agent_id,
-        COALESCE(d.title, d.filename, 'Untitled') as name,
-        d.file_type,
-        d.total_char_count as size,
-        d.source as url,
-        NULL::text as knowledge_base_id
-      FROM ${documents} d
-      WHERE d.user_id = ${this.userId}
-        AND d.file_type = 'custom/document'
-        AND (
-          COALESCE(d.title, '') ILIKE ${searchTerm}
-          OR COALESCE(d.filename, '') ILIKE ${searchTerm}
-        )
-      ORDER BY relevance ASC, updated_at DESC
-      LIMIT ${limit}
-    `;
+  private async searchFiles(query: string, limit: number): Promise<FileSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        content: documents.content,
+        createdAt: files.createdAt,
+        fileType: files.fileType,
+        id: files.id,
+        knowledgeBaseId: knowledgeBaseFiles.knowledgeBaseId,
+        name: files.name,
+        score: sql<number>`paradedb.score(${files.id})`,
+        size: files.size,
+        updatedAt: files.updatedAt,
+        url: files.url,
+      })
+      .from(files)
+      .leftJoin(documents, eq(files.id, documents.fileId))
+      .leftJoin(knowledgeBaseFiles, eq(files.id, knowledgeBaseFiles.fileId))
+      .where(
+        and(
+          eq(files.userId, this.userId),
+          ne(files.fileType, 'custom/document'),
+          sql`${files.name} @@@ ${bm25Query}`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${files.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      createdAt: row.createdAt,
+      description: this.truncate(row.content),
+      fileType: row.fileType,
+      id: row.id,
+      knowledgeBaseId: row.knowledgeBaseId,
+      name: row.name,
+      relevance: row.relevance,
+      size: row.size,
+      title: row.name,
+      type: 'file' as const,
+      updatedAt: row.updatedAt,
+      url: row.url,
+    }));
   }
 
   /**
-   * Build page content search query (FUTURE USE - Not integrated yet)
-   * Full-text search within page content for deep document search
-   * This is more expensive but allows searching within document body
+   * Search folders (documents with file_type='custom/folder') (BM25)
    */
-  private buildPageContentQuery(
-    searchTerm: string,
-    exactQuery: string,
-    prefixQuery: string,
-    limit: number,
-  ): ReturnType<typeof sql> {
-    return sql`
-      SELECT
-        d.id,
-        'pageContent' as type,
-        COALESCE(d.title, d.filename, 'Untitled') as title,
-        d.content as description,
-        NULL::varchar(100) as slug,
-        NULL::text as avatar,
-        NULL::text as background_color,
-        NULL::jsonb as tags,
-        d.created_at,
-        d.updated_at,
-        CASE
-          WHEN COALESCE(d.content, '') ILIKE ${exactQuery} THEN 1
-          WHEN COALESCE(d.content, '') ILIKE ${prefixQuery} THEN 2
-          ELSE 3
-        END as relevance,
-        NULL::boolean as favorite,
-        NULL::text as session_id,
-        NULL::text as agent_id,
-        COALESCE(d.title, d.filename, 'Untitled') as name,
-        d.file_type,
-        d.total_char_count as size,
-        d.source as url,
-        NULL::text as knowledge_base_id
-      FROM ${documents} d
-      WHERE d.user_id = ${this.userId}
-        AND d.file_type = 'custom/document'
-        AND COALESCE(d.content, '') ILIKE ${searchTerm}
-      ORDER BY relevance ASC, updated_at DESC
-      LIMIT ${limit}
-    `;
-  }
+  private async searchFolders(query: string, limit: number): Promise<FolderSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
 
-  /**
-   * Map raw SQL results to typed SearchResult objects
-   * Parse JSONB strings and convert snake_case to camelCase
-   */
-  private mapResults(rows: any[]): SearchResult[] {
-    return rows.map((row) => {
-      const base = {
-        createdAt: new Date(row.created_at),
+    const rows = await this.db
+      .select({
+        createdAt: documents.createdAt,
+        description: documents.description,
+        filename: documents.filename,
+        id: documents.id,
+        knowledgeBaseId: documents.knowledgeBaseId,
+        score: sql<number>`paradedb.score(${documents.id})`,
+        slug: documents.slug,
+        title: documents.title,
+        updatedAt: documents.updatedAt,
+      })
+      .from(documents)
+      .where(
+        and(
+          eq(documents.userId, this.userId),
+          eq(documents.fileType, 'custom/folder'),
+          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.description} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => {
+      const title = row.title || row.filename || 'Untitled';
+      return {
+        createdAt: row.createdAt,
         description: row.description,
         id: row.id,
-        relevance: Number(row.relevance),
-        title: row.title,
-        type: row.type as SearchResultType,
-        updatedAt: new Date(row.updated_at),
+        knowledgeBaseId: row.knowledgeBaseId,
+        relevance: row.relevance,
+        slug: row.slug,
+        title,
+        type: 'folder' as const,
+        updatedAt: row.updatedAt,
       };
-
-      switch (row.type) {
-        case 'page': {
-          return {
-            ...base,
-            type: 'page' as const,
-          };
-        }
-        case 'pageContent': {
-          return {
-            ...base,
-            type: 'pageContent' as const,
-          };
-        }
-        case 'agent': {
-          // Parse tags JSONB if string
-          let tags: string[] = [];
-          if (row.tags) {
-            if (typeof row.tags === 'string') {
-              try {
-                tags = JSON.parse(row.tags);
-              } catch {
-                tags = [];
-              }
-            } else {
-              tags = row.tags;
-            }
-          }
-
-          return {
-            ...base,
-            avatar: row.avatar,
-            backgroundColor: row.background_color,
-            slug: row.slug,
-            tags,
-            type: 'agent' as const,
-          };
-        }
-        case 'topic': {
-          return {
-            ...base,
-            agentId: row.agent_id,
-            favorite: row.favorite,
-            sessionId: row.session_id,
-            type: 'topic' as const,
-          };
-        }
-        case 'file': {
-          return {
-            ...base,
-            fileType: row.file_type,
-            knowledgeBaseId: row.knowledge_base_id,
-            name: row.name,
-            size: Number(row.size),
-            type: 'file' as const,
-            url: row.url,
-          };
-        }
-        case 'message': {
-          return {
-            ...base,
-            agentId: row.agent_id,
-            content: row.description || '',
-            model: row.slug,
-            role: row.name || 'user',
-            topicId: row.session_id,
-            type: 'message' as const,
-          };
-        }
-        default: {
-          throw new Error(`Unknown search result type: ${row.type}`);
-        }
-      }
     });
+  }
+
+  /**
+   * Search pages (documents with file_type='custom/document') (BM25)
+   */
+  private async searchPages(query: string, limit: number): Promise<PageSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        createdAt: documents.createdAt,
+        filename: documents.filename,
+        id: documents.id,
+        score: sql<number>`paradedb.score(${documents.id})`,
+        title: documents.title,
+        updatedAt: documents.updatedAt,
+      })
+      .from(documents)
+      .where(
+        and(
+          eq(documents.userId, this.userId),
+          eq(documents.fileType, 'custom/document'),
+          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.content} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => {
+      const title = row.title || row.filename || 'Untitled';
+      return {
+        createdAt: row.createdAt,
+        description: null,
+        id: row.id,
+        relevance: row.relevance,
+        title,
+        type: 'page' as const,
+        updatedAt: row.updatedAt,
+      };
+    });
+  }
+
+  /**
+   * Search memories by title, summary, details (BM25)
+   */
+  private async searchMemories(query: string, limit: number): Promise<MemorySearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        createdAt: userMemories.createdAt,
+        id: userMemories.id,
+        memoryLayer: userMemories.memoryLayer,
+        score: sql<number>`paradedb.score(${userMemories.id})`,
+        summary: userMemories.summary,
+        title: userMemories.title,
+        updatedAt: userMemories.updatedAt,
+      })
+      .from(userMemories)
+      .where(
+        and(
+          eq(userMemories.userId, this.userId),
+          sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${userMemories.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      createdAt: row.createdAt,
+      description: this.truncate(row.summary),
+      id: row.id,
+      memoryLayer: row.memoryLayer,
+      relevance: row.relevance,
+      title: row.title || 'Untitled Memory',
+      type: 'memory' as const,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  /**
+   * Search chat groups by title and description (BM25)
+   */
+  private async searchChatGroups(query: string, limit: number): Promise<ChatGroupSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        avatar: chatGroups.avatar,
+        backgroundColor: chatGroups.backgroundColor,
+        createdAt: chatGroups.createdAt,
+        description: chatGroups.description,
+        id: chatGroups.id,
+        score: sql<number>`paradedb.score(${chatGroups.id})`,
+        title: chatGroups.title,
+        updatedAt: chatGroups.updatedAt,
+      })
+      .from(chatGroups)
+      .where(
+        and(
+          eq(chatGroups.userId, this.userId),
+          sql`(${chatGroups.title} @@@ ${bm25Query} OR ${chatGroups.description} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${chatGroups.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      avatar: row.avatar,
+      backgroundColor: row.backgroundColor,
+      createdAt: row.createdAt,
+      description: row.description,
+      id: row.id,
+      relevance: row.relevance,
+      title: row.title || '',
+      type: 'chatGroup' as const,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  /**
+   * Search knowledge bases by name and description (BM25)
+   */
+  private async searchKnowledgeBases(
+    query: string,
+    limit: number,
+  ): Promise<KnowledgeBaseSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        avatar: knowledgeBases.avatar,
+        createdAt: knowledgeBases.createdAt,
+        description: knowledgeBases.description,
+        id: knowledgeBases.id,
+        name: knowledgeBases.name,
+        score: sql<number>`paradedb.score(${knowledgeBases.id})`,
+        updatedAt: knowledgeBases.updatedAt,
+      })
+      .from(knowledgeBases)
+      .where(
+        and(
+          eq(knowledgeBases.userId, this.userId),
+          sql`(${knowledgeBases.name} @@@ ${bm25Query} OR ${knowledgeBases.description} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${knowledgeBases.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      avatar: row.avatar,
+      createdAt: row.createdAt,
+      description: row.description,
+      id: row.id,
+      relevance: row.relevance,
+      title: row.name,
+      type: 'knowledgeBase' as const,
+      updatedAt: row.updatedAt,
+    }));
   }
 }

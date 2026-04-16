@@ -1,27 +1,39 @@
 import { useEffect } from 'react';
 
+import { resourceService } from '@/services/resource';
 import { useFileStore } from '@/store/file';
 import { AsyncTaskStatus } from '@/types/asyncTask';
 import { type FileListItem } from '@/types/files';
 
 export const useCheckTaskStatus = (data: FileListItem[] | undefined) => {
-  const [refreshFileList] = useFileStore((s) => [s.refreshFileList]);
-  const hasProcessingChunkTask = data?.some(
-    (item) => item.chunkingStatus === AsyncTaskStatus.Processing,
-  );
-  const hasProcessingEmbeddingTask = data?.some(
-    (item) => item.embeddingStatus === AsyncTaskStatus.Processing,
-  );
+  const processingFileIds =
+    data
+      ?.filter(
+        (item) =>
+          item.sourceType === 'file' &&
+          (item.chunkingStatus === AsyncTaskStatus.Processing ||
+            item.embeddingStatus === AsyncTaskStatus.Processing),
+      )
+      .map((item) => item.id) ?? [];
+  const processingKey = processingFileIds.join(',');
 
-  const isProcessing = hasProcessingChunkTask || hasProcessingEmbeddingTask;
-
-  // every 3s to check if the chunking status is changed
+  // Poll every 5s to check if chunking/embedding status has changed
   useEffect(() => {
-    if (!isProcessing) return;
+    if (processingFileIds.length === 0) return;
 
-    const interval = setInterval(refreshFileList, 5000);
+    const interval = setInterval(() => {
+      void resourceService
+        .getResourceStatusesByIds(processingFileIds)
+        .then((items) => {
+          useFileStore.getState().patchLocalResourceStatuses(items);
+        })
+        .catch((error) => {
+          console.error('Failed to sync knowledge item statuses:', error);
+        });
+    }, 5000);
+
     return () => {
       clearInterval(interval);
     };
-  }, [isProcessing]);
+  }, [processingKey]);
 };

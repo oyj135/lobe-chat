@@ -1,24 +1,35 @@
 'use client';
 
-import { type ReactNode, memo, useCallback } from 'react';
+import { type ReactNode } from 'react';
+import { memo, useCallback } from 'react';
 
+import { useFetchAgentDocuments } from '@/hooks/useFetchAgentDocuments';
 import { useFetchTopicMemories } from '@/hooks/useFetchMemoryForTopic';
 import { useFetchNotebookDocuments } from '@/hooks/useFetchNotebookDocuments';
+import { useChatStore } from '@/store/chat';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
 
 import WideScreenContainer from '../../WideScreenContainer';
+import SkeletonList from '../components/SkeletonList';
 import MessageItem from '../Messages';
 import { MessageActionProvider } from '../Messages/Contexts/MessageActionProvider';
-import SkeletonList from '../components/SkeletonList';
 import { dataSelectors, useConversationStore } from '../store';
 import VirtualizedList from './components/VirtualizedList';
 
 export interface ChatListProps {
   /**
+   * Disable the actions bar for all messages (e.g., in share page)
+   */
+  disableActionsBar?: boolean;
+  /**
    * Custom item renderer. If not provided, uses default ChatItem.
    */
   itemContent?: (index: number, id: string) => ReactNode;
+  /**
+   * Force showing welcome component even when messages exist
+   */
+  showWelcome?: boolean;
   /**
    * Welcome component to display when there are no messages
    */
@@ -29,7 +40,7 @@ export interface ChatListProps {
  *
  * Uses ConversationStore for message data and fetching.
  */
-const ChatList = memo<ChatListProps>(({ welcome, itemContent }) => {
+const ChatList = memo<ChatListProps>(({ disableActionsBar, welcome, itemContent, showWelcome }) => {
   // Fetch messages (SWR key is null when skipFetch is true)
   const context = useConversationStore((s) => s.context);
   const enableUserMemories = useUserStore(settingsSelectors.memoryEnabled);
@@ -37,11 +48,16 @@ const ChatList = memo<ChatListProps>(({ welcome, itemContent }) => {
     dataSelectors.skipFetch(s),
     s.useFetchMessages,
   ]);
+  const activeAgentId = useChatStore((s) => s.activeAgentId);
   useFetchMessages(context, skipFetch);
 
-  // Fetch notebook documents when topic is selected
-  useFetchNotebookDocuments(context.topicId!);
-  useFetchTopicMemories(enableUserMemories ? context.topicId : undefined);
+  // Skip fetching notebook and memories for share pages (they require authentication)
+  const isSharePage = !!context.topicShareId;
+
+  // Fetch notebook documents when topic is selected (skip for share pages)
+  useFetchAgentDocuments(isSharePage ? undefined : activeAgentId);
+  useFetchNotebookDocuments(isSharePage ? undefined : context.topicId!);
+  useFetchTopicMemories(enableUserMemories && !isSharePage ? context.topicId : undefined);
 
   // Use selectors for data
 
@@ -56,11 +72,15 @@ const ChatList = memo<ChatListProps>(({ welcome, itemContent }) => {
   );
   const messagesInit = useConversationStore(dataSelectors.messagesInit);
 
-  if (!messagesInit) {
+  // When topicId is null (new conversation), show welcome directly without waiting for fetch
+  // because there's no server data to fetch - only local optimistic updates exist
+  const isNewConversation = !context.topicId;
+
+  if (!messagesInit && !isNewConversation) {
     return <SkeletonList />;
   }
 
-  if (displayMessageIds.length === 0) {
+  if ((showWelcome || displayMessageIds.length === 0) && welcome) {
     return (
       <WideScreenContainer
         style={{
@@ -77,10 +97,9 @@ const ChatList = memo<ChatListProps>(({ welcome, itemContent }) => {
   }
 
   return (
-    <MessageActionProvider withSingletonActionsBar>
+    <MessageActionProvider withSingletonActionsBar={!disableActionsBar}>
       <VirtualizedList
         dataSource={displayMessageIds}
-        // isGenerating={isGenerating}
         itemContent={itemContent ?? defaultItemContent}
       />
     </MessageActionProvider>

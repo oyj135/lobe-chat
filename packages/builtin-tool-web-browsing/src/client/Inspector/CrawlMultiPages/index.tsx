@@ -1,22 +1,11 @@
 'use client';
 
-import { type BuiltinInspectorProps } from '@lobechat/types';
-import { createStaticStyles, cx } from 'antd-style';
+import type { BuiltinInspectorProps } from '@lobechat/types';
+import { cx } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { highlightTextStyles, shinyTextStyles } from '@/styles';
-
-const styles = createStaticStyles(({ css, cssVar }) => ({
-  root: css`
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
-
-    color: ${cssVar.colorTextSecondary};
-  `,
-}));
+import { highlightTextStyles, inspectorTextStyles, shinyTextStyles } from '@/styles';
 
 interface CrawlMultiPagesParams {
   urls: string[];
@@ -42,15 +31,19 @@ export const CrawlMultiPagesInspector = memo<BuiltinInspectorProps<CrawlMultiPag
 
     if (isArgumentsStreaming && !displayText) {
       return (
-        <div className={cx(styles.root, shinyTextStyles.shinyText)}>
+        <div className={cx(inspectorTextStyles.root, shinyTextStyles.shinyText)}>
           <span>{t('builtins.lobe-web-browsing.apiName.crawlMultiPages')}</span>
         </div>
       );
     }
 
     return (
-      <div className={cx(styles.root, isArgumentsStreaming && shinyTextStyles.shinyText)}>
-        <span>{t('builtins.lobe-web-browsing.apiName.crawlMultiPages')}: </span>
+      <div
+        className={cx(inspectorTextStyles.root, isArgumentsStreaming && shinyTextStyles.shinyText)}
+      >
+        <span>
+          {t('builtins.lobe-web-browsing.apiName.crawlMultiPages')}:{'\u00A0'}
+        </span>
         {displayText && <span className={highlightTextStyles.gold}>{displayText}</span>}
       </div>
     );

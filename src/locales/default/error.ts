@@ -1,12 +1,7 @@
-import { businessErrorsLocales } from '@/business/locales/errors';
-
 export default {
-  'clerkAuth.loginSuccess.action': 'Continue Session',
-  'clerkAuth.loginSuccess.desc':
-    "{{greeting}}, it's great to continue serving you. Let's pick up where we left off.",
-  'clerkAuth.loginSuccess.title': 'Welcome back, {{nickName}}',
   'error.backHome': 'Back to Home',
   'error.desc': 'Give it a try later, or go back to the known world.',
+  'error.stack': 'Error Stack',
   'error.retry': 'Reload',
   'error.title': 'Oops, something went wrong..',
   'fetchError.detail': 'Error details',
@@ -109,36 +104,52 @@ export default {
     'The request returned empty. Please check if the API proxy address does not end with `/v1`.',
   'response.CreateMessageError':
     'Sorry, the message could not be sent successfully. Please copy the content and try sending it again. This message will not be retained after refreshing the page.',
+  'exceededContext.compact': 'Compact Context',
+  'exceededContext.desc':
+    'The conversation has exceeded the context window limit. You can compact the context to compress history and continue chatting.',
+  'exceededContext.title': 'Context Window Exceeded',
+
+  'unknownError.copyTraceId': 'Trace ID Copied',
+  'unknownError.desc': 'An unexpected error occurred. You can retry or report on',
+  'unknownError.retry': 'Retry',
+  'unknownError.title': 'Oops, the request took a nap',
+
+  'response.AccountDeactivated':
+    'Your account has been deactivated or suspended. This may be due to policy, security, or account review reasons. Please contact the provider support for assistance.',
   'response.ExceededContextWindow':
     'The current request content exceeds the length that the model can handle. Please reduce the amount of content and try again.',
+  'response.ExceededContextWindowCloud':
+    'The conversation is too long to process. Please edit your last message to reduce input or delete some messages and try again.',
+  'response.QuotaLimitReachedCloud':
+    'The model service is currently under heavy load. Please try again later or switch to another model.',
   'response.FreePlanLimit':
     'You are currently a free user and cannot use this feature. Please upgrade to a paid plan to continue using it.',
+  'response.InsufficientBudgetForModel':
+    'Your remaining credits are insufficient for this model. Please top up credits, upgrade your plan, or try a less expensive model.',
   'response.GoogleAIBlockReason.BLOCKLIST':
-    'Your content contains prohibited terms. Please review and modify your input, then try again.',
+    'The content includes blocked terms. Please rephrase and try again.',
   'response.GoogleAIBlockReason.IMAGE_SAFETY':
-    'The generated image was blocked for safety reasons. Please try modifying your image request.',
+    'The generated image was blocked for safety reasons. Please try modifying your request.',
   'response.GoogleAIBlockReason.LANGUAGE':
-    'The language you are using is not supported. Please try again in English or another supported language.',
+    "The requested language isn't supported. Please try again in a supported language.",
   'response.GoogleAIBlockReason.OTHER':
-    'The content was blocked for an unknown reason. Please try rephrasing your request.',
+    'The content was blocked for an unknown reason. Please rephrase and try again.',
   'response.GoogleAIBlockReason.PROHIBITED_CONTENT':
-    'Your request may contain prohibited content. Please adjust your request to comply with the usage guidelines.',
+    'The content may contain prohibited content. Please adjust it and try again.',
   'response.GoogleAIBlockReason.RECITATION':
-    'Your content was blocked due to potential copyright concerns. Please try using original content or rephrase your request.',
+    'The content was blocked due to recitation risk. Please use more original wording and try again.',
   'response.GoogleAIBlockReason.SAFETY':
-    'Your content was blocked for safety policy reasons. Please adjust your request to avoid potentially harmful or inappropriate content.',
+    'The content was blocked for safety reasons. Please adjust it and try again.',
   'response.GoogleAIBlockReason.SPII':
-    'Your content may contain sensitive personally identifiable information (PII). To protect privacy, please remove any sensitive details and try again.',
+    'The content may include sensitive personal information (SPII). Please remove sensitive details and try again.',
   'response.GoogleAIBlockReason.default':
-    'Content blocked: {{blockReason}}. Please adjust your request and try again.',
+    'The content was blocked ({{blockReason}}). Please adjust it and try again.',
   'response.InsufficientQuota':
     "Sorry, the quota for this key has been reached. Please check if your account balance is sufficient or try again after increasing the key's quota.",
   'response.InvalidAccessCode':
     'Invalid access code or empty. Please enter the correct access code or add a custom API Key.',
   'response.InvalidBedrockCredentials':
     'Bedrock authentication failed. Please check the AccessKeyId/SecretAccessKey and retry.',
-  'response.InvalidClerkUser':
-    'Sorry, you are not currently logged in. Please log in or register an account to continue.',
   'response.InvalidComfyUIArgs':
     'Invalid ComfyUI configuration. Please check the settings and try again.',
   'response.InvalidGithubToken':
@@ -235,8 +246,9 @@ export default {
     'The current deployment mode does not support uploading non-image files. To upload files in {{ext}} format, please switch to server database deployment or use the {{cloud}} service.',
   'upload.networkError':
     "Please check your network connection and ensure that the file storage service's cross-origin configuration is correct.",
+  'upload.storageLimitExceeded':
+    'Your file storage has reached the plan limit. Please upgrade your plan or delete unused files to free up space.',
   'upload.title': 'File upload failed. Please check your network connection or try again later',
   'upload.unknownError': 'Error reason: {{reason}}',
   'upload.uploadFailed': 'File upload failed.',
-  ...businessErrorsLocales,
 };

@@ -1,13 +1,14 @@
 import { type AssistantContentBlock, type UIChatMessage } from '@lobechat/types';
-import { ActionIconGroup, createRawModal } from '@lobehub/ui';
 import type { ActionIconGroupEvent, ActionIconGroupItemType } from '@lobehub/ui';
+import { ActionIconGroup, createRawModal, Flexbox } from '@lobehub/ui';
 import { memo, useCallback, useMemo } from 'react';
 
+import { ReactionPicker } from '../../../components/Reaction';
 import ShareMessageModal, { type ShareModalProps } from '../../../components/ShareMessageModal';
 import {
-  Provider,
   createStore,
   messageStateSelectors,
+  Provider,
   useConversationStore,
   useConversationStoreApi,
 } from '../../../store';
@@ -21,16 +22,20 @@ import { useGroupActions } from './useGroupActions';
 // Helper to strip handleClick from action items before passing to ActionIconGroup
 const stripHandleClick = (item: MessageActionItemOrDivider): ActionIconGroupItemType => {
   if ('type' in item && item.type === 'divider') return item as unknown as ActionIconGroupItemType;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { handleClick, children, ...rest } = item as MessageActionItem;
+  const { children, ...rest } = item as MessageActionItem;
+  const baseItem = { ...rest } as MessageActionItem;
+  delete (baseItem as { handleClick?: unknown }).handleClick;
   if (children) {
     return {
-      ...rest,
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      children: children.map(({ handleClick: _, ...child }) => child),
+      ...baseItem,
+      children: children.map((child) => {
+        const nextChild = { ...child } as MessageActionItem;
+        delete (nextChild as { handleClick?: unknown }).handleClick;
+        return nextChild;
+      }),
     } as ActionIconGroupItemType;
   }
-  return rest as ActionIconGroupItemType;
+  return baseItem as ActionIconGroupItemType;
 };
 
 // Build action items map for handleAction lookup
@@ -158,7 +163,12 @@ const WithContentId = memo<GroupActionsProps>(({ actionsConfig, id, data, conten
     [allActions],
   );
 
-  return <ActionIconGroup items={items} menu={menu} onActionClick={handleAction} />;
+  return (
+    <Flexbox horizontal align={'center'} gap={8}>
+      <ReactionPicker messageId={id} />
+      <ActionIconGroup items={items} menu={menu} onActionClick={handleAction} />
+    </Flexbox>
+  );
 });
 
 WithContentId.displayName = 'GroupActionsWithContentId';

@@ -1,17 +1,29 @@
-import { Flexbox, Text } from '@lobehub/ui';
+import { ActionIcon, Flexbox, Text } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
-import { type ReactNode, memo, useMemo } from 'react';
+import { XIcon } from 'lucide-react';
+import { type ReactNode } from 'react';
+import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import FileIcon from '@/components/FileIcon';
+import { useFileStore } from '@/store/file';
 import { type UploadFileItem } from '@/types/files/upload';
 import { formatSize, formatSpeed, formatTime } from '@/utils/format';
 
 const styles = createStaticStyles(({ css, cssVar }) => {
   return {
+    cancelButton: css`
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    `,
+    container: css`
+      &:hover .cancel-button {
+        opacity: 1;
+      }
+    `,
     progress: css`
       position: absolute;
-      inset-block: 0 0;
+      inset-block: 0;
       inset-inline: 0 1%;
 
       height: 100%;
@@ -33,9 +45,10 @@ const styles = createStaticStyles(({ css, cssVar }) => {
 
 type UploadItemProps = UploadFileItem;
 
-const UploadItem = memo<UploadItemProps>(({ file, status, uploadState }) => {
+const UploadItem = memo<UploadItemProps>(({ id, file, status, uploadState }) => {
   const { t } = useTranslation('file');
   const { type, name, size } = file;
+  const cancelUpload = useFileStore((s) => s.cancelUpload);
 
   const desc: ReactNode = useMemo(() => {
     switch (status) {
@@ -87,27 +100,47 @@ const UploadItem = memo<UploadItemProps>(({ file, status, uploadState }) => {
           </Text>
         );
       }
+      case 'cancelled': {
+        return (
+          <Text style={{ fontSize: 12 }} type={'warning'}>
+            {formatSize(size)} · {t('uploadDock.body.item.cancelled')}
+          </Text>
+        );
+      }
       default: {
         return '';
       }
     }
-  }, [status, uploadState]);
+  }, [status, uploadState, size, t]);
 
   return (
     <Flexbox
-      align={'center'}
-      gap={4}
       horizontal
+      align={'center'}
+      className={styles.container}
+      gap={12}
       key={name}
       paddingBlock={8}
       paddingInline={12}
       style={{ position: 'relative' }}
     >
-      <FileIcon fileName={name} fileType={type} />
-      <Flexbox style={{ overflow: 'hidden' }}>
+      <FileIcon fileName={name} fileType={type} size={36} />
+      <Flexbox flex={1} style={{ overflow: 'hidden' }}>
         <div className={styles.title}>{name}</div>
         {desc}
       </Flexbox>
+
+      {(status === 'uploading' || status === 'pending') && (
+        <ActionIcon
+          className={`${styles.cancelButton} cancel-button`}
+          icon={XIcon}
+          size="small"
+          title={t('uploadDock.body.item.cancel')}
+          onClick={() => {
+            cancelUpload(id);
+          }}
+        />
+      )}
 
       {status === 'uploading' && !!uploadState && (
         <div

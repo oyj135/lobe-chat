@@ -1,48 +1,64 @@
+import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
+import { AgentManagementIdentifier } from '@lobechat/builtin-tool-agent-management';
+import { CredsIdentifier, type CredSummary, generateCredsList } from '@lobechat/builtin-tool-creds';
 import { GroupAgentBuilderIdentifier } from '@lobechat/builtin-tool-group-agent-builder';
 import { GTDIdentifier } from '@lobechat/builtin-tool-gtd';
-import { KLAVIS_SERVER_TYPES, isDesktop } from '@lobechat/const';
-import {
-  type AgentBuilderContext,
-  type AgentGroupConfig,
-  type GTDConfig,
-  type GroupAgentBuilderContext,
-  type GroupOfficialToolItem,
-  type LobeToolManifest,
-  MessagesEngine,
+import { WebOnboardingIdentifier } from '@lobechat/builtin-tool-web-onboarding';
+import { isDesktop, KLAVIS_SERVER_TYPES, LOBEHUB_SKILL_PROVIDERS } from '@lobechat/const';
+import type {
+  AgentBuilderContext,
+  AgentContextDocument,
+  AgentGroupConfig,
+  AgentManagementContext,
+  GroupAgentBuilderContext,
+  GroupOfficialToolItem,
+  GTDConfig,
+  LobeToolManifest,
+  MemoryContext,
+  OnboardingContext,
+  ToolDiscoveryConfig,
+  UserMemoryData,
 } from '@lobechat/context-engine';
+import { MessagesEngine, resolveTopicReferences } from '@lobechat/context-engine';
 import { historySummaryPrompt } from '@lobechat/prompts';
-import {
-  type OpenAIChatMessage,
-  type RuntimeInitialContext,
-  type RuntimeStepContext,
-  type UIChatMessage,
+import type {
+  OpenAIChatMessage,
+  RuntimeInitialContext,
+  RuntimeStepContext,
+  UIChatMessage,
 } from '@lobechat/types';
 import debug from 'debug';
 
 import { isCanUseFC } from '@/helpers/isCanUseFC';
 import { VARIABLE_GENERATORS } from '@/helpers/parserPlaceholder';
+import { lambdaClient } from '@/libs/trpc/client';
 import { notebookService } from '@/services/notebook';
 import { getAgentStoreState } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentChatConfigSelectors, agentSelectors } from '@/store/agent/selectors';
 import { getChatGroupStoreState } from '@/store/agentGroup';
 import { agentGroupSelectors } from '@/store/agentGroup/selectors';
+import { getAiInfraStoreState } from '@/store/aiInfra';
 import { getChatStoreState } from '@/store/chat';
+import { topicSelectors } from '@/store/chat/selectors';
 import { getToolStoreState } from '@/store/tool';
-import { builtinToolSelectors, klavisStoreSelectors } from '@/store/tool/selectors';
+import {
+  builtinToolSelectors,
+  klavisStoreSelectors,
+  lobehubSkillStoreSelectors,
+  toolSelectors,
+} from '@/store/tool/selectors';
 
 import { isCanUseVideo, isCanUseVision } from '../helper';
-import {
-  combineUserMemoryData,
-  resolveGlobalIdentities,
-  resolveTopicMemories,
-} from './memoryManager';
+import { combineUserMemoryData, resolveTopicMemories, resolveUserPersona } from './memoryManager';
+import { resolveClientSkills } from './skillEngineering';
 
 const log = debug('context-engine:contextEngineering');
 
 interface ContextEngineeringContext {
   /** Agent Builder context for injecting current agent info */
   agentBuilderContext?: AgentBuilderContext;
+  agentDocuments?: AgentContextDocument[];
   /** The agent ID that will respond (for group context injection) */
   agentId?: string;
   enableHistoryCount?: boolean;
@@ -59,8 +75,12 @@ interface ContextEngineeringContext {
   inputTemplate?: string;
   /** Tool manifests with systemRole and API definitions */
   manifests?: LobeToolManifest[];
+  /** Memory-related context for prompt/runtime behavior */
+  memoryContext?: MemoryContext;
   messages: UIChatMessage[];
   model: string;
+  /** Agent's enabled plugin/tool/skill identifiers (from agentConfig.plugins) */
+  plugins?: string[];
   provider: string;
   sessionId?: string;
   /**
@@ -74,7 +94,7 @@ interface ContextEngineeringContext {
   topicId?: string;
 }
 
-// REVIEW：可能这里可以约束一下 identity，preference，exp 的 重新排序或者裁切过的上下文进来而不是全部丢进来
+// REVIEW: Maybe we can constrain identity, preference, exp to reorder or trim the context instead of passing everything in
 export const contextEngineering = async ({
   messages = [],
   manifests,
@@ -88,11 +108,14 @@ export const contextEngineering = async ({
   historyCount,
   historySummary,
   agentBuilderContext,
+  agentDocuments,
   agentId,
   groupId,
   initialContext,
+  plugins,
   stepContext,
   topicId,
+  memoryContext,
 }: ContextEngineeringContext): Promise<OpenAIChatMessage[]> => {
   log('tools: %o', tools);
 
@@ -100,9 +123,12 @@ export const contextEngineering = async ({
   const isAgentBuilderEnabled = tools?.includes(AgentBuilderIdentifier) ?? false;
   // Check if Group Agent Builder tool is enabled
   const isGroupAgentBuilderEnabled = tools?.includes(GroupAgentBuilderIdentifier) ?? false;
+  // Check if Agent Management tool is enabled
+  const isAgentManagementEnabled = tools?.includes(AgentManagementIdentifier) ?? false;
 
   log('isAgentBuilderEnabled: %s', isAgentBuilderEnabled);
   log('isGroupAgentBuilderEnabled: %s', isGroupAgentBuilderEnabled);
+  log('isAgentManagementEnabled: %s', isAgentManagementEnabled);
 
   // Build agent group configuration if groupId is provided
   let agentGroup: AgentGroupConfig | undefined;
@@ -139,7 +165,8 @@ export const contextEngineering = async ({
         currentAgentRole,
         groupTitle: groupDetail.title || undefined,
         members,
-        systemPrompt: groupDetail.config?.systemPrompt || undefined,
+        // Use group.content as the group description (shared prompt/content)
+        systemPrompt: groupDetail.content || undefined,
       };
       log('agentGroup built: %o', agentGroup);
     }
@@ -217,6 +244,28 @@ export const contextEngineering = async ({
           }
         }
 
+        // Get LobehubSkill providers (if enabled)
+        const isLobehubSkillEnabled =
+          typeof window !== 'undefined' &&
+          window.global_serverConfigStore?.getState()?.serverConfig?.enableLobehubSkill;
+
+        if (isLobehubSkillEnabled) {
+          const allLobehubSkillServers = lobehubSkillStoreSelectors.getServers(toolState);
+
+          for (const provider of LOBEHUB_SKILL_PROVIDERS) {
+            const server = allLobehubSkillServers.find((s) => s.identifier === provider.id);
+
+            officialTools.push({
+              description: `LobeHub Skill Provider: ${provider.label}`,
+              enabled: enabledPlugins.includes(provider.id),
+              identifier: provider.id,
+              installed: !!server,
+              name: provider.label,
+              type: 'lobehub-skill',
+            });
+          }
+        }
+
         groupAgentBuilderContext = {
           config: {
             openingMessage: activeGroupDetail.config?.openingMessage || undefined,
@@ -251,14 +300,13 @@ export const contextEngineering = async ({
     .filter((kb) => kb.enabled)
     .map((kb) => ({ description: kb.description, id: kb.id, name: kb.name }));
 
-  // Resolve user memories: topic memories and global identities are independent layers
-  let userMemoryData;
+  // Resolve user memories: topic memories and user persona are independent layers
+  // Both functions now read from cache only (no network requests) to avoid blocking sendMessage
+  let userMemoryData: UserMemoryData | undefined;
   if (enableUserMemories) {
-    const [topicMemories, globalIdentities] = await Promise.all([
-      resolveTopicMemories(),
-      Promise.resolve(resolveGlobalIdentities()),
-    ]);
-    userMemoryData = combineUserMemoryData(topicMemories, globalIdentities);
+    const topicMemories = resolveTopicMemories();
+    const persona = resolveUserPersona();
+    userMemoryData = combineUserMemoryData(topicMemories, persona);
   }
 
   // Resolve GTD context: plan and todos
@@ -305,8 +353,273 @@ export const contextEngineering = async ({
     }
   }
 
+  // Resolve user credentials context for creds tool
+  // Creds tool must be enabled to fetch credentials
+  const isCredsEnabled = tools?.includes(CredsIdentifier) ?? false;
+  let credsList: CredSummary[] | undefined;
+
+  if (isCredsEnabled) {
+    try {
+      const credsResult = await lambdaClient.market.creds.list.query();
+      const userCreds = (credsResult as any)?.data ?? [];
+      credsList = userCreds.map(
+        (cred: any): CredSummary => ({
+          description: cred.description,
+          key: cred.key,
+          name: cred.name,
+          type: cred.type,
+        }),
+      );
+      log('Creds context resolved: count=%d', credsList?.length ?? 0);
+    } catch (error) {
+      // Silently fail - creds context is optional
+      log('Failed to resolve creds context:', error);
+    }
+  }
+
+  const userMemoryConfig =
+    enableUserMemories && userMemoryData
+      ? {
+          enabled: enableUserMemories,
+          memories: userMemoryData,
+        }
+      : undefined;
+
+  // Build tool discovery config if lobe-activator is enabled
+  const enabledToolSet = new Set(tools || []);
+  const isLobeToolsEnabled = enabledToolSet.has(LobeActivatorIdentifier);
+
+  let toolDiscoveryConfig: ToolDiscoveryConfig | undefined;
+  if (isLobeToolsEnabled) {
+    const toolState = getToolStoreState();
+    const availableTools = toolSelectors
+      .availableToolsForDiscovery(toolState)
+      .filter((tool) => !enabledToolSet.has(tool.identifier));
+
+    if (availableTools.length > 0) {
+      toolDiscoveryConfig = { availableTools };
+      log('Tool discovery config built, available tools count: %d', availableTools.length);
+    }
+  }
+
+  // Build Agent Management context.
+  // - availableAgents is injected whenever the user is in auto skill mode (so the
+  //   supervisor can decide to activate agent-management on its own) OR when the tool
+  //   is explicitly enabled.
+  // - availableProviders / availablePlugins are only built when the tool is explicitly
+  //   enabled, since they're solely needed for createAgent / updateAgent.
+  let agentManagementContext: AgentManagementContext | undefined;
+
+  const isInAutoSkillMode =
+    agentChatConfigSelectors.skillActivateMode(agentStoreState) !== 'manual';
+  const shouldInjectAvailableAgents = isInAutoSkillMode || isAgentManagementEnabled;
+
+  if (shouldInjectAvailableAgents) {
+    try {
+      // Over-fetch by 2: +1 reserved for the current agent (filtered out below
+      // so the model has no exposure to its own id and cannot self-delegate)
+      // and +1 to detect overflow for the `hasMore` flag.
+      const AVAILABLE_AGENTS_LIMIT = 10;
+      const recentAgents = await lambdaClient.agent.queryAgents.query({
+        limit: AVAILABLE_AGENTS_LIMIT + 2,
+      });
+
+      // Exclude current agent from `availableAgents`. The model is the current
+      // agent — its identity/persona is already established by `systemRole`, so
+      // we don't re-inject it here, and removing self from the list ensures the
+      // model never sees its own id in the agent-management context (so it
+      // cannot accidentally call itself via `callAgent`).
+      const otherAgents = agentId ? recentAgents.filter((a) => a.id !== agentId) : recentAgents;
+      const hasMoreAgents = otherAgents.length > AVAILABLE_AGENTS_LIMIT;
+      const availableAgents = otherAgents.slice(0, AVAILABLE_AGENTS_LIMIT).map((a) => ({
+        description: a.description ?? undefined,
+        id: a.id,
+        title: a.title ?? 'Untitled',
+      }));
+
+      agentManagementContext = {
+        availableAgents,
+        availableAgentsHasMore: hasMoreAgents,
+        ...(agentId && {
+          currentAgent: {
+            id: agentId,
+            title: agentSelectors.getAgentMetaById(agentId)(agentStoreState)?.title ?? undefined,
+          },
+        }),
+      };
+      log('availableAgents fetched: %d agents (hasMore=%s)', availableAgents.length, hasMoreAgents);
+    } catch (error) {
+      // Silently fail - availableAgents context is optional
+      log('Failed to fetch availableAgents: %O', error);
+    }
+  }
+
+  if (isAgentManagementEnabled) {
+    // Get enabled providers and models from aiInfra store
+    const aiProviderState = getAiInfraStoreState();
+    const enabledChatModelList = aiProviderState.enabledChatModelList || [];
+
+    // Build availableProviders from enabled chat models (only user-enabled providers)
+    // Limit to first 5 providers to avoid context bloat
+    const availableProviders = enabledChatModelList.slice(0, 5).map((provider) => ({
+      id: provider.id,
+      models: provider.children.map((model) => ({
+        abilities: model.abilities,
+        description: model.description,
+        id: model.id,
+        name: model.displayName || model.id,
+      })),
+      name: provider.name,
+    }));
+
+    // Get tool state for plugins
+    const toolState = getToolStoreState();
+
+    // Build availablePlugins from all plugin sources
+    const availablePlugins = [];
+
+    // Builtin tools (use allMetaList to include hidden tools like web-browsing, cloud-sandbox, etc.)
+    // Exclude only truly internal tools (agent-management itself, agent-builder, page-agent)
+    const allBuiltinTools = builtinToolSelectors.allMetaList(toolState);
+    const klavisIdentifiers = new Set(KLAVIS_SERVER_TYPES.map((t) => t.identifier));
+    const INTERNAL_TOOLS = new Set([
+      'lobe-agent-management', // Don't show agent-management in its own context
+      'lobe-agent-builder', // Used for editing current agent, not for creating new agents
+      'lobe-group-agent-builder', // Used for editing current group, not for creating new agents
+      'lobe-page-agent', // Page-editor specific tool
+    ]);
+
+    for (const tool of allBuiltinTools) {
+      // Skip Klavis tools in builtin list (they'll be shown separately)
+      if (klavisIdentifiers.has(tool.identifier)) continue;
+      // Skip internal tools
+      if (INTERNAL_TOOLS.has(tool.identifier)) continue;
+
+      availablePlugins.push({
+        description: tool.meta?.description,
+        identifier: tool.identifier,
+        name: tool.meta?.title || tool.identifier,
+        type: 'builtin' as const,
+      });
+    }
+
+    // Klavis tools (if enabled)
+    const isKlavisEnabled =
+      typeof window !== 'undefined' &&
+      window.global_serverConfigStore?.getState()?.serverConfig?.enableKlavis;
+
+    if (isKlavisEnabled) {
+      for (const klavisType of KLAVIS_SERVER_TYPES) {
+        availablePlugins.push({
+          description: klavisType.description,
+          identifier: klavisType.identifier,
+          name: klavisType.label,
+          type: 'klavis' as const,
+        });
+      }
+    }
+
+    // LobehubSkill providers (if enabled)
+    const isLobehubSkillEnabled =
+      typeof window !== 'undefined' &&
+      window.global_serverConfigStore?.getState()?.serverConfig?.enableLobehubSkill;
+
+    if (isLobehubSkillEnabled) {
+      for (const provider of LOBEHUB_SKILL_PROVIDERS) {
+        availablePlugins.push({
+          description: provider.description,
+          identifier: provider.id,
+          name: provider.label,
+          type: 'lobehub-skill' as const,
+        });
+      }
+    }
+
+    agentManagementContext = {
+      ...agentManagementContext,
+      availablePlugins,
+      availableProviders,
+    };
+
+    log(
+      'agentManagementContext built: %d providers, %d plugins, %d agents',
+      agentManagementContext.availableProviders?.length ?? 0,
+      agentManagementContext.availablePlugins?.length ?? 0,
+      agentManagementContext.availableAgents?.length ?? 0,
+    );
+  }
+
+  // Inject mentionedAgents independently of isAgentManagementEnabled.
+  // When user @mentions an agent, delegation context must always be injected
+  // even if the agent doesn't have agent-management tool in its config.
+  const hasMentionedAgents =
+    initialContext?.mentionedAgents && initialContext.mentionedAgents.length > 0;
+
+  if (hasMentionedAgents) {
+    agentManagementContext = {
+      ...agentManagementContext,
+      mentionedAgents: initialContext!.mentionedAgents,
+    };
+    log('mentionedAgents injected: %d agents', initialContext!.mentionedAgents!.length);
+  }
+
+  // Resolve topic references from messages containing <refer_topic> tags
+  const topicReferences = await resolveTopicReferences(
+    messages,
+    async (topicId: string) => {
+      const topic = topicSelectors.getTopicById(topicId)(getChatStoreState());
+      return topic ?? null;
+    },
+    async (topicId: string) => {
+      const { messageService } = await import('@/services/message');
+      const msgs = await messageService.getMessages({ agentId, groupId, topicId });
+      return msgs.map((m) => ({
+        content: typeof m.content === 'string' ? m.content : '',
+        role: m.role,
+      }));
+    },
+  );
+
+  // Build onboarding context if this is the web-onboarding agent
+  let onboardingContext: OnboardingContext | undefined;
+  const isOnboardingAgent = tools?.includes(WebOnboardingIdentifier);
+  if (isOnboardingAgent) {
+    try {
+      const { userService } = await import('@/services/user');
+      const { formatWebOnboardingStateMessage } =
+        await import('@lobechat/builtin-tool-web-onboarding/utils');
+      const state = await userService.getOnboardingState();
+      const phaseGuidance = formatWebOnboardingStateMessage(state);
+
+      // Fetch SOUL.md and persona documents via raw DB access to avoid placeholder text
+      let soulContent: string | null = null;
+      let personaContent: string | null = null;
+      try {
+        const soulDoc = await userService.readOnboardingDocument('soul');
+        // Only inject real content, not empty-state placeholder messages
+        if (soulDoc?.id && soulDoc.content) {
+          soulContent = soulDoc.content;
+        }
+      } catch {
+        // Ignore — document may not exist yet
+      }
+      try {
+        const personaDoc = await userService.readOnboardingDocument('persona');
+        if (personaDoc?.id && personaDoc.content) {
+          personaContent = personaDoc.content;
+        }
+      } catch {
+        // Ignore — document may not exist yet
+      }
+
+      onboardingContext = { personaContent, phaseGuidance, soulContent };
+      log('Built onboarding context, phase: %s', state.phase);
+    } catch (error) {
+      log('Failed to build onboarding context: %O', error);
+    }
+  }
+
   // Create MessagesEngine with injected dependencies
-  /* eslint-disable sort-keys-fix/sort-keys-fix */
   const engine = new MessagesEngine({
     // Agent configuration
     enableHistoryCount,
@@ -331,6 +644,7 @@ export const contextEngineering = async ({
       fileContents,
       knowledgeBases,
     },
+    agentDocuments,
 
     // Messages
     messages,
@@ -343,6 +657,18 @@ export const contextEngineering = async ({
     initialContext,
     stepContext,
 
+    // Selected skills/tools from user for this request
+    selectedSkills: initialContext?.selectedSkills,
+    selectedTools: initialContext?.selectedTools,
+
+    // Skills configuration — expose all installed skills so the AI can discover and activate them
+    skillsConfig: {
+      enabledSkills: plugins ? resolveClientSkills(plugins).skills : undefined,
+    },
+
+    // Tool Discovery configuration
+    toolDiscoveryConfig,
+
     // Tools configuration
     toolsConfig: {
       manifests,
@@ -350,24 +676,57 @@ export const contextEngineering = async ({
     },
 
     // User memory configuration
-    userMemory:
-      enableUserMemories && userMemoryData
-        ? {
-            enabled: enableUserMemories,
-            memories: userMemoryData,
-          }
-        : undefined,
+    userMemory: userMemoryConfig,
 
     // Variable generators
-    variableGenerators: VARIABLE_GENERATORS,
+    variableGenerators: {
+      ...VARIABLE_GENERATORS,
+      // NOTICE: required by builtin-tool-creds/src/systemRole.ts
+      CREDS_LIST: () => (credsList ? generateCredsList(credsList) : ''),
+      // NOTICE(@nekomeowww): required by builtin-tool-memory/src/systemRole.ts
+      memory_effort: () => (userMemoryConfig ? (memoryContext?.effort ?? '') : ''),
+      // Current agent + topic identity — referenced by the LobeHub builtin
+      // skill (packages/builtin-skills/src/lobehub/content.ts) so the model
+      // can run `lh agent run -a {{agent_id}}` etc without first having to
+      // search for itself. Read lazily from stores so we only pay the cost
+      // when the placeholder actually appears in a rendered message.
+      agent_id: () => agentId ?? '',
+      agent_title: () =>
+        agentId ? (agentSelectors.getAgentMetaById(agentId)(agentStoreState)?.title ?? '') : '',
+      agent_description: () =>
+        agentId
+          ? (agentSelectors.getAgentMetaById(agentId)(agentStoreState)?.description ?? '')
+          : '',
+      topic_id: () => topicId ?? '',
+      topic_title: () => {
+        if (!topicId) return '';
+        const topic = topicSelectors.getTopicById(topicId)(getChatStoreState());
+        return topic?.title ?? '';
+      },
+    },
 
     // Extended contexts - only pass when enabled
     ...(isAgentBuilderEnabled && { agentBuilderContext }),
     ...(isGroupAgentBuilderEnabled && { groupAgentBuilderContext }),
+    ...(agentManagementContext && { agentManagementContext }),
     ...(agentGroup && { agentGroup }),
     ...(gtdConfig && { gtd: gtdConfig }),
+    ...(topicReferences && topicReferences.length > 0 && { topicReferences }),
+    ...(onboardingContext && { onboardingContext }),
   });
 
+  log('Input messages count: %d', messages.length);
+
   const result = await engine.process();
+
+  log('Output messages count: %d', result.messages.length);
+
+  if (messages.length > 0 && result.messages.length === 0) {
+    log(
+      'WARNING: Messages were reduced to 0! Input messages: %o',
+      messages.map((m) => ({ id: m.id, role: m.role })),
+    );
+  }
+
   return result.messages;
 };

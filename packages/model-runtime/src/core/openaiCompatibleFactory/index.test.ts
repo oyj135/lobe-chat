@@ -2,10 +2,11 @@
 import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
-import { Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
-import { ChatStreamCallbacks, ChatStreamPayload } from '../../types/chat';
+import type { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
+import type { ChatStreamCallbacks, ChatStreamPayload } from '../../types/chat';
 import { AgentRuntimeErrorType } from '../../types/error';
 import * as debugStreamModule from '../../utils/debugStream';
 import * as openaiHelpers from '../contextBuilders/openai';
@@ -160,7 +161,7 @@ describe('LobeOpenAICompatibleFactory', () => {
 
         // Collect all chunks
         const chunks = [];
-        // eslint-disable-next-line no-constant-condition
+
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -266,7 +267,6 @@ describe('LobeOpenAICompatibleFactory', () => {
         const decoder = new TextDecoder();
         const reader = result.body!.getReader();
 
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -336,7 +336,6 @@ describe('LobeOpenAICompatibleFactory', () => {
         const reader = result.body!.getReader();
         const stream: string[] = [];
 
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -352,7 +351,7 @@ describe('LobeOpenAICompatibleFactory', () => {
           'data: {"inputTextTokens":5,"outputTextTokens":5,"totalInputTokens":5,"totalOutputTokens":5,"totalTokens":10}\n\n',
           'id: output_speed\n',
           'event: speed\n',
-          expect.stringMatching(/^data: {.*"tps":.*,"ttft":.*}\n\n$/), // tps ttft should be calculated with elapsed time
+          expect.stringMatching(/^data: \{.*"tps":.*,"ttft":.*\}\n\n$/), // tps ttft should be calculated with elapsed time
           'id: a\n',
           'event: stop\n',
           'data: "stop"\n\n',
@@ -410,7 +409,6 @@ describe('LobeOpenAICompatibleFactory', () => {
         const reader = result.body!.getReader();
         const stream: string[] = [];
 
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -429,7 +427,7 @@ describe('LobeOpenAICompatibleFactory', () => {
           'data: {"inputTextTokens":5,"outputTextTokens":5,"totalInputTokens":5,"totalOutputTokens":5,"totalTokens":10,"cost":0.000005}\n\n',
           'id: output_speed\n',
           'event: speed\n',
-          expect.stringMatching(/^data: {.*"tps":.*,"ttft":.*}\n\n$/), // tps ttft should be calculated with elapsed time
+          expect.stringMatching(/^data: \{.*"tps":.*,"ttft":.*\}\n\n$/), // tps ttft should be calculated with elapsed time
           'id: a\n',
           'event: stop\n',
           'data: "stop"\n\n',
@@ -636,6 +634,7 @@ describe('LobeOpenAICompatibleFactory', () => {
               status: 400,
             },
             errorType: bizErrorType,
+            message: expect.any(String),
             provider,
           });
         }
@@ -674,6 +673,7 @@ describe('LobeOpenAICompatibleFactory', () => {
               cause: { message: 'api is undefined' },
             },
             errorType: bizErrorType,
+            message: expect.any(String),
             provider,
           });
         }
@@ -708,6 +708,7 @@ describe('LobeOpenAICompatibleFactory', () => {
               cause: { message: 'api is undefined' },
             },
             errorType: bizErrorType,
+            message: expect.any(String),
             provider,
           });
         }
@@ -786,6 +787,83 @@ describe('LobeOpenAICompatibleFactory', () => {
               status: 400,
             },
             errorType: AgentRuntimeErrorType.InsufficientQuota,
+            message: expect.any(String),
+            provider,
+          });
+        }
+      });
+
+      it('should detect ExceededContextWindow from error message text', async () => {
+        const apiError = new OpenAI.APIError(
+          400,
+          {
+            error: {
+              message:
+                "This model's maximum context length is 131072 tokens. However, your messages resulted in 140000 tokens.",
+            },
+            status: 400,
+          },
+          'Error message',
+          {},
+        );
+
+        vi.spyOn(instance['client'].chat.completions, 'create').mockRejectedValue(apiError);
+
+        try {
+          await instance.chat({
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'mistralai/mistral-7b-instruct:free',
+            temperature: 0,
+          });
+        } catch (e) {
+          expect(e).toEqual({
+            endpoint: defaultBaseURL,
+            error: {
+              error: {
+                message:
+                  "This model's maximum context length is 131072 tokens. However, your messages resulted in 140000 tokens.",
+              },
+              status: 400,
+            },
+            errorType: AgentRuntimeErrorType.ExceededContextWindow,
+            message: expect.any(String),
+            provider,
+          });
+        }
+      });
+
+      it('should detect QuotaLimitReached from error message text', async () => {
+        const apiError = new OpenAI.APIError(
+          429,
+          {
+            error: {
+              message: 'Resource has been exhausted (e.g. check quota).',
+            },
+            status: 429,
+          },
+          'Error message',
+          {},
+        );
+
+        vi.spyOn(instance['client'].chat.completions, 'create').mockRejectedValue(apiError);
+
+        try {
+          await instance.chat({
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'mistralai/mistral-7b-instruct:free',
+            temperature: 0,
+          });
+        } catch (e) {
+          expect(e).toEqual({
+            endpoint: defaultBaseURL,
+            error: {
+              error: {
+                message: 'Resource has been exhausted (e.g. check quota).',
+              },
+              status: 429,
+            },
+            errorType: AgentRuntimeErrorType.QuotaLimitReached,
+            message: expect.any(String),
             provider,
           });
         }
@@ -813,6 +891,7 @@ describe('LobeOpenAICompatibleFactory', () => {
               name: genericError.name,
             },
             errorType: 'AgentRuntimeError',
+            message: expect.any(String),
             provider,
           });
         }
@@ -877,7 +956,7 @@ describe('LobeOpenAICompatibleFactory', () => {
     it('should use custom stream handler when provided', async () => {
       // Create a custom stream handler that handles both ReadableStream and OpenAI Stream
       const customStreamHandler = vi.fn(
-        (stream: ReadableStream | Stream<OpenAI.ChatCompletionChunk>) => {
+        (stream: ReadableStream | Stream<OpenAI.ChatCompletionChunk>, _options?: any) => {
           const readableStream =
             stream instanceof ReadableStream ? stream : stream.toReadableStream();
           return new ReadableStream({
@@ -885,7 +964,6 @@ describe('LobeOpenAICompatibleFactory', () => {
               const reader = readableStream.getReader();
               const process = async () => {
                 try {
-                  // eslint-disable-next-line no-constant-condition
                   while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -938,6 +1016,13 @@ describe('LobeOpenAICompatibleFactory', () => {
       await instance.chat(payload);
 
       expect(customStreamHandler).toHaveBeenCalled();
+
+      // Verify payload is passed to custom stream handler
+      const handlerOptions = customStreamHandler.mock.calls[0][1];
+      expect(handlerOptions.payload).toMatchObject({
+        model: 'test-model',
+        provider: ModelProvider.OpenAI,
+      });
     });
 
     it('should use custom transform handler for non-streaming response', async () => {
@@ -1051,6 +1136,49 @@ describe('LobeOpenAICompatibleFactory', () => {
         },
         { timeout: 10000 },
       );
+
+      it('should enable strictToolPairing when building Responses API input', async () => {
+        const LobeMockProviderUseResponses = createOpenAICompatibleRuntime({
+          baseURL: 'https://api.test.com/v1',
+          chatCompletion: {
+            useResponse: true,
+          },
+          provider: ModelProvider.OpenAI,
+        });
+
+        const inst = new LobeMockProviderUseResponses({ apiKey: 'test' });
+        const convertSpy = vi
+          .spyOn(openaiHelpers, 'convertOpenAIResponseInputs')
+          .mockResolvedValue([{ role: 'user', content: 'mocked input' }] as any);
+
+        vi.spyOn(inst['client'].responses, 'create').mockResolvedValue({
+          toReadableStream: () =>
+            new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+        } as any);
+
+        try {
+          await inst.chat({
+            messages: [{ content: 'hi', role: 'user' }],
+            model: 'any-model',
+            temperature: 0,
+          });
+        } catch {
+          // Ignore stream mock limitations; we only care about input conversion options.
+        }
+
+        expect(convertSpy).toHaveBeenCalledWith(
+          [{ content: 'hi', role: 'user' }],
+          expect.objectContaining({
+            forceImageBase64: undefined,
+            forceVideoBase64: undefined,
+            strictToolPairing: true,
+          }),
+        );
+      });
 
       it(
         'should route to Responses API when model matches useResponseModels',
@@ -1740,6 +1868,47 @@ describe('LobeOpenAICompatibleFactory', () => {
       await expect(instance.generateObject(payload)).rejects.toThrow(
         'API Error: Invalid schema format',
       );
+    });
+
+    it('should detect ExceededContextWindow from responses API error message text', async () => {
+      const apiError = new OpenAI.APIError(
+        400,
+        {
+          error: {
+            message:
+              '400 Input tokens exceed the configured limit of 272000 tokens. Your messages resulted in 479832 tokens. Please reduce the length of the messages.',
+          },
+          status: 400,
+        },
+        'Error message',
+        {},
+      );
+
+      vi.spyOn(instance['client'].responses, 'create').mockRejectedValue(apiError);
+
+      const payload = {
+        messages: [{ content: 'Generate data', role: 'user' as const }],
+        model: 'gpt-5.4-mini',
+        responseApi: true,
+        schema: {
+          name: 'test_tool',
+          schema: { properties: {}, type: 'object' as const },
+        },
+      };
+
+      await expect(instance.generateObject(payload)).rejects.toEqual({
+        endpoint: defaultBaseURL,
+        error: {
+          error: {
+            message:
+              '400 Input tokens exceed the configured limit of 272000 tokens. Your messages resulted in 479832 tokens. Please reduce the length of the messages.',
+          },
+          status: 400,
+        },
+        errorType: AgentRuntimeErrorType.ExceededContextWindow,
+        message: expect.any(String),
+        provider,
+      });
     });
 
     describe('chat completions API path', () => {
@@ -2734,7 +2903,7 @@ describe('LobeOpenAICompatibleFactory', () => {
           },
           contextWindowTokens: 200_000,
           description:
-            "Claude 3 Haiku is Anthropic’s fastest and most compact model, designed for near-instant responses with fast, accurate performance.",
+            'Claude 3 Haiku is Anthropic’s fastest and most compact model, designed for near-instant responses with fast, accurate performance.',
           displayName: 'Claude 3 Haiku',
           enabled: false,
           id: 'claude-3-haiku-20240307',
@@ -2790,7 +2959,8 @@ describe('LobeOpenAICompatibleFactory', () => {
             deploymentName: 'gpt-4o-mini',
           },
           contextWindowTokens: 128_000,
-          description: 'GPT-4o Mini is a small, efficient model with performance similar to GPT-4o.',
+          description:
+            'GPT-4o Mini is a small, efficient model with performance similar to GPT-4o.',
           displayName: 'GPT 4o Mini',
           enabled: false,
           id: 'gpt-4o-mini',

@@ -1,13 +1,16 @@
-import { ModelProvider } from 'model-bank';
+import { ModelProvider, zhipu as zhipuChatModels } from 'model-bank';
 
 import {
-  type OpenAICompatibleFactoryOptions,
   createOpenAICompatibleRuntime,
+  type OpenAICompatibleFactoryOptions,
 } from '../../core/openaiCompatibleFactory';
 import { resolveParameters } from '../../core/parameterResolver';
 import { OpenAIStream } from '../../core/streams/openai';
 import { convertIterableToStream } from '../../core/streams/protocol';
+import { getModelMaxOutputs } from '../../utils/getModelMaxOutputs';
 import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
+import { createZhipuImage } from './createImage';
+import { createZhipuVideo } from './createVideo';
 
 export interface ZhipuModelCard {
   description: string;
@@ -19,8 +22,17 @@ export const params = {
   baseURL: 'https://open.bigmodel.cn/api/paas/v4',
   chatCompletion: {
     handlePayload: (payload) => {
-      const { enabledSearch, max_tokens, model, temperature, thinking, tools, top_p, ...rest } =
-        payload;
+      const {
+        enabledSearch,
+        max_tokens,
+        model,
+        stream,
+        temperature,
+        thinking,
+        tools,
+        top_p,
+        ...rest
+      } = payload;
 
       const zhipuTools = enabledSearch
         ? [
@@ -39,7 +51,14 @@ export const params = {
 
       // Resolve parameters based on model-specific constraints
       const resolvedParams = resolveParameters(
-        { max_tokens, temperature, top_p },
+        {
+          max_tokens:
+            max_tokens !== undefined
+              ? max_tokens
+              : getModelMaxOutputs(payload.model, zhipuChatModels),
+          temperature,
+          top_p,
+        },
         {
           // max_tokens constraints
           maxTokensRange: model.includes('glm-4v')
@@ -60,12 +79,13 @@ export const params = {
         ...rest,
         ...resolvedParams,
         model,
-        stream: true,
+        stream,
         thinking: thinking ? { type: thinking.type } : undefined,
+        tool_stream: stream && /^glm-(?:4\.(?:6|7)|5(?:\.1)?)$/.test(model) ? true : undefined,
         tools: zhipuTools,
       } as any;
     },
-    handleStream: (stream, { callbacks, inputStartAt }) => {
+    handleStream: (stream, { callbacks, inputStartAt, payload }) => {
       const readableStream =
         stream instanceof ReadableStream ? stream : convertIterableToStream(stream);
 
@@ -79,28 +99,33 @@ export const params = {
               const choice = chunk.choices[0];
               if (choice.delta?.tool_calls && Array.isArray(choice.delta.tool_calls)) {
                 // Fix negative index, convert -1 to positive index based on array position
-                const fixedToolCalls = choice.delta.tool_calls.map(
-                  (toolCall: any, globalIndex: number) => ({
+                // With tool_stream enabled, some proxies (e.g., aihubmix) send
+                // incomplete tool_call chunks without id/function.name before the
+                // real chunk arrives. Filter them out to prevent ZodError in parseToolCalls.
+                const fixedToolCalls = choice.delta.tool_calls
+                  .filter(
+                    (toolCall: any) =>
+                      // Keep chunks that have id/name (first real chunk) or
+                      // non-empty arguments (subsequent incremental chunks)
+                      toolCall.id || toolCall.function?.name || toolCall.function?.arguments,
+                  )
+                  .map((toolCall: any, globalIndex: number) => ({
                     ...toolCall,
+                    // Fix negative index (-1 → array position)
                     index: toolCall.index < 0 ? globalIndex : toolCall.index,
-                  }),
-                );
+                  }));
 
-                // Create fixed chunk
-                const fixedChunk = {
-                  ...chunk,
-                  choices: [
-                    {
-                      ...choice,
-                      delta: {
-                        ...choice.delta,
-                        tool_calls: fixedToolCalls,
-                      },
-                    },
-                  ],
-                };
-
-                controller.enqueue(fixedChunk);
+                if (fixedToolCalls.length === 0) {
+                  // All tool_calls were incomplete placeholders, skip this chunk
+                  controller.enqueue({ ...chunk, choices: [{ ...choice, delta: {} }] });
+                } else {
+                  controller.enqueue({
+                    ...chunk,
+                    choices: [
+                      { ...choice, delta: { ...choice.delta, tool_calls: fixedToolCalls } },
+                    ],
+                  });
+                }
               } else {
                 controller.enqueue(chunk);
               }
@@ -114,11 +139,18 @@ export const params = {
       return OpenAIStream(preprocessedStream, {
         callbacks,
         inputStartAt,
-        payload: {
-          provider: 'zhipu',
-        },
+        payload,
       });
     },
+  },
+  createImage: createZhipuImage,
+  createVideo: createZhipuVideo,
+  handlePollVideoStatus: async (inferenceId, options) => {
+    const { pollZhipuVideoStatus } = await import('./createVideo');
+    return pollZhipuVideoStatus(inferenceId, {
+      apiKey: options.apiKey,
+      baseURL: options.baseURL || '',
+    });
   },
   debug: {
     chatCompletion: () => process.env.DEBUG_ZHIPU_CHAT_COMPLETION === '1',

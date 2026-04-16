@@ -1,4 +1,4 @@
-import { type LocalFileItem } from '@lobechat/electron-client-ipc';
+import { useToolRenderCapabilities } from '@lobechat/shared-tool-ui';
 import { ActionIcon, Flexbox } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import dayjs from 'dayjs';
@@ -7,7 +7,6 @@ import React, { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import FileIcon from '@/components/FileIcon';
-import { localFileService } from '@/services/electron/localFileService';
 import { formatSize } from '@/utils/format';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
@@ -47,63 +46,83 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
-interface FileItemProps extends LocalFileItem {
+interface FileItemProps {
+  createdTime?: Date | string;
+  isDirectory?: boolean;
+  name?: string;
+  path?: string;
   showTime?: boolean;
+  size?: number;
+  type?: string;
 }
+
 const FileItem = memo<FileItemProps>(
-  ({ isDirectory, name, path, size, type, showTime = false, createdTime }) => {
+  ({ isDirectory, name: nameProp, path, size, type, showTime = false, createdTime }) => {
     const { t } = useTranslation('tool');
     const [isHovering, setIsHovering] = useState(false);
+    const { openFile, openFolder } = useToolRenderCapabilities();
+    const name = nameProp || path?.split('/').pop() || '';
+
+    const handleClick = () => {
+      if (!path) return;
+      if (isDirectory) {
+        openFolder?.(path);
+      } else {
+        openFile?.(path);
+      }
+    };
 
     return (
       <Flexbox
+        horizontal
         align={'center'}
         className={styles.container}
         gap={12}
-        horizontal
-        onClick={() => {
-          localFileService.openLocalFileOrFolder(path, isDirectory);
+        padding={'2px 8px'}
+        style={{
+          cursor: openFile || openFolder ? 'pointer' : 'default',
+          fontSize: 12,
+          width: '100%',
         }}
+        onClick={handleClick}
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
-        padding={'2px 8px'}
-        style={{ cursor: 'pointer', fontSize: 12, width: '100%' }}
       >
         <FileIcon
-          fileName={name}
+          fileName={name || ''}
           fileType={type}
           isDirectory={isDirectory}
           size={16}
           variant={'raw'}
         />
         <Flexbox
+          horizontal
           align={'baseline'}
           gap={4}
-          horizontal
           style={{ overflow: 'hidden', width: '100%' }}
         >
           <div className={styles.title}>{name}</div>
-          {showTime ? (
+          {showTime && createdTime ? (
             <div className={styles.path}>{dayjs(createdTime).format('MMM DD hh:mm')}</div>
           ) : (
             <div className={styles.path}>{path}</div>
           )}
         </Flexbox>
-        {isHovering ? (
+        {isHovering && openFolder ? (
           <Flexbox direction={'horizontal-reverse'} gap={8} style={{ minWidth: 50 }}>
             <ActionIcon
               icon={FolderOpen}
-              onClick={(e) => {
-                e.stopPropagation();
-                localFileService.openLocalFolder({ isDirectory, path });
-              }}
               size={'small'}
               style={{ height: 16, width: 16 }}
               title={t('localFiles.openFolder')}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (path) openFolder(path);
+              }}
             />
           </Flexbox>
         ) : (
-          <span className={styles.size}>{formatSize(size)}</span>
+          <span className={styles.size}>{size !== undefined ? formatSize(size) : ''}</span>
         )}
       </Flexbox>
     );

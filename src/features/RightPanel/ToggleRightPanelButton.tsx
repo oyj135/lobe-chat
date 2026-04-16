@@ -1,8 +1,10 @@
 'use client';
 
-import { ActionIcon, type ActionIconProps } from '@lobehub/ui';
+import { type ActionIconProps } from '@lobehub/ui';
+import { ActionIcon } from '@lobehub/ui';
 import { PanelRightClose, PanelRightOpen } from 'lucide-react';
-import { type ReactNode, memo } from 'react';
+import { type ReactNode } from 'react';
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DESKTOP_HEADER_ICON_SIZE } from '@/const/layoutTokens';
@@ -15,6 +17,7 @@ import { HotkeyEnum } from '@/types/hotkey';
 export const TOGGLE_BUTTON_ID = 'toggle_right_panel_button';
 
 interface ToggleRightPanelButtonProps {
+  hideWhenExpanded?: boolean;
   icon?: ActionIconProps['icon'];
   showActive?: boolean;
   size?: ActionIconProps['size'];
@@ -22,7 +25,7 @@ interface ToggleRightPanelButtonProps {
 }
 
 const ToggleRightPanelButton = memo<ToggleRightPanelButtonProps>(
-  ({ title, showActive, icon, size }) => {
+  ({ title, showActive, icon, hideWhenExpanded, size }) => {
     const [expand, togglePanel] = useGlobalStore((s) => [
       systemStatusSelectors.showRightPanel(s),
       s.toggleRightPanel,
@@ -31,18 +34,19 @@ const ToggleRightPanelButton = memo<ToggleRightPanelButtonProps>(
 
     const { t } = useTranslation(['chat', 'hotkey']);
 
+    if (hideWhenExpanded && expand) return null;
     return (
       <ActionIcon
         active={showActive ? expand : undefined}
         icon={icon || (expand ? PanelRightClose : PanelRightOpen)}
         id={TOGGLE_BUTTON_ID}
-        onClick={() => togglePanel()}
         size={size || DESKTOP_HEADER_ICON_SIZE}
         title={title || t('toggleRightPanel.title', { ns: 'hotkey' })}
         tooltipProps={{
           hotkey,
           placement: 'bottom',
         }}
+        onClick={() => togglePanel()}
       />
     );
   },

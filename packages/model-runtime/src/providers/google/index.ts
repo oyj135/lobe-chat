@@ -1,31 +1,33 @@
-import {
+import { GoogleGenAI } from '@google/genai';
+import type {
   GenerateContentConfig,
-  Tool as GoogleFunctionCallTool,
-  GoogleGenAI,
   HttpOptions,
   ThinkingConfig,
+  Tool as GoogleFunctionCallTool,
 } from '@google/genai';
 import debug from 'debug';
 
-import { LobeRuntimeAI } from '../../core/BaseAI';
+import { type LobeRuntimeAI } from '../../core/BaseAI';
 import { buildGoogleMessages, buildGoogleTools } from '../../core/contextBuilders/google';
-import { GoogleGenerativeAIStream, VertexAIStream } from '../../core/streams';
+import { GoogleGenerativeAIStream } from '../../core/streams';
 import { LOBE_ERROR_KEY } from '../../core/streams/google';
 import {
-  ChatCompletionTool,
-  ChatMethodOptions,
-  ChatStreamPayload,
-  GenerateObjectOptions,
-  GenerateObjectPayload,
+  type ChatCompletionTool,
+  type ChatMethodOptions,
+  type ChatStreamPayload,
+  type GenerateObjectOptions,
+  type GenerateObjectPayload,
 } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
-import { CreateImagePayload, CreateImageResponse } from '../../types/image';
+import { type CreateImagePayload, type CreateImageResponse } from '../../types/image';
+import { type CreateVideoPayload, type CreateVideoResponse } from '../../types/video';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { getModelPricing } from '../../utils/getModelPricing';
 import { parseGoogleErrorMessage } from '../../utils/googleErrorParser';
 import { StreamingResponse } from '../../utils/response';
 import { createGoogleImage } from './createImage';
+import { createGoogleVideo, pollGoogleVideoOperation } from './createVideo';
 import { createGoogleGenerateObject, createGoogleGenerateObjectWithTools } from './generateObject';
 import { resolveGoogleThinkingConfig } from './thinkingResolver';
 
@@ -40,8 +42,33 @@ const modelsWithModalities = new Set([
   'gemini-2.5-flash-image-preview',
   'gemini-2.5-flash-image',
   'gemini-3-pro-image-preview',
+  'gemini-3.1-flash-image-preview',
   'nano-banana-pro-preview',
 ]);
+
+const modelsWithImageSearch = new Set(['gemini-3.1-flash-image-preview']);
+
+// Gemini 3+ models support combined tools (search + urlContext + functionDeclarations)
+const isGemini3OrAbove = (model?: string): boolean => {
+  if (!model) return false;
+  // Match gemini-X or gemini-X.Y patterns, extract major version
+  const match = /gemini-(\d+)/.exec(model);
+  if (!match) return false;
+  return Number.parseInt(match[1], 10) >= 3;
+};
+
+const normalizeThinkingConfig = (config?: ThinkingConfig): ThinkingConfig | undefined => {
+  if (!config) return undefined;
+
+  const { includeThoughts, thinkingBudget, thinkingLevel } = config;
+
+  // Avoid sending `thinkingConfig: {}` (all fields undefined) which can lead upstream
+  // to treat thinking as disabled and produce no thought parts.
+  if (includeThoughts === undefined && thinkingBudget === undefined && thinkingLevel === undefined)
+    return undefined;
+
+  return config;
+};
 
 const modelsDisableInstuction = new Set([
   'gemini-2.0-flash-exp',
@@ -130,7 +157,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
       : undefined;
 
     this.apiKey = apiKey;
-    this.client = client ? client : new GoogleGenAI({ apiKey, httpOptions });
+    this.client = client ?? new GoogleGenAI({ apiKey, httpOptions });
     this.baseURL = client ? undefined : baseURL || DEFAULT_BASE_URL;
     this.isVertexAi = isVertexAi || false;
 
@@ -166,7 +193,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
       const config: GenerateContentConfig = {
         abortSignal: originalSignal,
         imageConfig:
-          modelsWithModalities.has(model) && imageAspectRatio
+          modelsWithModalities.has(model) && imageAspectRatio && imageAspectRatio !== 'auto'
             ? {
                 aspectRatio: imageAspectRatio,
                 imageSize: imageResolution,
@@ -197,11 +224,19 @@ export class LobeGoogleAI implements LobeRuntimeAI {
         systemInstruction: modelsDisableInstuction.has(model)
           ? undefined
           : (payload.system as string),
-        temperature: payload.temperature,
+        temperature: modelsWithModalities.has(model)
+          ? Math.min(payload.temperature ?? 1, 1)
+          : payload.temperature,
         thinkingConfig:
           modelsDisableInstuction.has(model) || model.toLowerCase().includes('learnlm')
             ? undefined
-            : thinkingConfig,
+            : normalizeThinkingConfig(thinkingConfig),
+        // https://ai.google.dev/gemini-api/docs/tool-combination
+        // Vertex AI does not support includeServerSideToolInvocations
+        toolConfig:
+          !this.isVertexAi && this.needsServerSideToolInvocations(payload)
+            ? { includeServerSideToolInvocations: true }
+            : undefined,
         tools: this.buildGoogleToolsWithSearch(payload.tools, payload),
         topP: payload.top_p,
       };
@@ -214,8 +249,8 @@ export class LobeGoogleAI implements LobeRuntimeAI {
         : 'DEBUG_GOOGLE_CHAT_COMPLETION';
 
       if (process.env[key] === '1') {
-        console.log('[requestPayload]');
-        console.log(JSON.stringify(finalPayload), '\n');
+        log('[requestPayload]');
+        log(JSON.stringify(finalPayload), '\n');
       }
 
       const geminiStreamResponse = await this.client.models.generateContentStream(finalPayload);
@@ -230,8 +265,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
       // Convert the response into a friendly text-stream
       const pricing = await getModelPricing(model, this.provider);
 
-      const Stream = this.isVertexAi ? VertexAIStream : GoogleGenerativeAIStream;
-      const stream = Stream(prod, {
+      const stream = GoogleGenerativeAIStream(prod, {
         callbacks: options?.callback,
         inputStartAt,
         payload: { model, pricing, provider: this.provider },
@@ -242,7 +276,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     } catch (e) {
       const err = e as Error;
 
-      // 移除之前的静默处理，统一抛出错误
+      // Remove previous silent handling, throw error uniformly
       if (isAbortError(err)) {
         log('Request was cancelled');
         throw AgentRuntimeError.chat({
@@ -267,6 +301,14 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     return createGoogleImage(this.client, this.provider, payload);
   }
 
+  async createVideo(payload: CreateVideoPayload): Promise<CreateVideoResponse> {
+    return createGoogleVideo(this.client, this.provider, payload);
+  }
+
+  async handlePollVideoStatus(inferenceId: string) {
+    return pollGoogleVideoOperation(this.client, inferenceId, this.provider, this.apiKey!);
+  }
+
   /**
    * Generate structured output using Google Gemini API
    * @see https://ai.google.dev/gemini-api/docs/structured-output
@@ -275,6 +317,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   async generateObject(payload: GenerateObjectPayload, options?: GenerateObjectOptions) {
     // Convert OpenAI messages to Google format
     const contents = await buildGoogleMessages(payload.messages);
+    const pricing = await getModelPricing(payload.model, this.provider);
 
     // Handle tools-based structured output
     if (payload.tools && payload.tools.length > 0) {
@@ -282,6 +325,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
         this.client,
         { contents, model: payload.model, tools: payload.tools },
         options,
+        pricing,
       );
     }
 
@@ -291,6 +335,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
         this.client,
         { contents, model: payload.model, schema: payload.schema },
         options,
+        pricing,
       );
     }
 
@@ -307,10 +352,10 @@ export class LobeGoogleAI implements LobeRuntimeAI {
         try {
           for await (const chunk of originalStream) {
             if (signal.aborted) {
-              // 如果有数据已经输出，优雅地关闭流而不是抛出错误
+              // If data has already been output, close the stream gracefully instead of throwing an error
               if (hasData) {
                 log('Stream cancelled gracefully, preserving existing output');
-                // 显式注入取消错误，避免走 SSE 兜底 unexpected_end
+                // Explicitly inject cancellation error to avoid SSE fallback unexpected_end
                 controller.enqueue({
                   [LOBE_ERROR_KEY]: {
                     body: { name: 'Stream cancelled', provider, reason: 'aborted' },
@@ -322,7 +367,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
                 controller.close();
                 return;
               } else {
-                // 如果还没有数据输出，直接关闭流，由下游 SSE 在 flush 阶段补发错误事件
+                // If no data has been output yet, close the stream directly and let downstream SSE emit error event during flush phase
                 log('Stream cancelled before any output');
                 controller.close();
                 return;
@@ -335,12 +380,12 @@ export class LobeGoogleAI implements LobeRuntimeAI {
         } catch (error) {
           const err = error as Error;
 
-          // 统一处理所有错误，包括 abort 错误
+          // Handle all errors uniformly, including abort errors
           if (isAbortError(err) || signal.aborted) {
-            // 如果有数据已经输出，优雅地关闭流
+            // If data has already been output, close the stream gracefully
             if (hasData) {
               log('Stream reading cancelled gracefully, preserving existing output');
-              // 显式注入取消错误，避免走 SSE 兜底 unexpected_end
+              // Explicitly inject cancellation error to avoid SSE fallback unexpected_end
               controller.enqueue({
                 [LOBE_ERROR_KEY]: {
                   body: { name: 'Stream cancelled', provider, reason: 'aborted' },
@@ -353,7 +398,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
               return;
             } else {
               log('Stream reading cancelled before any output');
-              // 注入一个带详细错误信息的错误标记，交由下游 google-ai transformer 输出 error 事件
+              // Inject an error marker with detailed error information to be handled by downstream google-ai transformer to output error event
               controller.enqueue({
                 [LOBE_ERROR_KEY]: {
                   body: {
@@ -371,14 +416,14 @@ export class LobeGoogleAI implements LobeRuntimeAI {
               return;
             }
           } else {
-            // 处理其他流解析错误
+            // Handle other stream parsing errors
             log('Stream parsing error: %O', err);
-            // 尝试解析 Google 错误并提取 code/message/status
+            // Try to parse Google error and extract code/message/status
             const { error: parsedError, errorType } = parseGoogleErrorMessage(
               err?.message || String(err),
             );
 
-            // 注入一个带详细错误信息的错误标记，交由下游 google-ai transformer 输出 error 事件
+            // Inject an error marker with detailed error information to be handled by downstream google-ai transformer to output error event
             controller.enqueue({
               [LOBE_ERROR_KEY]: {
                 body: { ...parsedError, provider },
@@ -399,8 +444,11 @@ export class LobeGoogleAI implements LobeRuntimeAI {
 
   async models(options?: { signal?: AbortSignal }) {
     try {
-      const url = `${this.baseURL}/v1beta/models?key=${this.apiKey}`;
+      const url = `${this.baseURL}/v1beta/models`;
       const response = await fetch(url, {
+        headers: {
+          'x-goog-api-key': this.apiKey!,
+        },
         method: 'GET',
         signal: options?.signal,
       });
@@ -444,32 +492,76 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     };
   }
 
+  /**
+   * Returns true when Gemini 3+ tools array combines built-in tools (googleSearch / urlContext)
+   * with functionDeclarations — the API requires `toolConfig.includeServerSideToolInvocations`
+   * in that case.
+   * @see https://ai.google.dev/gemini-api/docs/tool-combination
+   */
+  private needsServerSideToolInvocations(payload?: ChatStreamPayload): boolean {
+    if (!isGemini3OrAbove(payload?.model)) return false;
+
+    const hasBuiltIn = payload?.enabledSearch || payload?.urlContext;
+    const hasFunctions = payload?.tools && payload.tools.length > 0;
+
+    return !!(hasBuiltIn && hasFunctions);
+  }
+
   private buildGoogleToolsWithSearch(
     tools: ChatCompletionTool[] | undefined,
     payload?: ChatStreamPayload,
   ): GoogleFunctionCallTool[] | undefined {
-    const hasToolCalls = payload?.messages?.some((m) => m.tool_calls?.length);
     const hasSearch = payload?.enabledSearch;
     const hasUrlContext = payload?.urlContext;
+
+    // Build GoogleSearch tool config with optional image search support
+    const googleSearchTool = hasSearch
+      ? {
+          googleSearch: modelsWithImageSearch.has(payload?.model ?? '')
+            ? { searchTypes: { imageSearch: {}, webSearch: {} } }
+            : {},
+        }
+      : undefined;
+
+    // Gemini 3+ models support combined tools (search + urlContext + functionDeclarations)
+    if (isGemini3OrAbove(payload?.model)) {
+      const result: GoogleFunctionCallTool[] = [];
+
+      if (hasUrlContext) {
+        result.push({ urlContext: {} });
+      }
+      if (googleSearchTool) {
+        result.push(googleSearchTool);
+      }
+
+      const functionTools = buildGoogleTools(tools);
+      if (functionTools) {
+        result.push(...functionTools);
+      }
+
+      return result.length > 0 ? result : undefined;
+    }
+
+    // For older models, search tools cannot be used with FunctionCall simultaneously.
+    // If tool_calls already exist in conversation, prioritize function declarations
+    // to maintain multi-turn tool-calling sessions.
+    const hasToolCalls = payload?.messages?.some((m) => m.tool_calls?.length);
     const hasFunctionTools = tools && tools.length > 0;
 
-    // 如果已经有 tool_calls，优先处理 function declarations
     if (hasToolCalls && hasFunctionTools) {
       return buildGoogleTools(tools);
     }
 
-    // 构建并返回搜索相关工具（搜索工具不能与 FunctionCall 同时使用）
     if (hasUrlContext && hasSearch) {
-      return [{ urlContext: {} }, { googleSearch: {} }];
+      return [{ urlContext: {} }, googleSearchTool!];
     }
     if (hasUrlContext) {
       return [{ urlContext: {} }];
     }
     if (hasSearch) {
-      return [{ googleSearch: {} }];
+      return [googleSearchTool!];
     }
 
-    // 最后考虑 function declarations
     return buildGoogleTools(tools);
   }
 }

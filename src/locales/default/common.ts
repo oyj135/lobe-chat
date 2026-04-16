@@ -34,6 +34,10 @@ export default {
     'Current topic is not saved, please save it first to use subtopic feature',
   'cancel': 'Cancel',
   'changelog': 'Changelog',
+  'alreadyUpToDate': 'Already Up to Date',
+  'checkForUpdates': 'Check for Updates',
+  'downloadingUpdate': 'Downloading {{percent}}%',
+  'restartToUpdate': 'Restart to Update',
   'clientDB.autoInit.title': 'Initializing PGlite Database',
   'clientDB.error.desc':
     'PGlite failed to initialize. Retry first. If it helps, open Self-serve fixes and follow the steps. Still stuck after a few tries? Use Report issue to send us the error details.',
@@ -109,49 +113,142 @@ export default {
   'cmdk.aiModeEmptyState': 'Type your question above to start chatting with AI',
   'cmdk.aiModeHint': 'Press Enter to ask',
   'cmdk.aiModePlaceholder': 'Ask AI anything...',
-  'cmdk.aiPainting': 'AI Art',
+  'cmdk.aiPainting': 'AI Image',
   'cmdk.askAI': 'Ask Agent',
   'cmdk.askAIHeading': 'Use the following features for {{query}}',
   'cmdk.askAIHeadingEmpty': 'Choose an AI feature',
+  'cmdk.askAgentHeading': 'Ask Agent',
+  'cmdk.askAgentPlaceholder': 'Ask {{agent}} something...',
   'cmdk.askLobeAI': 'Ask Lobe AI',
   'cmdk.community': 'Community',
   'cmdk.communitySupport': 'Community Support',
-  'cmdk.contactViaEmail': 'Contact Us',
+  'cmdk.contactUs': 'Contact Us',
   'cmdk.context.agent': 'Agent',
   'cmdk.context.community': 'Community',
   'cmdk.context.general': 'General',
   'cmdk.context.group': 'Group',
   'cmdk.context.memory': 'Memory',
   'cmdk.context.page': 'Page',
-  'cmdk.context.painting': 'Painting',
+  'cmdk.context.painting': 'Image',
   'cmdk.context.resource': 'Resource',
   'cmdk.context.settings': 'Settings',
   'cmdk.discover': 'Discover',
   'cmdk.keyboard.ESC': 'ESC',
+  'cmdk.keyboard.Enter': 'Enter',
   'cmdk.keyboard.Tab': 'Tab',
+
+  'cmdk.keywords.about': 'about version info',
+
+  'cmdk.keywords.apikey': 'apikey api key token',
+
+  'cmdk.keywords.appearance': 'common appearance theme display',
+
+  'cmdk.keywords.billing': 'billing payment invoice transaction',
+
+  'cmdk.keywords.community': 'discover market assistant model provider mcp',
+
+  // CMDK search keywords (space-separated for i18n)
+  'cmdk.keywords.contactUs': 'feedback issue bug problem',
+
+  'cmdk.keywords.discord': 'discord help support customer service',
+
+  'cmdk.keywords.funds': 'funds balance credit money',
+
+  'cmdk.keywords.hotkey': 'hotkey shortcut keyboard',
+
+  'cmdk.keywords.image': 'image picture photo',
+
+  'cmdk.keywords.memory': 'identities contexts preferences experiences',
+
+  'cmdk.keywords.pages': 'documents write notes',
+
+  'cmdk.keywords.painting': 'painting art generate draw',
+
+  'cmdk.keywords.plans': 'subscription plan upgrade pricing',
+
+  'cmdk.keywords.profile': 'profile user account personal',
+
+  'cmdk.keywords.provider': 'provider llm model ai',
+
+  'cmdk.keywords.proxy': 'proxy network connection',
+
+  'cmdk.keywords.referral': 'referral rewards invite bonus',
+
+  'cmdk.keywords.resources': 'knowledge files library documents',
+
+  'cmdk.keywords.settings': 'settings preferences configuration options',
+
+  'cmdk.keywords.starGitHub': 'github star favorite like',
+
+  'cmdk.keywords.stats': 'stats statistics analytics',
+
+  'cmdk.keywords.submitIssue': 'issue bug problem feedback',
+
+  'cmdk.keywords.usage': 'usage statistics consumption quota',
+
+  'cmdk.keywords.video': 'video,generate,seedance,kling',
+
   'cmdk.memory': 'Memory',
+
+  'cmdk.mentionAgent': 'Mention Agent',
+
   'cmdk.navigate': 'Navigate',
+
   'cmdk.newAgent': 'Create New Agent',
+
   'cmdk.newAgentTeam': 'Create New Group',
-  'cmdk.newLibrary': 'New Library',
-  'cmdk.newPage': 'New Page',
-  'cmdk.newTopic': 'New topic in current Agent',
-  'cmdk.noResults': 'No results found',
+
+  'cmdk.newLibrary': 'Create New Library',
+
+  'cmdk.newPage': 'Create New Page',
+
+  'cmdk.newTopic': 'New Topic in Current Agent',
+
+  'cmdk.noResults': 'No Results found',
+
   'cmdk.openSettings': 'Open Settings',
+
   'cmdk.pages': 'Pages',
-  'cmdk.painting': 'Painting',
+
+  'cmdk.painting': 'Image',
+
   'cmdk.resource': 'Resources',
+
   'cmdk.search.agent': 'Agent',
+
   'cmdk.search.agents': 'Agents',
+
   'cmdk.search.assistant': 'Agent',
+
   'cmdk.search.assistants': 'Agents',
+
+  'cmdk.search.chatGroup': 'Agent Team',
+
+  'cmdk.search.chatGroups': 'Agent Teams',
+
   'cmdk.search.communityAgent': 'Community Agent',
+
   'cmdk.search.file': 'File',
+
   'cmdk.search.files': 'Files',
+
+  'cmdk.search.folder': 'Folder',
+
+  'cmdk.search.folders': 'Folders',
+
+  'cmdk.search.knowledgeBase': 'Library',
+
+  'cmdk.search.knowledgeBases': 'Libraries',
+
   'cmdk.search.loading': 'Searching...',
+
   'cmdk.search.market': 'Community',
+
   'cmdk.search.mcp': 'MCP Server',
+
   'cmdk.search.mcps': 'MCP Servers',
+  'cmdk.search.memories': 'Memories',
+  'cmdk.search.memory': 'Memory',
   'cmdk.search.message': 'Message',
   'cmdk.search.messages': 'Messages',
   'cmdk.search.page': 'Page',
@@ -163,20 +260,30 @@ export default {
   'cmdk.search.topic': 'Topic',
   'cmdk.search.topics': 'Topics',
   'cmdk.searchPlaceholder': 'Enter a command or search...',
+  'cmdk.sendToAgent': 'Send to {{agent}}',
   'cmdk.settings': 'Settings',
   'cmdk.starOnGitHub': 'Star us on GitHub',
   'cmdk.submitIssue': 'Submit Issue',
   'cmdk.theme': 'Theme',
   'cmdk.themeAuto': 'Auto',
+  'cmdk.themeCurrent': 'Current',
   'cmdk.themeDark': 'Dark',
   'cmdk.themeLight': 'Light',
   'cmdk.toOpen': 'Open',
   'cmdk.toSelect': 'Select',
+
+  'cmdk.video': 'AI Video',
+
   'confirm': 'Confirm',
   'contact': 'Contact Us',
   'copy': 'Copy',
   'copyFail': 'Copy failed',
-  'copySuccess': 'Copied successfully',
+  'copySuccess': 'Copied',
+  'promptTransform.action': 'Refine Idea',
+  'promptTransform.actions.rewrite': 'Expand Details',
+  'promptTransform.actions.translate': 'Translate',
+  'promptTransform.status.rewrite': 'Expanding details...',
+  'promptTransform.status.translate': 'Translating...',
   'dataStatistics.messages': 'Messages',
   'dataStatistics.sessions': 'Agents',
   'dataStatistics.today': "Today's New",
@@ -186,6 +293,7 @@ export default {
   'delete': 'Delete',
   'document': 'User Manual',
   'download': 'Download',
+  'getDesktopApp': 'Get Desktop App',
   'duplicate': 'Duplicate',
   'edit': 'Edit',
   'errors.invalidFileFormat': 'Invalid file format',
@@ -198,6 +306,7 @@ export default {
   'exportType.allAgentWithMessage': 'Export All Agents and Messages',
   'exportType.globalSetting': 'Export Global Settings',
   'feedback': 'Feedback',
+  'feedback.emailContact': 'You can also email us at {{email}}',
   'feedback.errors.fileTooLarge': 'File exceeds 5MB',
   'feedback.errors.submitFailed': 'Submit failed. Try again.',
   'feedback.errors.teamNotFound': 'Configuration error',
@@ -233,13 +342,9 @@ export default {
   'footer.star.title': 'Star us on GitHub',
   'footer.title': 'Like Our Product?',
   'fullscreen': 'Full Screen Mode',
-  'geminiImageChineseWarning.content':
-    'Nano Banana may occasionally fail to generate images when using Chinese. It is recommended to use English for better results.',
-  'geminiImageChineseWarning.continueGenerate': 'Continue Generating',
-  'geminiImageChineseWarning.continueSend': 'Continue Sending',
-  'geminiImageChineseWarning.doNotShowAgain': 'Do Not Show Again',
-  'geminiImageChineseWarning.title': 'Chinese Input Notice',
+  'generation.hero.taglinePrefix': 'Start Creating with',
   'historyRange': 'History Range',
+  'home.suggestQuestions': 'Try these examples',
   'import': 'Import',
   'importData': 'Import Data',
   'importModal.error.desc':
@@ -318,12 +423,23 @@ export default {
   'mail.business': 'Business Cooperation',
   'mail.support': 'Email Support',
   'more': 'More',
-  'navPanel.agent': 'Agent',
+  'navPanel.agent': 'Agents',
+  'navPanel.customizeSidebar': 'Customize Sidebar',
   'navPanel.displayItems': 'Display Items',
+  'navPanel.resetDefault': 'Reset to Default',
+  'navPanel.hidden': 'Hidden',
+  'navPanel.hideSection': 'Hide Section',
   'navPanel.library': 'Library',
+  'navPanel.moveDown': 'Move Down',
+  'navPanel.pinned': 'Pinned',
+  'navPanel.moveUp': 'Move Up',
+  'navPanel.show': 'Show',
+  'navPanel.visible': 'Visible',
   'navPanel.searchAgent': 'Search Agent...',
+  'navPanel.searchRecent': 'Search Recent...',
   'navPanel.searchResultEmpty': 'No search results found',
   'new': 'New',
+  'pro': 'Pro',
   'noContent': 'No content',
   'oauth': 'SSO Login',
   'officialSite': 'Official Website',
@@ -334,6 +450,9 @@ export default {
   'pin': 'Pin',
   'pinOff': 'Unpin',
   'privacy': 'Privacy Policy',
+  'productHunt.actionLabel': 'Support us',
+  'productHunt.description': 'Support us on Product Hunt. Your support means a lot to us!',
+  'productHunt.title': "We're on Product Hunt!",
   'regenerate': 'Regenerate',
   'releaseNotes': 'Version Details',
   'rename': 'Rename',
@@ -342,9 +461,17 @@ export default {
   'run': 'Run',
   'save': 'Save',
   'send': 'Send',
+  'serverVersionOutdated.desc':
+    'Your client version (v{{version}}) requires a newer server version.',
+  'serverVersionOutdated.dismiss': 'Continue Anyway',
+  'serverVersionOutdated.title': 'Server Version Outdated',
+  'serverVersionOutdated.upgrade': 'Upgrade Guide',
+  'serverVersionOutdated.warning':
+    'Some features may not work properly or behave unexpectedly. Please update your server for the best experience.',
   'setting': 'Settings',
   'share': 'Share',
   'stop': 'Stop',
+  'switch': 'Switch',
   'sync.actions.settings': 'Sync Settings',
   'sync.actions.sync': 'Sync Now',
   'sync.awareness.current': 'Current Device',
@@ -364,14 +491,18 @@ export default {
   'sync.title': 'Sync Status',
   'sync.unconnected.tip':
     'Signaling server connection failed, and peer-to-peer communication channel cannot be established. Please check the network and try again.',
-  'tab.aiImage': 'Artwork',
+  'tab.image': 'Image',
   'tab.audio': 'Audio',
   'tab.chat': 'Chat',
+  'recents': 'Recents',
   'tab.community': 'Community',
+  'tab.create': 'Create',
   'tab.discover': 'Discover',
+  'tab.eval': 'Eval Lab',
   'tab.files': 'Files',
   'tab.home': 'Home',
   'tab.knowledgeBase': 'Library',
+  'tab.marketplace': 'Marketplace',
   'tab.me': 'Me',
   'tab.memory': 'Memory',
   'tab.pages': 'Pages',
@@ -393,13 +524,15 @@ export default {
   'upgradeVersion.action': 'Upgrade',
   'upgradeVersion.hasNew': 'Update available',
   'upgradeVersion.newVersion': 'Update available: {{version}}',
+  'upgradeVersion.serverVersion': 'Server: {{version}}',
   'userPanel.anonymousNickName': 'Anonymous User',
-  'userPanel.billing': 'Billing Management',
+  'userPanel.billing': 'Billing',
   'userPanel.cloud': 'Launch {{name}}',
   'userPanel.community': 'Community',
+  'userPanel.credits': 'Credits',
   'userPanel.data': 'Data Storage',
   'userPanel.defaultNickname': 'Community User',
-  'userPanel.discord': 'Community Support',
+  'userPanel.discord': 'Discord',
   'userPanel.docs': 'Documentation',
   'userPanel.email': 'Email Support',
   'userPanel.feedback': 'Contact Us',
@@ -408,6 +541,7 @@ export default {
   'userPanel.plans': 'Subscription Plans',
   'userPanel.profile': 'Account',
   'userPanel.setting': 'Settings',
-  'userPanel.usages': 'Usage Statistics',
+  'userPanel.upgradePlan': 'Upgrade Plan',
+  'userPanel.usages': 'Usage',
   'version': 'Version',
 };

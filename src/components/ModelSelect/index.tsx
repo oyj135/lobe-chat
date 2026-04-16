@@ -1,20 +1,21 @@
 import { type ChatModelCard } from '@lobechat/types';
-import { type IconAvatarProps, ModelIcon, ProviderIcon } from '@lobehub/icons';
+import { type IconAvatarProps } from '@lobehub/icons';
+import { LobeHub, ModelIcon, ProviderIcon } from '@lobehub/icons';
+import { type FlexboxProps } from '@lobehub/ui';
 import { Avatar, Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
 import { createStaticStyles, useResponsive } from 'antd-style';
 import {
-  Infinity,
-  AtomIcon,
+  Infinity as InfinityIcon,
   LucideEye,
-  LucideGlobe,
   LucideImage,
   LucidePaperclip,
-  ToyBrick,
   Video,
+  Wrench,
 } from 'lucide-react';
 import { type ModelAbilities } from 'model-bank';
 import numeral from 'numeral';
-import { type ComponentProps, type FC, memo, useState } from 'react';
+import { type CSSProperties, type FC } from 'react';
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { type AiProviderSourceType } from '@/types/aiProvider';
@@ -51,50 +52,36 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 type TooltipStyles = typeof styles;
 
-const DEFAULT_TOOLTIP_STYLES = {
-  root: { pointerEvents: 'none' },
-} as const satisfies ComponentProps<typeof Tooltip>['styles'];
-
-const FUNCTION_CALL_TOOLTIP_STYLES = {
-  root: { maxWidth: 'unset', pointerEvents: 'none' },
-} as const satisfies ComponentProps<typeof Tooltip>['styles'];
-
 interface ModelInfoTagsProps extends ModelAbilities {
   contextWindowTokens?: number | null;
   directionReverse?: boolean;
+  disableTooltip?: boolean;
   isCustom?: boolean;
   placement?: 'top' | 'right';
-  /**
-   * Whether to render tooltip overlays for each tag.
-   * Disable this when rendering a large list (e.g. dropdown menus) to avoid mounting hundreds of Tooltip instances.
-   *
-   * When `false`, tags are rendered without any tooltip/title fallback by design.
-   */
-  withTooltip?: boolean;
+  style?: CSSProperties;
 }
 
 interface FeatureTagsProps extends Pick<
   ModelAbilities,
-  'files' | 'imageOutput' | 'vision' | 'video' | 'functionCall' | 'reasoning' | 'search'
+  'files' | 'imageOutput' | 'vision' | 'video' | 'functionCall'
 > {
+  disableTooltip?: boolean;
   placement: 'top' | 'right';
   tagClassName: string;
-  withTooltip: boolean;
 }
 
 interface FeatureTagItemProps {
   className: string;
   color: Parameters<typeof Tag>[0]['color'];
+  disableTooltip?: boolean;
   enabled: boolean | undefined;
   icon: Parameters<typeof Icon>[0]['icon'];
   placement: 'top' | 'right';
   title: string;
-  tooltipStyles?: ComponentProps<typeof Tooltip>['styles'];
-  withTooltip: boolean;
 }
 
 const FeatureTagItem = memo<FeatureTagItemProps>(
-  ({ className, color, enabled, icon, placement, title, tooltipStyles, withTooltip }) => {
+  ({ className, color, disableTooltip, enabled, icon, placement, title }) => {
     if (!enabled) return null;
 
     const tag = (
@@ -103,10 +90,10 @@ const FeatureTagItem = memo<FeatureTagItemProps>(
       </Tag>
     );
 
-    if (!withTooltip) return tag;
+    if (disableTooltip) return tag;
 
     return (
-      <Tooltip placement={placement} styles={tooltipStyles ?? DEFAULT_TOOLTIP_STYLES} title={title}>
+      <Tooltip placement={placement} title={title}>
         {tag}
       </Tooltip>
     );
@@ -115,16 +102,14 @@ const FeatureTagItem = memo<FeatureTagItemProps>(
 
 const FeatureTags = memo<FeatureTagsProps>(
   ({
+    disableTooltip,
     files,
     functionCall,
     imageOutput,
     placement,
-    reasoning,
-    search,
     tagClassName,
     video,
     vision,
-    withTooltip,
   }) => {
     const { t } = useTranslation('components');
 
@@ -133,66 +118,47 @@ const FeatureTags = memo<FeatureTagsProps>(
         <FeatureTagItem
           className={tagClassName}
           color={'success'}
+          disableTooltip={disableTooltip}
           enabled={files}
           icon={LucidePaperclip}
           placement={placement}
           title={t('ModelSelect.featureTag.file')}
-          withTooltip={withTooltip}
         />
         <FeatureTagItem
           className={tagClassName}
           color={'success'}
+          disableTooltip={disableTooltip}
           enabled={imageOutput}
           icon={LucideImage}
           placement={placement}
           title={t('ModelSelect.featureTag.imageOutput')}
-          withTooltip={withTooltip}
         />
         <FeatureTagItem
           className={tagClassName}
           color={'success'}
+          disableTooltip={disableTooltip}
           enabled={vision}
           icon={LucideEye}
           placement={placement}
           title={t('ModelSelect.featureTag.vision')}
-          withTooltip={withTooltip}
         />
         <FeatureTagItem
           className={tagClassName}
           color={'magenta'}
+          disableTooltip={disableTooltip}
           enabled={video}
           icon={Video}
           placement={placement}
           title={t('ModelSelect.featureTag.video')}
-          withTooltip={withTooltip}
         />
         <FeatureTagItem
           className={tagClassName}
           color={'info'}
+          disableTooltip={disableTooltip}
           enabled={functionCall}
-          icon={ToyBrick}
+          icon={Wrench}
           placement={placement}
           title={t('ModelSelect.featureTag.functionCall')}
-          tooltipStyles={FUNCTION_CALL_TOOLTIP_STYLES}
-          withTooltip={withTooltip}
-        />
-        <FeatureTagItem
-          className={tagClassName}
-          color={'purple'}
-          enabled={reasoning}
-          icon={AtomIcon}
-          placement={placement}
-          title={t('ModelSelect.featureTag.reasoning')}
-          withTooltip={withTooltip}
-        />
-        <FeatureTagItem
-          className={tagClassName}
-          color={'cyan'}
-          enabled={search}
-          icon={LucideGlobe}
-          placement={placement}
-          title={t('ModelSelect.featureTag.search')}
-          withTooltip={withTooltip}
         />
       </>
     );
@@ -202,30 +168,29 @@ const FeatureTags = memo<FeatureTagsProps>(
 const Context = memo(
   ({
     contextWindowTokens,
-    withTooltip,
+    disableTooltip,
     placement,
     styles,
   }: {
     contextWindowTokens: number;
+    disableTooltip?: boolean;
     placement: 'top' | 'right';
     styles: TooltipStyles;
-    withTooltip: boolean;
   }) => {
     const { t } = useTranslation('components');
     const tokensText = contextWindowTokens === 0 ? '∞' : formatTokenNumber(contextWindowTokens);
 
     const tag = (
       <Tag className={styles.token} size={'small'}>
-        {contextWindowTokens === 0 ? <Infinity size={17} strokeWidth={1.6} /> : tokensText}
+        {contextWindowTokens === 0 ? <InfinityIcon size={17} strokeWidth={1.6} /> : tokensText}
       </Tag>
     );
 
-    if (!withTooltip) return tag;
+    if (disableTooltip) return tag;
 
     return (
       <Tooltip
         placement={placement}
-        // styles={styles}
         title={t('ModelSelect.featureTag.tokens', {
           tokens: contextWindowTokens === 0 ? '∞' : numeral(contextWindowTokens).format('0,0'),
         })}
@@ -237,33 +202,31 @@ const Context = memo(
 );
 
 export const ModelInfoTags = memo<ModelInfoTagsProps>(
-  ({ directionReverse, placement = 'top', withTooltip = true, ...model }) => {
+  ({ directionReverse, disableTooltip, placement = 'top', style, ...model }) => {
     return (
       <Flexbox
         className={TAG_CLASSNAME}
         direction={directionReverse ? 'horizontal-reverse' : 'horizontal'}
-        gap={4}
-        style={{ marginLeft: 'auto' }}
+        gap={2}
+        style={{ marginLeft: 'auto', ...style }}
         width={'fit-content'}
       >
         <FeatureTags
+          disableTooltip={disableTooltip}
           files={model.files}
           functionCall={model.functionCall}
           imageOutput={model.imageOutput}
           placement={placement}
-          reasoning={model.reasoning}
-          search={model.search}
           tagClassName={styles.tag}
           video={model.video}
           vision={model.vision}
-          withTooltip={withTooltip}
         />
         {typeof model.contextWindowTokens === 'number' && (
           <Context
             contextWindowTokens={model.contextWindowTokens}
+            disableTooltip={disableTooltip}
             placement={placement}
             styles={styles}
-            withTooltip={withTooltip}
           />
         )}
       </Flexbox>
@@ -271,119 +234,128 @@ export const ModelInfoTags = memo<ModelInfoTagsProps>(
   },
 );
 
-interface ModelItemRenderProps extends ChatModelCard {
+interface ModelItemRenderProps extends ChatModelCard, Partial<Omit<FlexboxProps, 'id' | 'title'>> {
   abilities?: ModelAbilities;
-  infoTagTooltip?: boolean;
-  /**
-   * Only mounts Tooltip components while hovering the item, to reduce initial render cost in large dropdown lists.
-   *
-   * Note: hover is not available on mobile, so this will be ignored on mobile.
-   * Also note: since tooltips are mounted lazily, the very first hover may require a tiny pointer movement
-   * before the tooltip system detects the hover target (depends on the underlying tooltip implementation).
-   */
-  infoTagTooltipOnHover?: boolean;
   newBadgeLabel?: string;
+  proBadgeLabel?: string;
   showInfoTag?: boolean;
 }
 
-export const ModelItemRender = memo<ModelItemRenderProps>(({ showInfoTag = true, ...model }) => {
-  const { mobile } = useResponsive();
-  const [hovered, setHovered] = useState(false);
-  const {
+export const ModelItemRender = memo<ModelItemRenderProps>(
+  ({
+    showInfoTag = true,
     abilities,
-    infoTagTooltip = true,
-    infoTagTooltipOnHover = false,
     contextWindowTokens,
     files,
     functionCall,
     imageOutput,
     newBadgeLabel,
-    reasoning,
-    search,
+    proBadgeLabel,
     video,
     vision,
-  } = model;
+    id,
+    displayName,
+    releasedAt,
+    ...rest
+  }) => {
+    const { mobile } = useResponsive();
+    const displayNameOrId = displayName || id;
 
-  const shouldLazyMountTooltip = infoTagTooltipOnHover && !mobile;
-  /**
-   * When `infoTagTooltipOnHover` is enabled, we don't mount Tooltip components until the row is hovered.
-   * This avoids creating many overlays on dropdown open, while keeping the tooltip UX on demand.
-   */
-  const withTooltip = infoTagTooltip && (!shouldLazyMountTooltip || hovered);
-  const displayName = model.displayName || model.id;
-
-  return (
-    <Flexbox
-      align={'center'}
-      gap={32}
-      horizontal
-      justify={'space-between'}
-      onMouseEnter={shouldLazyMountTooltip && !hovered ? () => setHovered(true) : undefined}
-      style={{
-        overflow: 'hidden',
-        position: 'relative',
-        width: '100%',
-      }}
-    >
+    return (
       <Flexbox
-        align={'center'}
-        gap={8}
         horizontal
-        style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}
+        align={'center'}
+        gap={32}
+        justify={'space-between'}
+        {...rest}
+        style={{
+          overflow: 'hidden',
+          position: 'relative',
+          width: '100%',
+          ...rest.style,
+        }}
       >
-        <ModelIcon model={model.id} size={20} />
-        <Text
-          ellipsis={
-            withTooltip
-              ? {
-                  tooltip: displayName,
-                }
-              : true
-          }
-          style={mobile ? { maxWidth: '60vw' } : { minWidth: 0, overflow: 'hidden' }}
+        <Flexbox
+          horizontal
+          align={'center'}
+          gap={8}
+          style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}
         >
-          {displayName}
-        </Text>
-        {newBadgeLabel ? (
-          <NewModelBadgeCore label={newBadgeLabel} releasedAt={model.releasedAt} />
-        ) : (
-          <NewModelBadgeI18n releasedAt={model.releasedAt} />
+          <ModelIcon model={id} size={20} />
+          <Text
+            style={mobile ? { maxWidth: '60vw' } : { minWidth: 0, overflow: 'hidden' }}
+            ellipsis={{
+              tooltip: displayNameOrId,
+              tooltipWhenOverflow: true,
+            }}
+          >
+            {displayNameOrId}
+          </Text>
+          {newBadgeLabel ? (
+            <NewModelBadgeCore label={newBadgeLabel} releasedAt={releasedAt} />
+          ) : (
+            <NewModelBadgeI18n releasedAt={releasedAt} />
+          )}
+          {proBadgeLabel && (
+            <Tag color="gold" size="small">
+              {proBadgeLabel}
+            </Tag>
+          )}
+        </Flexbox>
+        {showInfoTag && (
+          <ModelInfoTags
+            contextWindowTokens={contextWindowTokens}
+            files={files ?? abilities?.files}
+            functionCall={functionCall ?? abilities?.functionCall}
+            imageOutput={imageOutput ?? abilities?.imageOutput}
+            style={{ zoom: 0.9 }}
+            video={video ?? abilities?.video}
+            vision={vision ?? abilities?.vision}
+          />
         )}
       </Flexbox>
-      {showInfoTag && (
-        <ModelInfoTags
-          contextWindowTokens={contextWindowTokens}
-          files={files ?? abilities?.files}
-          functionCall={functionCall ?? abilities?.functionCall}
-          imageOutput={imageOutput ?? abilities?.imageOutput}
-          reasoning={reasoning ?? abilities?.reasoning}
-          search={search ?? abilities?.search}
-          video={video ?? abilities?.video}
-          vision={vision ?? abilities?.vision}
-          withTooltip={withTooltip}
-        />
-      )}
-    </Flexbox>
-  );
-});
+    );
+  },
+);
 
 interface ProviderItemRenderProps {
   logo?: string;
   name: string;
   provider: string;
+  size?: number;
   source?: AiProviderSourceType;
+  type?: 'mono' | 'color' | 'avatar';
 }
 
 export const ProviderItemRender = memo<ProviderItemRenderProps>(
-  ({ provider, name, source, logo }) => {
+  ({ provider, name, source, logo, type = 'mono', size = 16 }) => {
+    const isMono = type === 'mono';
     return (
-      <Flexbox align={'center'} gap={4} horizontal>
+      <Flexbox
+        horizontal
+        align={'center'}
+        gap={6}
+        width={'100%'}
+        style={{
+          overflow: 'hidden',
+        }}
+      >
         {source === 'custom' && !!logo ? (
-          <Avatar avatar={logo} size={20} style={{ filter: 'grayscale(1)' }} title={name} />
+          <Avatar
+            avatar={logo}
+            shape={'circle'}
+            size={size}
+            style={isMono ? { filter: 'grayscale(1)' } : {}}
+            title={name}
+          />
+        ) : provider === 'lobehub' ? (
+          <LobeHub.Morden size={size} />
         ) : (
-          <ProviderIcon provider={provider} size={20} type={'mono'} />
+          <ProviderIcon provider={provider} size={size} type={type} />
         )}
-        {name}
+        <Text ellipsis color={'inherit'}>
+          {name}
+        </Text>
       </Flexbox>
     );
   },
@@ -395,7 +367,7 @@ interface LabelRendererProps {
 }
 
 export const LabelRenderer = memo<LabelRendererProps>(({ Icon, label }) => (
-  <Flexbox align={'center'} gap={8} horizontal>
+  <Flexbox horizontal align={'center'} gap={8}>
     <Icon size={20} />
     <span>{label}</span>
   </Flexbox>

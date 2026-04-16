@@ -1,8 +1,9 @@
-import type { SendMessageParams } from '@lobechat/types';
+import { type SendMessageParams } from '@lobechat/types';
 
 import { useChatStore } from '@/store/chat';
 
-import type { Store as ConversationStore } from '../../../action';
+import { isLocalOnlyMessage } from '../../../../utils/localMessages';
+import { type Store as ConversationStore } from '../../../action';
 
 /**
  * Send a message in this conversation
@@ -26,20 +27,28 @@ export const sendMessage = (
     if (hooks.onBeforeSendMessage) {
       const result = await hooks.onBeforeSendMessage(params);
       if (result === false) {
-        console.log('[ConversationStore] sendMessage blocked by onBeforeSendMessage hook');
+        console.info('[ConversationStore] sendMessage blocked by onBeforeSendMessage hook');
         return;
       }
     }
 
+    // Keep ConversationStore in sync with the editor, which is cleared immediately on send.
+    // Do this before awaiting the full streaming lifecycle so drafts typed during generation
+    // are not overwritten when the request completes.
+    set({ inputMessage: '' });
+
     // Get global chat store
     const chatStore = useChatStore.getState();
+    const messages = (params.messages ?? displayMessages).filter(
+      (message) => !isLocalOnlyMessage(message),
+    );
 
     // Forward to ChatStore.sendMessage with context and messages
     // Pass displayMessages to decouple sendMessage from store selectors
     const result = await chatStore.sendMessage({
       ...params,
       context,
-      messages: params.messages ?? displayMessages,
+      messages,
     });
 
     // ===== Hook: onAfterMessageCreate =====
@@ -56,8 +65,5 @@ export const sendMessage = (
     if (hooks.onAfterSendMessage) {
       await hooks.onAfterSendMessage();
     }
-
-    // Clear input message
-    set({ inputMessage: '' });
   };
 };

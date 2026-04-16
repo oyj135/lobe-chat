@@ -1,9 +1,10 @@
-import {
+import type {
   AgentInitErrorPayload,
   ChatCompletionErrorPayload,
   CreateImageErrorPayload,
+  CreateVideoErrorPayload,
 } from '../types';
-import { ILobeAgentRuntimeErrorType } from '../types/error';
+import type { ILobeAgentRuntimeErrorType } from '../types/error';
 
 export const AgentRuntimeError = {
   chat: (error: ChatCompletionErrorPayload): ChatCompletionErrorPayload => error,
@@ -12,5 +13,5 @@ export const AgentRuntimeError = {
     error?: any,
   ): AgentInitErrorPayload => ({ error, errorType }),
   createImage: (error: CreateImageErrorPayload): CreateImageErrorPayload => error,
-  textToImage: (error: any): any => error,
+  createVideo: (error: CreateVideoErrorPayload): CreateVideoErrorPayload => error,
 };

@@ -1,3 +1,4 @@
+import type * as AntdStyleModule from 'antd-style';
 import { ModelProvider } from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -19,7 +20,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('antd-style', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('antd-style')>();
+  const actual = await importOriginal<typeof AntdStyleModule>();
 
   return {
     ...actual,
@@ -68,6 +69,7 @@ vi.mock('@lobehub/icons', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
+  ShikiLobeTheme: { name: 'lobe-test', type: 'dark' as const, colors: {} },
   Icon: vi.fn(({ icon, ...props }) => (
     <div data-testid="icon" {...props}>
       {icon?.name}
@@ -122,15 +124,6 @@ vi.mock('@/features/ChatList/Error/style', () => ({
 }));
 
 describe('ComfyUIForm Integration', () => {
-  const mockProps = {
-    bedrockDescription: 'bedrock.description',
-    description: 'comfyui.description',
-    id: 'test-batch-id',
-    onClose: vi.fn(),
-    onRecreate: vi.fn(),
-    provider: ModelProvider.ComfyUI,
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
   });

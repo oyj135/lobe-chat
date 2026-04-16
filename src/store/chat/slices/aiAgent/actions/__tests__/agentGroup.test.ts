@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { lambdaClient } from '@/libs/trpc/client';
 import { agentRuntimeClient } from '@/services/agentRuntime';
 import { useChatStore } from '@/store/chat/store';
-import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
 // Keep zustand mock as it's needed globally
 vi.mock('zustand/traditional');
@@ -67,7 +66,7 @@ const resetTestEnvironment = () => {
 };
 
 // Helper to create test context
-const createTestContext = (overrides = {}) => ({
+const createTestContext = (overrides: any = {}) => ({
   agentId: TEST_IDS.AGENT_ID,
   groupId: TEST_IDS.GROUP_ID,
   topicId: null as string | null,
@@ -76,7 +75,7 @@ const createTestContext = (overrides = {}) => ({
 });
 
 // Helper to create mock response from execGroupAgent
-const createMockExecGroupAgentResponse = (overrides = {}) => ({
+const createMockExecGroupAgentResponse = (overrides: any = {}) => ({
   assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
   operationId: TEST_IDS.OPERATION_ID,
   topicId: TEST_IDS.TOPIC_ID,
@@ -113,7 +112,6 @@ describe('agentGroup actions', () => {
     act(() => {
       useChatStore.setState({
         optimisticCreateTmpMessage: vi.fn(),
-        internal_toggleMessageLoading: vi.fn(),
         internal_dispatchMessage: vi.fn(),
         internal_handleAgentStreamEvent: vi.fn(),
         internal_cleanupAgentOperation: vi.fn(),
@@ -556,7 +554,10 @@ describe('agentGroup actions', () => {
           });
         });
 
-        expect(result.current.switchTopic).toHaveBeenCalledWith(TEST_IDS.TOPIC_ID, true);
+        expect(result.current.switchTopic).toHaveBeenCalledWith(TEST_IDS.TOPIC_ID, {
+          clearNewKey: true,
+          skipRefreshMessage: true,
+        });
       });
 
       it('should not switch topic when using existing topic', async () => {
@@ -665,12 +666,6 @@ describe('agentGroup actions', () => {
             message: TEST_CONTENT.GROUP_MESSAGE,
           });
         });
-
-        // Should toggle loading off in finally block
-        expect(result.current.internal_toggleMessageLoading).toHaveBeenLastCalledWith(
-          false,
-          expect.any(String),
-        );
       });
 
       it('should handle abort error without calling failOperation', async () => {

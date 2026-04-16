@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Dropdown, Flexbox, Icon } from '@lobehub/ui';
+import { ActionIcon, Button, DropdownMenu, Flexbox, Icon } from '@lobehub/ui';
 import { InfoIcon, MoreVerticalIcon, Trash2 } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -52,44 +52,41 @@ const Actions = memo<ActionsProps>(({ id, type, enabled }) => {
   };
 
   return (
-    <Flexbox align={'center'} horizontal>
+    <Flexbox horizontal align={'center'}>
       {enabled ? (
-        <Dropdown
-          menu={{
-            items: [
-              {
-                icon: <Icon icon={InfoIcon} />,
-                key: 'detail',
-                label: t('knowledgeBase.library.action.detail'),
-                onClick: () => {
-                  if (type === KnowledgeType.KnowledgeBase) {
-                    window.open(`/resource/library/${id}`);
-                    return;
-                  }
-
-                  window.open(`/knowledge?file=${id}`);
-                },
-              },
-              {
-                danger: true,
-                icon: <Icon icon={Trash2} />,
-                key: 'remove',
-                label: t('knowledgeBase.library.action.remove'),
-                onClick: removeKnowledge,
-              },
-            ],
-          }}
+        <DropdownMenu
           placement="bottomRight"
-          trigger={['click']}
+          items={[
+            {
+              icon: <Icon icon={InfoIcon} />,
+              key: 'detail',
+              label: t('knowledgeBase.library.action.detail'),
+              onClick: () => {
+                if (type === KnowledgeType.KnowledgeBase) {
+                  window.open(`/resource/library/${id}`);
+                  return;
+                }
+
+                window.open(`/resource?file=${id}`);
+              },
+            },
+            {
+              danger: true,
+              icon: <Icon icon={Trash2} />,
+              key: 'remove',
+              label: t('knowledgeBase.library.action.remove'),
+              onClick: removeKnowledge,
+            },
+          ]}
         >
           <ActionIcon icon={MoreVerticalIcon} loading={loading} />
-        </Dropdown>
+        </DropdownMenu>
       ) : (
         <Button
           loading={loading}
-          onClick={assignKnowledge}
           size={mobile ? 'small' : undefined}
           type={'primary'}
+          onClick={assignKnowledge}
         >
           {t('knowledgeBase.library.action.add')}
         </Button>

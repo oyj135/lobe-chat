@@ -1,6 +1,6 @@
 'use client';
 
-import { BuiltinInterventionProps } from '@lobechat/types';
+import type { BuiltinInterventionProps } from '@lobechat/types';
 import { Block } from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
 import { memo, useCallback } from 'react';
@@ -17,7 +17,7 @@ const AddTodoIntervention = memo<BuiltinInterventionProps<CreateTodosParams>>(
     // - Initial AI input: { adds: string[] } (from AI)
     // - After user edit: { items: TodoItem[] } (saved format)
     const defaultItems: TodoItem[] =
-      args?.items || args?.adds?.map((text) => ({ completed: false, text })) || [];
+      args?.items || args?.adds?.map((text) => ({ status: 'todo', text })) || [];
 
     const handleSave = useCallback(
       async (items: TodoItem[]) => {
@@ -32,9 +32,9 @@ const AddTodoIntervention = memo<BuiltinInterventionProps<CreateTodosParams>>(
       <Block variant={'outlined'}>
         <SortableTodoList
           defaultItems={defaultItems}
-          onSave={handleSave}
           placeholder={t('lobe-gtd.addTodo.placeholder')}
           registerBeforeApprove={registerBeforeApprove}
+          onSave={handleSave}
         />
       </Block>
     );

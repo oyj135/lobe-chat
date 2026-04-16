@@ -1,10 +1,10 @@
 import { imageUrlToBase64 } from '@lobechat/utils';
 import { cleanObject } from '@lobechat/utils/object';
 import createDebug from 'debug';
-import { RuntimeImageGenParamsValue } from 'model-bank';
-import OpenAI from 'openai';
+import type { RuntimeImageGenParamsValue } from 'model-bank';
+import type OpenAI from 'openai';
 
-import { CreateImagePayload, CreateImageResponse } from '../../types/image';
+import type { CreateImagePayload, CreateImageResponse } from '../../types/image';
 import { getModelPricing } from '../../utils/getModelPricing';
 import { parseDataUri } from '../../utils/uriParser';
 import { convertImageUrlToFile } from '../contextBuilders/openai';
@@ -67,7 +67,10 @@ async function generateByImageMode(
   const defaultInput = {
     n: 1,
     ...(model.includes('dall-e') ? { response_format: 'b64_json' } : {}),
-    ...(isImageEdit && model === 'gpt-image-1' ? { input_fidelity: 'high' } : {}),
+    // https://platform.openai.com/docs/api-reference/images/createEdit#images_createedit-input_fidelity
+    ...(isImageEdit && model.includes('gpt-image-') && !model.includes('mini')
+      ? { input_fidelity: 'high' }
+      : {}),
   };
 
   const options = cleanObject({

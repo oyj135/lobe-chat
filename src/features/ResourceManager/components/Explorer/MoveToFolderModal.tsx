@@ -4,21 +4,21 @@ import { FolderIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import FolderTree, { type FolderTreeItem } from '@/features/ResourceManager/components/FolderTree';
-import { clearTreeFolderCache } from '@/features/ResourceManager/components/Tree';
+import { type FolderTreeItem } from '@/features/ResourceManager/components/FolderTree';
+import FolderTree from '@/features/ResourceManager/components/FolderTree';
 import { fileService } from '@/services/file';
 import { useFileStore } from '@/store/file';
+import { useTreeStore } from '@/store/tree';
 
 interface MoveToFolderModalProps {
   fileId: string;
-  fileType?: string;
   knowledgeBaseId?: string;
   onClose: () => void;
   open: boolean;
 }
 
 const MoveToFolderModal = memo<MoveToFolderModalProps>(
-  ({ open, onClose, fileId, fileType, knowledgeBaseId }) => {
+  ({ open, onClose, fileId, knowledgeBaseId }) => {
     const { t } = useTranslation('components');
     const { message } = App.useApp();
 
@@ -29,12 +29,8 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
     const [loadedFolders, setLoadedFolders] = useState<Set<string>>(new Set());
     const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
-    const [moveFileToFolder, refreshFileList, createFolder, updateDocument] = useFileStore((s) => [
-      s.moveFileToFolder,
-      s.refreshFileList,
-      s.createFolder,
-      s.updateDocument,
-    ]);
+    const createFolder = useFileStore((s) => s.createFolder);
+    const moveItem = useTreeStore((s) => s.moveItem);
 
     // Sort items: folders only
     const sortItems = useCallback((items: FolderTreeItem[]): FolderTreeItem[] => {
@@ -179,7 +175,6 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
       });
     }, []);
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const handleFolderClick = useCallback((folderId: string, _folderSlug?: string | null) => {
       // Always use the document ID, not the slug
       setSelectedFolderId(folderId);
@@ -224,90 +219,65 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
       message,
     ]);
 
-    const handleMove = async () => {
-      try {
-        // Detect if item is a document/folder (vs regular file)
-        const isDocument =
-          fileType === 'custom/document' || fileType === 'custom/folder';
-
-        if (isDocument) {
-          // Use updateDocument for Pages and folders
-          await updateDocument(fileId, { parentId: selectedFolderId });
-        } else {
-          // Use moveFileToFolder for regular files
-          await moveFileToFolder(fileId, selectedFolderId);
+    const handleMove = () => {
+      if (!selectedFolderId) return;
+      const { children } = useTreeStore.getState();
+      let fromParent = '';
+      for (const [parentKey, items] of Object.entries(children)) {
+        if (items.some((i) => i.id === fileId)) {
+          fromParent = parentKey;
+          break;
         }
-
-        // Refresh file list to invalidate SWR cache for both Explorer and Tree
-        await refreshFileList();
-
-        // Clear and reload all expanded folders in Tree's module-level cache
-        if (knowledgeBaseId) {
-          await clearTreeFolderCache(knowledgeBaseId);
-        }
-
-        message.success(t('FileManager.actions.moveSuccess'));
-        onClose();
-      } catch (error) {
-        console.error('Failed to move file:', error);
-        message.error(t('FileManager.actions.moveError'));
       }
+
+      void moveItem(fileId, fromParent, selectedFolderId).catch(() => {
+        message.error(t('FileManager.actions.moveError'));
+      });
+      message.success(t('FileManager.actions.moveSuccess'));
+      onClose();
     };
 
-    const handleMoveToRoot = async () => {
-      try {
-        // Detect if item is a document/folder (vs regular file)
-        const isDocument =
-          fileType === 'custom/document' || fileType === 'custom/folder';
-
-        if (isDocument) {
-          // Use updateDocument for Pages and folders
-          await updateDocument(fileId, { parentId: null });
-        } else {
-          // Use moveFileToFolder for regular files
-          await moveFileToFolder(fileId, null);
+    const handleMoveToRoot = () => {
+      const { children } = useTreeStore.getState();
+      let fromParent = '';
+      for (const [parentKey, items] of Object.entries(children)) {
+        if (items.some((i) => i.id === fileId)) {
+          fromParent = parentKey;
+          break;
         }
-
-        // Refresh file list to invalidate SWR cache for both Explorer and Tree
-        await refreshFileList();
-
-        // Clear and reload all expanded folders in Tree's module-level cache
-        if (knowledgeBaseId) {
-          await clearTreeFolderCache(knowledgeBaseId);
-        }
-
-        message.success(t('FileManager.actions.moveSuccess'));
-        onClose();
-      } catch (error) {
-        console.error('Failed to move file:', error);
-        message.error(t('FileManager.actions.moveError'));
       }
+
+      void moveItem(fileId, fromParent, '').catch(() => {
+        message.error(t('FileManager.actions.moveError'));
+      });
+      message.success(t('FileManager.actions.moveSuccess'));
+      onClose();
     };
 
     return (
       <Modal
+        open={open}
+        title={t('FileManager.actions.moveToFolder')}
         footer={
-          <Flexbox gap={8} horizontal justify={'flex-end'}>
+          <Flexbox horizontal gap={8} justify={'flex-end'}>
             <Button onClick={onClose}>{t('cancel', { ns: 'common' })}</Button>
-            <Button onClick={handleMoveToRoot} type="default">
+            <Button type="default" onClick={handleMoveToRoot}>
               {t('FileManager.actions.moveToRoot')}
             </Button>
-            <Button disabled={!selectedFolderId} onClick={handleMove} type="primary">
+            <Button disabled={!selectedFolderId} type="primary" onClick={handleMove}>
               {t('FileManager.actions.moveHere')}
             </Button>
           </Flexbox>
         }
         onCancel={onClose}
-        open={open}
-        title={t('FileManager.actions.moveToFolder')}
       >
         <Flexbox horizontal justify="flex-end" style={{ marginBottom: 12 }}>
           <Button
             icon={<Icon icon={FolderIcon} />}
             loading={isCreatingFolder}
-            onClick={handleCreateNewFolder}
             size="small"
             type="default"
+            onClick={handleCreateNewFolder}
           >
             {t('header.actions.newFolder', { ns: 'file' })}
           </Button>
@@ -326,10 +296,10 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
               expandedFolders={expandedFolders}
               items={folders}
               loadedFolders={loadedFolders}
+              selectedKey={selectedFolderId}
               onFolderClick={handleFolderClick}
               onLoadFolder={handleLoadFolder}
               onToggleFolder={handleToggleFolder}
-              selectedKey={selectedFolderId}
             />
           )}
         </Flexbox>

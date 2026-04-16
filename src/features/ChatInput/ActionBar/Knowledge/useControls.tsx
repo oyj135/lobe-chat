@@ -1,4 +1,5 @@
-import { Icon, type ItemType } from '@lobehub/ui';
+import { type ItemType } from '@lobehub/ui';
+import { Icon } from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
 import { ArrowRight, LibraryBig } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -9,7 +10,7 @@ import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 
 import { useAgentId } from '../../hooks/useAgentId';
-import CheckboxItem from '../components/CheckbokWithLoading';
+import CheckboxItem from '../components/CheckboxWithLoading';
 
 export const useControls = ({
   setModalOpen,
@@ -33,28 +34,6 @@ export const useControls = ({
   ]);
 
   const items: ItemType[] = [
-    // {
-    //   children: [
-    //     {
-    //       icon: <RepoIcon />,
-    //       key: 'allFiles',
-    //       label: <KnowledgeBaseItem id={'all'} label={t('knowledgeBase.allFiles')} />,
-    //     },
-    //     {
-    //       icon: <RepoIcon />,
-    //       key: 'allRepos',
-    //       label: <KnowledgeBaseItem id={'all'} label={t('knowledgeBase.allLibraries')} />,
-    //     },
-    //   ],
-    //   key: 'all',
-    //   label: (
-    //     <Flexbox horizontal justify={'space-between'}>
-    //       {t('knowledgeBase.all')}
-    //       {/*<Link href={'/files'}>{t('knowledgeBase.more')}</Link>*/}
-    //     </Flexbox>
-    //   ),
-    //   type: 'group',
-    // },
     {
       children: [
         // first the files

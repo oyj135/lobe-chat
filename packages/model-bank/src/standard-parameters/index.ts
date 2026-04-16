@@ -1,4 +1,3 @@
-/* eslint-disable sort-keys-fix/sort-keys-fix, typescript-sort-keys/interface */
 import type { Simplify } from 'type-fest';
 import { z } from 'zod';
 
@@ -203,6 +202,31 @@ export const ModelParamsMetaSchema = z.object({
     })
     .optional(),
 
+  promptExtend: z
+    .object({
+      default: z.union([z.boolean(), z.string()]),
+      description: z.string().optional(),
+      enum: z.array(z.string()).optional(),
+      type: z.union([z.literal('boolean'), z.literal('string')]).optional(),
+    })
+    .optional(),
+
+  watermark: z
+    .object({
+      default: z.boolean().default(false),
+      description: z.string().optional(),
+      type: z.literal('boolean').optional(),
+    })
+    .optional(),
+
+  webSearch: z
+    .object({
+      default: z.boolean().default(true),
+      description: z.string().optional(),
+      type: z.literal('boolean').optional(),
+    })
+    .optional(),
+
   seed: z
     .object({
       default: z.number().nullable().default(null),
@@ -261,3 +285,5 @@ export function extractDefaultValues(paramsSchema: ModelParamsSchema) {
     }),
   ) as RuntimeImageGenParams;
 }
+
+export * from './video';

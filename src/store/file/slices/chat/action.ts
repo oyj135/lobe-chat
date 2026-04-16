@@ -1,16 +1,15 @@
 import { type ChatContextContent } from '@lobechat/types';
+import { COMPRESSIBLE_IMAGE_TYPES, compressImageFile } from '@lobechat/utils/compressImage';
 import { t } from 'i18next';
-import { type StateCreator } from 'zustand/vanilla';
 
 import { notification } from '@/components/AntdStaticMethods';
 import { FILE_UPLOAD_BLACKLIST } from '@/const/file';
 import { fileService } from '@/services/file';
 import { ragService } from '@/services/rag';
 import { UPLOAD_NETWORK_ERROR } from '@/services/upload';
-import {
-  type UploadFileListDispatch,
-  uploadFileListReducer,
-} from '@/store/file/reducers/uploadFileList';
+import { type UploadFileListDispatch } from '@/store/file/reducers/uploadFileList';
+import { uploadFileListReducer } from '@/store/file/reducers/uploadFileList';
+import { type StoreSetter } from '@/store/types';
 import { type FileListItem } from '@/types/files';
 import { type UploadFileItem } from '@/types/files/upload';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
@@ -21,74 +20,72 @@ import { type FileStore } from '../../store';
 
 const n = setNamespace('chat');
 
-export interface FileAction {
-  addChatContextSelection: (context: ChatContextContent) => void;
-  clearChatContextSelections: () => void;
-  clearChatUploadFileList: () => void;
-  dispatchChatUploadFileList: (payload: UploadFileListDispatch) => void;
-  removeChatContextSelection: (id: string) => void;
-  removeChatUploadFile: (id: string) => Promise<void>;
-  startAsyncTask: (
-    fileId: string,
-    runner: (id: string) => Promise<string>,
-    onFileItemChange: (fileItem: FileListItem) => void,
-  ) => Promise<void>;
-  uploadChatFiles: (files: File[]) => Promise<void>;
-}
+type Setter = StoreSetter<FileStore>;
+export const createFileSlice = (set: Setter, get: () => FileStore, _api?: unknown) =>
+  new FileActionImpl(set, get, _api);
 
-export const createFileSlice: StateCreator<
-  FileStore,
-  [['zustand/devtools', never]],
-  [],
-  FileAction
-> = (set, get) => ({
-  addChatContextSelection: (context) => {
-    const current = get().chatContextSelections;
+export class FileActionImpl {
+  readonly #get: () => FileStore;
+  readonly #set: Setter;
+
+  constructor(set: Setter, get: () => FileStore, _api?: unknown) {
+    void _api;
+    this.#set = set;
+    this.#get = get;
+  }
+
+  addChatContextSelection = (context: ChatContextContent): void => {
+    const current = this.#get().chatContextSelections;
     const next = [context, ...current.filter((item) => item.id !== context.id)];
 
-    set({ chatContextSelections: next }, false, n('addChatContextSelection'));
-  },
+    this.#set({ chatContextSelections: next }, false, n('addChatContextSelection'));
+  };
 
-  clearChatContextSelections: () => {
-    set({ chatContextSelections: [] }, false, n('clearChatContextSelections'));
-  },
+  clearChatContextSelections = (): void => {
+    this.#set({ chatContextSelections: [] }, false, n('clearChatContextSelections'));
+  };
 
-  clearChatUploadFileList: () => {
-    set({ chatUploadFileList: [] }, false, n('clearChatUploadFileList'));
-  },
+  clearChatUploadFileList = (): void => {
+    this.#set({ chatUploadFileList: [] }, false, n('clearChatUploadFileList'));
+  };
 
-  dispatchChatUploadFileList: (payload) => {
-    const nextValue = uploadFileListReducer(get().chatUploadFileList, payload);
-    if (nextValue === get().chatUploadFileList) return;
+  dispatchChatUploadFileList = (payload: UploadFileListDispatch): void => {
+    const nextValue = uploadFileListReducer(this.#get().chatUploadFileList, payload);
+    if (nextValue === this.#get().chatUploadFileList) return;
 
-    set({ chatUploadFileList: nextValue }, false, `dispatchChatFileList/${payload.type}`);
-  },
+    this.#set({ chatUploadFileList: nextValue }, false, `dispatchChatFileList/${payload.type}`);
+  };
 
-  removeChatContextSelection: (id) => {
-    const next = get().chatContextSelections.filter((item) => item.id !== id);
-    set({ chatContextSelections: next }, false, n('removeChatContextSelection'));
-  },
+  removeChatContextSelection = (id: string): void => {
+    const next = this.#get().chatContextSelections.filter((item) => item.id !== id);
+    this.#set({ chatContextSelections: next }, false, n('removeChatContextSelection'));
+  };
 
-  removeChatUploadFile: async (id) => {
-    const { dispatchChatUploadFileList } = get();
+  removeChatUploadFile = async (id: string): Promise<void> => {
+    const { dispatchChatUploadFileList } = this.#get();
 
     dispatchChatUploadFileList({ id, type: 'removeFile' });
     await fileService.removeFile(id);
-  },
+  };
 
-  startAsyncTask: async (id, runner, onFileItemUpdate) => {
+  startAsyncTask = async (
+    id: string,
+    runner: (id: string) => Promise<string>,
+    onFileItemUpdate: (fileItem: FileListItem) => void,
+  ): Promise<void> => {
     await runner(id);
 
     let isFinished = false;
 
     while (!isFinished) {
-      // 每间隔 2s 查询一次任务状态
+      // Poll task status every 2 seconds
       await sleep(2000);
 
-      let fileItem: FileListItem | undefined = undefined;
+      let fileItem: FileListItem | undefined;
 
       try {
-        fileItem = await fileService.getKnowledgeItem(id);
+        const result = await fileService.getKnowledgeItem(id);
+        fileItem = result ?? undefined;
       } catch (e) {
         console.error('getFileItem Error:', e);
         continue;
@@ -107,13 +104,19 @@ export const createFileSlice: StateCreator<
         isFinished = true;
       }
     }
-  },
+  };
 
-  uploadChatFiles: async (rawFiles) => {
-    const { dispatchChatUploadFileList } = get();
+  uploadChatFiles = async (rawFiles: File[]): Promise<void> => {
+    const { dispatchChatUploadFileList } = this.#get();
     // 0. skip file in blacklist
-    const files = rawFiles.filter((file) => !FILE_UPLOAD_BLACKLIST.includes(file.name));
-    // 1. add files with base64
+    const filteredFiles = rawFiles.filter((file) => !FILE_UPLOAD_BLACKLIST.includes(file.name));
+    // 1. compress images and add files with base64
+    const files = await Promise.all(
+      filteredFiles.map((file) =>
+        COMPRESSIBLE_IMAGE_TYPES.has(file.type) ? compressImageFile(file) : file,
+      ),
+    );
+
     const uploadFiles: UploadFileItem[] = await Promise.all(
       files.map(async (file) => {
         let previewUrl: string | undefined = undefined;
@@ -140,7 +143,7 @@ export const createFileSlice: StateCreator<
       let fileResult: { id: string; url: string } | undefined;
 
       try {
-        fileResult = await get().uploadWithProgress({
+        fileResult = await this.#get().uploadWithProgress({
           file,
           onStatusUpdate: dispatchChatUploadFileList,
         });
@@ -167,10 +170,11 @@ export const createFileSlice: StateCreator<
       // image don't need to be chunked and embedding
       if (isChunkingUnsupported(file.type)) return;
 
-      const data = await ragService.parseFileContent(fileResult.id);
-      console.log(data);
+      await ragService.parseFileContent(fileResult.id);
     });
 
     await Promise.all(pools);
-  },
-});
+  };
+}
+
+export type FileAction = Pick<FileActionImpl, keyof FileActionImpl>;

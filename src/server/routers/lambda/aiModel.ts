@@ -1,6 +1,6 @@
+import { type AiProviderModelListItem } from 'model-bank';
 import {
   AiModelTypeSchema,
-  type AiProviderModelListItem,
   CreateAiModelSchema,
   ToggleAiModelEnableSchema,
   UpdateAiModelSchema,
@@ -52,7 +52,7 @@ export const aiModelRouter = router({
     .input(
       z.object({
         id: z.string(),
-        // TODO: 补齐校验 Schema
+        // TODO: Complete validation schema
         models: z.array(z.any()),
       }),
     )
@@ -91,6 +91,7 @@ export const aiModelRouter = router({
         id: z.string(),
         limit: z.number().int().min(1).max(200).optional(),
         offset: z.number().int().min(0).optional(),
+        type: z.string().optional(),
       }),
     )
     .query(async ({ ctx, input }): Promise<AiProviderModelListItem[]> => {
@@ -98,6 +99,7 @@ export const aiModelRouter = router({
         enabled: input.enabled,
         limit: input.limit,
         offset: input.offset,
+        type: input.type,
       });
     }),
 

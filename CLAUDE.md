@@ -1,108 +1,123 @@
 # CLAUDE.md
 
-This document serves as a shared guideline for all team members when using Claude Code in this opensource lobe-chat(also known as lobehub) repository.
+Guidelines for using Claude Code in this LobeHub repository.
 
 ## Tech Stack
 
-read @.cursor/rules/project-introduce.mdc
+- Next.js 16 + React 19 + TypeScript
+- SPA inside Next.js with `react-router-dom`
+- `@lobehub/ui`, antd for components; antd-style for CSS-in-JS — **prefer `createStaticStyles` with `cssVar.*`** (zero-runtime); only fall back to `createStyles` + `token` when styles genuinely need runtime computation. See `.cursor/docs/createStaticStyles_migration_guide.md`.
+- react-i18next for i18n; zustand for state management
+- SWR for data fetching; TRPC for type-safe backend
+- Drizzle ORM with PostgreSQL; Vitest for testing
 
-## Directory Structure
+## Project Structure
 
-read @.cursor/rules/project-structure.mdc
+```plaintext
+lobehub/
+├── apps/desktop/           # Electron desktop app
+├── packages/               # Shared packages (@lobechat/*)
+│   ├── database/           # Database schemas, models, repositories
+│   ├── agent-runtime/      # Agent runtime
+│   └── ...
+├── src/
+│   ├── app/                # Next.js App Router (backend API + auth)
+│   │   ├── (backend)/     # API routes (trpc, webapi, etc.)
+│   │   ├── spa/            # SPA HTML template service
+│   │   └── [variants]/(auth)/  # Auth pages (SSR required)
+│   ├── routes/             # SPA page components (Vite)
+│   │   ├── (main)/         # Desktop pages
+│   │   ├── (mobile)/       # Mobile pages
+│   │   ├── (desktop)/      # Desktop-specific pages
+│   │   ├── onboarding/     # Onboarding pages
+│   │   └── share/          # Share pages
+│   ├── spa/                # SPA entry points and router config
+│   │   ├── entry.web.tsx   # Web entry
+│   │   ├── entry.mobile.tsx
+│   │   ├── entry.desktop.tsx
+│   │   └── router/         # React Router configuration
+│   ├── store/              # Zustand stores
+│   ├── services/           # Client services
+│   ├── server/             # Server services and routers
+│   └── ...
+└── e2e/                    # E2E tests (Cucumber + Playwright)
+```
+
+## SPA Routes and Features
+
+SPA-related code is grouped under `src/spa/` (entries + router) and `src/routes/` (page segments). We use a **roots vs features** split: route trees only hold page segments; business logic and UI live in features.
+
+- **`src/spa/`** – SPA entry points (`entry.web.tsx`, `entry.mobile.tsx`, `entry.desktop.tsx`) and React Router config (`router/`). Keeps router config next to entries to avoid confusion with `src/routes/`.
+
+- **`src/routes/` (roots)**\
+  Only page-segment files: `_layout/index.tsx`, `index.tsx` (or `page.tsx`), and dynamic segments like `[id]/index.tsx`. Keep these **thin**: they should only import from `@/features/*` and compose layout/page, with no business logic or heavy UI.
+
+- **`src/features/`**\
+  Business components by **domain** (e.g. `Pages`, `PageEditor`, `Home`). Put layout chunks (sidebar, header, body), hooks, and domain-specific UI here. Each feature exposes an `index.ts` (or `index.tsx`) with clear exports.
+
+When adding or changing SPA routes:
+
+1. In `src/routes/`, add only the route segment files (layout + page) that delegate to features.
+2. Implement layout and page content under `src/features/<Domain>/` and export from there.
+3. In route files, use `import { X } from '@/features/<Domain>'` (or `import Y from '@/features/<Domain>/...'`). Do not add new `features/` folders inside `src/routes/`.
+4. **Register the desktop route tree in both configs:** `src/spa/router/desktopRouter.config.tsx` and `src/spa/router/desktopRouter.config.desktop.tsx` must stay in sync (same paths and nesting). Updating only one can cause **blank screens** if the other build path expects the route.
+
+See the **spa-routes** skill (`.agents/skills/spa-routes/SKILL.md`) for the full convention and file-division rules.
 
 ## Development
 
+### Starting the Dev Environment
+
+```bash
+# SPA dev mode (frontend only, proxies API to localhost:3010)
+bun run dev:spa
+
+# Full-stack dev (Next.js + Vite SPA concurrently)
+bun run dev
+```
+
+After `dev:spa` starts, the terminal prints a **Debug Proxy** URL:
+
+```plaintext
+Debug Proxy: https://app.lobehub.com/_dangerous_local_dev_proxy?debug-host=http%3A%2F%2Flocalhost%3A9876
+```
+
+Open this URL to develop locally against the production backend (app.lobehub.com). The proxy page loads your local Vite dev server's SPA into the online environment, enabling HMR with real server config.
+
 ### Git Workflow
 
-- use rebase for git pull
-- git commit message should prefix with gitmoji
-- git branch name format template: <type>/<feature-name>
-- use .github/PULL_REQUEST_TEMPLATE.md to generate pull request description
-- PR titles starting with `✨ feat/` or `🐛 fix` will trigger the release workflow upon merge. Only use these prefixes for significant user-facing feature changes or bug fixes
+- **Branch strategy**: `canary` is the development branch (cloud production); `main` is the release branch (periodically cherry-picks from canary)
+- New branches should be created from `canary`; PRs should target `canary`
+- Use rebase for `git pull`
+- Commit messages: prefix with gitmoji
+- Branch format: `<type>/<feature-name>`
 
 ### Package Management
 
-This repository adopts a monorepo structure.
-
-- Use `pnpm` as the primary package manager for dependency management
-- Use `bun` to run npm scripts
-- Use `bunx` to run executable npm packages
-
-### TypeScript Code Style Guide
-
-see @.cursor/rules/typescript.mdc
+- `pnpm` for dependency management
+- `bun` to run npm scripts
+- `bunx` for executable npm packages
 
 ### Testing
 
-- **Required Rule**: read `@.cursor/rules/testing-guide/testing-guide.mdc` before writing tests
-- **Command**:
-  - web: `bunx vitest run --silent='passed-only' '[file-path-pattern]'`
-  - packages(eg: database): `cd packages/database && bunx vitest run --silent='passed-only' '[file-path-pattern]'`
+```bash
+# Run specific test (NEVER run `bun run test` - takes ~10 minutes)
+bunx vitest run --silent='passed-only' '[file-path]'
 
-**Important**:
+# Database package
+cd packages/database && bunx vitest run --silent='passed-only' '[file]'
+```
 
-- wrap the file path in single quotes to avoid shell expansion
-- Never run `bun run test` etc to run tests, this will run all tests and cost about 10mins
-- If trying to fix the same test twice, but still failed, stop and ask for help.
-- **Prefer `vi.spyOn` over `vi.mock`**: When mocking modules or functions, prefer using `vi.spyOn` to mock specific functions rather than `vi.mock` to mock entire modules. This approach is more targeted, easier to maintain, and allows for better control over mock behavior in individual tests.
-- **Tests must pass type check**: After writing or modifying tests, run `bun run type-check` to ensure there are no type errors. Tests should pass both runtime execution and TypeScript type checking.
-
-### Typecheck
-
-- use `bun run type-check` to check type errors.
+- Prefer `vi.spyOn` over `vi.mock`
+- Tests must pass type check: `bun run type-check`
+- After 2 failed fix attempts, stop and ask for help
 
 ### i18n
 
-- **Keys**: Add to `src/locales/default/namespace.ts`
-- **Dev**: Translate `locales/zh-CN/namespace.json` and `locales/en-US/namespace.json` locales file only for dev preview
-- DON'T run `pnpm i18n`, let CI auto handle it
+- Add keys to `src/locales/default/namespace.ts`
+- For dev preview: translate `locales/zh-CN/` and `locales/en-US/`
+- Don't run `pnpm i18n` - CI handles it
 
-## Linear Issue Management (ignore if not installed linear mcp)
+## Skills (Auto-loaded by Claude)
 
-When working with Linear issues:
-
-1. **Retrieve issue details** before starting work using `mcp__linear-server__get_issue`
-2. **Check for sub-issues**: If the issue has sub-issues, retrieve and review ALL sub-issues using `mcp__linear-server__list_issues` with `parentId` filter before starting work
-3. **Update issue status** when completing tasks using `mcp__linear-server__update_issue`
-4. **MUST add completion comment** using `mcp__linear-server__create_comment`
-
-### Creating Issues
-
-When creating new Linear issues using `mcp__linear-server__create_issue`, **MUST add the `claude code` label** to indicate the issue was created by Claude Code.
-
-### Completion Comment (REQUIRED)
-
-**Every time you complete an issue, you MUST add a comment summarizing the work done.** This is critical for:
-
-- Team visibility and knowledge sharing
-- Code review context
-- Future reference and debugging
-
-### IMPORTANT: Per-Issue Completion Rule
-
-**When working on multiple issues (e.g., parent issue with sub-issues), you MUST update status and add comment for EACH issue IMMEDIATELY after completing it.** Do NOT wait until all issues are done to update them in batch.
-
-**Workflow for EACH individual issue:**
-
-1. Complete the implementation for this specific issue
-2. Run type check: `bun run type-check`
-3. Run related tests if applicable
-4. Create PR if needed
-5. **IMMEDIATELY** update issue status to **"In Review"** (NOT "Done"): `mcp__linear-server__update_issue`
-6. **IMMEDIATELY** add completion comment: `mcp__linear-server__create_comment`
-7. Only then move on to the next issue
-
-**Note:** Issue status should be set to **"In Review"** when PR is created. The status will be updated to **"Done"** only after the PR is merged (usually handled by Linear-GitHub integration or manually).
-
-**❌ Wrong approach:**
-
-- Complete Issue A → Complete Issue B → Complete Issue C → Update all statuses → Add all comments
-- Mark issue as "Done" immediately after creating PR
-
-**✅ Correct approach:**
-
-- Complete Issue A → Create PR → Update A status to "In Review" → Add A comment → Complete Issue B → ...
-
-## Rules Index
-
-Some useful project rules are listed in @.cursor/rules/rules-index.mdc
+Claude Code automatically loads relevant skills from `.agents/skills/`.

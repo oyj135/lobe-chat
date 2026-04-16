@@ -9,7 +9,8 @@ import { type FileItem } from '@/database/schemas';
 import { appEnv } from '@/envs/app';
 import { TempFileManager } from '@/server/utils/tempFileManager';
 
-import { type FileServiceImpl, createFileServiceModule } from './impls';
+import { createFileServiceModule } from './impls';
+import { type FileServiceImpl } from './impls/type';
 
 /**
  * File service class
@@ -19,11 +20,12 @@ export class FileService {
   private userId: string;
   private fileModel: FileModel;
 
-  private impl: FileServiceImpl = createFileServiceModule();
+  private impl: FileServiceImpl;
 
   constructor(db: LobeChatDatabase, userId: string) {
     this.userId = userId;
     this.fileModel = new FileModel(db, userId);
+    this.impl = createFileServiceModule(db);
   }
 
   /**
@@ -95,15 +97,26 @@ export class FileService {
   /**
    * Extract key from full URL
    */
-  public getKeyFromFullUrl(url: string): string {
+  public async getKeyFromFullUrl(url: string): Promise<string | null> {
     return this.impl.getKeyFromFullUrl(url);
   }
 
   /**
-   * Upload media file
+   * Upload media file (images only)
    */
   public async uploadMedia(key: string, buffer: Buffer): Promise<{ key: string }> {
     return this.impl.uploadMedia(key, buffer);
+  }
+
+  /**
+   * Upload buffer with specified content type (for any file type)
+   */
+  public async uploadBuffer(
+    key: string,
+    buffer: Buffer,
+    contentType: string,
+  ): Promise<{ key: string }> {
+    return this.impl.uploadBuffer(key, buffer, contentType);
   }
 
   /**
@@ -118,6 +131,7 @@ export class FileService {
     fileHash: string;
     fileType: string;
     id?: string;
+    metadata?: Record<string, unknown>;
     name: string;
     size: number;
     url: string;
@@ -132,6 +146,7 @@ export class FileService {
         fileHash: params.fileHash,
         fileType: params.fileType,
         id: params.id, // Use custom ID if provided
+        metadata: params.metadata,
         name: params.name,
         size: params.size,
         url: params.url,
@@ -144,6 +159,77 @@ export class FileService {
       fileId: id,
       url: `${appEnv.APP_URL}/f/${id}`,
     };
+  }
+
+  /**
+   * Delete user file record but keep globalFiles record
+   * Used for GitHub skill imports where we only need globalFiles for foreign key
+   *
+   * @param fileId - File ID to delete from user's files table
+   */
+  public async deleteUserFileRecord(fileId: string): Promise<void> {
+    await this.fileModel.delete(fileId, false); // false = don't remove globalFiles
+  }
+
+  /**
+   * Create global file record only (no user file record)
+   * Used for skill resources that should not appear in user's file list
+   *
+   * @param params - File parameters
+   * @returns fileHash for reference
+   */
+  public async createGlobalFile(params: {
+    fileHash: string;
+    fileType: string;
+    metadata?: { dirname: string; filename: string; path: string };
+    size: number;
+    url: string;
+  }): Promise<{ fileHash: string }> {
+    // Check if hash already exists
+    const existing = await this.fileModel.checkHash(params.fileHash);
+
+    if (!existing.isExist) {
+      // Create new record
+      await this.fileModel.createGlobalFile({
+        creator: this.userId,
+        fileType: params.fileType,
+        hashId: params.fileHash,
+        metadata: params.metadata,
+        size: params.size,
+        url: params.url,
+      });
+    } else if (existing.url !== params.url) {
+      // Hash exists but URL changed (file re-uploaded to different S3 path) — update URL
+      await this.fileModel.updateGlobalFile(params.fileHash, {
+        metadata: params.metadata,
+        url: params.url,
+      });
+    }
+
+    return { fileHash: params.fileHash };
+  }
+
+  /**
+   * Get file content by hash from globalFiles
+   * Used for reading skill resources stored in globalFiles only
+   *
+   * @param fileHash - File hash (globalFiles.hashId)
+   * @returns File content as string
+   */
+  public async getFileContentByHash(fileHash: string): Promise<string> {
+    const result = await this.fileModel.checkHash(fileHash);
+    if (!result.isExist || !result.url) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Global file not found: ${fileHash}` });
+    }
+    return this.getFileContent(result.url);
+  }
+
+  public async getFileByteArrayByHash(fileHash: string): Promise<Uint8Array> {
+    const result = await this.fileModel.checkHash(fileHash);
+    if (!result.isExist || !result.url) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Global file not found: ${fileHash}` });
+    }
+    return this.getFileByteArray(result.url);
   }
 
   /**
@@ -195,6 +281,100 @@ export class FileService {
       name,
       size,
       url: key, // Store original key (S3 key or desktop://)
+    });
+
+    return { fileId: createdId, key, url };
+  }
+
+  /**
+   * Upload a buffer to S3 and create database record.
+   * Used by the bot platform to upload media directly without data URL roundtrip.
+   */
+  public async uploadFromBuffer(
+    buffer: Buffer,
+    mimeType: string,
+    pathname: string,
+  ): Promise<{ fileId: string; key: string; url: string }> {
+    // Use uploadBuffer with explicit contentType so S3 Content-Type matches
+    // the actual bytes (e.g. PNG buffer won't get image/jpeg from .jpg pathname)
+    const { key } = await this.uploadBuffer(pathname, buffer, mimeType);
+
+    const name = pathname.split('/').pop() || 'unknown';
+    const size = buffer.length;
+    const hash = sha256(buffer);
+    const fileId = uuid();
+
+    // Derive dirname from pathname for metadata compatibility with UI upload path.
+    // UI stores { date, dirname, filename, path } in globalFiles.metadata;
+    // checkFileHash returns this metadata for dedup — bot records must match.
+    const parts = pathname.split('/');
+    const filename = parts.pop() || name;
+    const dirname = parts.join('/');
+
+    const { fileId: createdId, url } = await this.createFileRecord({
+      fileHash: hash,
+      fileType: mimeType,
+      id: fileId,
+      metadata: { date: new Date().toISOString().slice(0, 10), dirname, filename, path: pathname },
+      name,
+      size,
+      url: key,
+    });
+
+    return { fileId: createdId, key, url };
+  }
+
+  /**
+   * Download file from external URL, upload to S3, and create database record
+   * @param externalUrl - External file URL to download (e.g., Discord CDN)
+   * @param pathname - File storage path in S3 (must include file extension)
+   * @returns Contains key (storage path), fileId (database record ID) and url (proxy access path)
+   */
+  public async uploadFromUrl(
+    externalUrl: string,
+    pathname: string,
+  ): Promise<{ fileId: string; key: string; url: string }> {
+    const response = await fetch(externalUrl);
+
+    if (!response.ok) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `Failed to download file from URL: ${response.status} ${response.statusText}`,
+      });
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    // Upload to storage (S3 or local)
+    const { key } = await this.uploadMedia(pathname, buffer);
+
+    // Extract filename from pathname
+    const name = pathname.split('/').pop() || 'unknown';
+
+    // Calculate file metadata
+    const size = buffer.length;
+    let fileType = response.headers.get('content-type') || '';
+    if (!fileType || fileType === 'application/octet-stream') {
+      try {
+        fileType = inferContentTypeFromImageUrl(pathname);
+      } catch {
+        // inferContentTypeFromImageUrl throws for non-image extensions — fall back
+        fileType = fileType || 'application/octet-stream';
+      }
+    }
+    const hash = sha256(buffer);
+
+    // Generate UUID for cleaner URLs
+    const fileId = uuid();
+
+    // Use common method to create file record
+    const { fileId: createdId, url } = await this.createFileRecord({
+      fileHash: hash,
+      fileType,
+      id: fileId,
+      name,
+      size,
+      url: key,
     });
 
     return { fileId: createdId, key, url };

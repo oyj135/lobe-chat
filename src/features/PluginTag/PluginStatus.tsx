@@ -36,11 +36,11 @@ const PluginStatus = memo<PluginStatusProps>(({ title, id, deprecated }) => {
         return (
           <ActionIcon
             icon={LucideRotateCw}
+            size={'small'}
+            title={t('retry')}
             onClick={() => {
               reinstallCustomPlugin(id);
             }}
-            size={'small'}
-            title={t('retry')}
           />
         );
       }
@@ -53,12 +53,12 @@ const PluginStatus = memo<PluginStatusProps>(({ title, id, deprecated }) => {
   }, [status]);
 
   const tag =
-    // 拒绝标签
+    // Deprecated tag
     deprecated ? (
       <Tag color={'red'} style={{ marginRight: 0 }} variant={'filled'}>
         {t('list.item.deprecated.title', { ns: 'plugin' })}
       </Tag>
-    ) : // 自定义标签
+    ) : // Custom tag
     isCustom ? (
       <Tag color={'gold'} variant={'filled'}>
         {t('list.item.local.title', { ns: 'plugin' })}
@@ -66,8 +66,8 @@ const PluginStatus = memo<PluginStatusProps>(({ title, id, deprecated }) => {
     ) : null;
 
   return (
-    <Flexbox gap={12} horizontal justify={'space-between'}>
-      <Flexbox align={'center'} gap={8} horizontal>
+    <Flexbox horizontal gap={12} justify={'space-between'}>
+      <Flexbox horizontal align={'center'} gap={8}>
         {title || id}
         {tag}
       </Flexbox>
@@ -75,24 +75,24 @@ const PluginStatus = memo<PluginStatusProps>(({ title, id, deprecated }) => {
       {deprecated ? (
         <ActionIcon
           icon={LucideTrash2}
+          size={'small'}
+          title={t('plugin.clearDeprecated', { ns: 'setting' })}
           onClick={(e) => {
             e.stopPropagation();
             removePlugin(id);
           }}
-          size={'small'}
-          title={t('plugin.clearDeprecated', { ns: 'setting' })}
         />
       ) : (
-        <Flexbox align={'center'} horizontal>
+        <Flexbox horizontal align={'center'}>
           {isCustom ? (
             <ActionIcon
               icon={RotateCwIcon}
+              size={'small'}
+              title={t('dev.meta.manifest.refresh', { ns: 'plugin' })}
               onClick={(e) => {
                 e.stopPropagation();
                 reinstallCustomPlugin(id);
               }}
-              size={'small'}
-              title={t('dev.meta.manifest.refresh', { ns: 'plugin' })}
             />
           ) : null}
           <ManifestPreviewer manifest={manifest || {}} trigger={'hover'}>

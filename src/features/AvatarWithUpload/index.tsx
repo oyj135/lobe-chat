@@ -9,7 +9,8 @@ import { useUserStore } from '@/store/user';
 import { imageToBase64 } from '@/utils/imageToBase64';
 import { createUploadImageHandler } from '@/utils/uploadFIle';
 
-import UserAvatar, { type UserAvatarProps } from '../User/UserAvatar';
+import { type UserAvatarProps } from '../User/UserAvatar';
+import UserAvatar from '../User/UserAvatar';
 
 interface AvatarWithUploadProps extends UserAvatarProps {
   compressSize?: number;
@@ -24,20 +25,20 @@ const AvatarWithUpload = memo<AvatarWithUploadProps>(
       createUploadImageHandler(async (avatar) => {
         try {
           setUploading(true);
-          // 准备图像
+          // Prepare image
           const img = new Image();
           img.src = avatar;
 
-          // 使用 Promise 等待图片加载
+          // Use Promise to wait for image load
           await new Promise((resolve, reject) => {
             img.addEventListener('load', resolve);
             img.addEventListener('error', reject);
           });
 
-          // 压缩图像
+          // Compress image
           const webpBase64 = imageToBase64({ img, size: compressSize });
 
-          // 上传头像
+          // Upload avatar
           await updateAvatar(webpBase64);
 
           setUploading(false);
@@ -57,7 +58,7 @@ const AvatarWithUpload = memo<AvatarWithUploadProps>(
     return (
       <Spin indicator={<LoadingOutlined spin />} spinning={uploading}>
         <Upload beforeUpload={handleUploadAvatar} itemRender={() => void 0} maxCount={1}>
-          <UserAvatar clickable size={size} {...rest} />
+          <UserAvatar clickable size={size} {...(rest as any)} />
         </Upload>
       </Spin>
     );

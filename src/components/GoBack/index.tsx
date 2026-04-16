@@ -1,9 +1,9 @@
 import { Flexbox, Icon } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { ArrowLeft } from 'lucide-react';
-import Link from 'next/link';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 
 const styles = createStaticStyles(({ css }) => {
   return {
@@ -31,8 +31,8 @@ const GoBack = memo<GoBackProps>(({ href }) => {
   const { t } = useTranslation('components');
 
   return (
-    <Link href={href}>
-      <Flexbox align={'center'} className={styles.container} gap={4} horizontal>
+    <Link to={href}>
+      <Flexbox horizontal align={'center'} className={styles.container} gap={4}>
         <Icon icon={ArrowLeft} />
         <div>{t('GoBack.back')}</div>
       </Flexbox>

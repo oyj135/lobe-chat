@@ -1,18 +1,31 @@
-import { ModelTokensUsage, ModelUsage } from '@lobechat/types';
+import type { ModelTokensUsage, ModelUsage } from '@lobechat/types';
 import debug from 'debug';
-import { Pricing } from 'model-bank';
-import OpenAI from 'openai';
+import type { Pricing } from 'model-bank';
+import type OpenAI from 'openai';
 
-import { ChatPayloadForTransformStream } from '../streams/protocol';
+import type { ChatPayloadForTransformStream } from '../streams/protocol';
 import { withUsageCost } from './utils/withUsageCost';
 
 const log = debug('lobe-cost:convertOpenAIUsage');
+
+// Keep the reference implementation's behavior of filtering out zero/falsy values,
+// except for inputCacheMissTokens where 0 is semantically meaningful for fully cached prompts.
+// `!!value` would filter out 0, which is often desired for token counts.
+const shouldKeepUsageValue = (key: string, value: unknown) => {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== 'number') return Boolean(value);
+  if (!Number.isFinite(value)) return false;
+
+  if (value !== 0) return true;
+
+  return key === 'inputCacheMissTokens';
+};
 
 export const convertOpenAIUsage = (
   usage: OpenAI.Completions.CompletionUsage,
   payload?: ChatPayloadForTransformStream,
 ): ModelUsage => {
-  // 目前只有 pplx 才有 citation_tokens
+  // Currently only pplx has citation_tokens
   const inputTextTokens = usage.prompt_tokens || 0;
   const inputCitationTokens = (usage as any).citation_tokens || 0;
   const totalInputTokens = inputCitationTokens + inputTextTokens;
@@ -21,14 +34,15 @@ export const convertOpenAIUsage = (
     (usage as any).prompt_cache_hit_tokens || usage.prompt_tokens_details?.cached_tokens;
 
   const inputCacheMissTokens =
-    (usage as any).prompt_cache_miss_tokens || totalInputTokens - cachedTokens;
+    (usage as any).prompt_cache_miss_tokens ??
+    (typeof cachedTokens === 'number' ? totalInputTokens - cachedTokens : undefined);
 
   const totalOutputTokens = usage.completion_tokens;
   const outputReasoning = usage.completion_tokens_details?.reasoning_tokens || 0;
   const outputAudioTokens = usage.completion_tokens_details?.audio_tokens || 0;
   const outputImageTokens = (usage.completion_tokens_details as any)?.image_tokens || 0;
 
-  // XAI 的 completion_tokens 不包含 reasoning_tokens，需要特殊处理
+  // XAI's completion_tokens does not include reasoning_tokens, requires special handling
   const outputTextTokens =
     payload?.provider === 'xai'
       ? totalOutputTokens - outputAudioTokens
@@ -41,14 +55,14 @@ export const convertOpenAIUsage = (
   const data = {
     acceptedPredictionTokens: usage.completion_tokens_details?.accepted_prediction_tokens,
     inputAudioTokens: usage.prompt_tokens_details?.audio_tokens,
-    inputCacheMissTokens: inputCacheMissTokens,
+    inputCacheMissTokens,
     inputCachedTokens: cachedTokens,
-    inputCitationTokens: inputCitationTokens,
-    inputTextTokens: inputTextTokens,
-    outputAudioTokens: outputAudioTokens,
-    outputImageTokens: outputImageTokens,
+    inputCitationTokens,
+    inputTextTokens,
+    outputAudioTokens,
+    outputImageTokens,
     outputReasoningTokens: outputReasoning,
-    outputTextTokens: outputTextTokens,
+    outputTextTokens,
     rejectedPredictionTokens: usage.completion_tokens_details?.rejected_prediction_tokens,
     totalInputTokens,
     totalOutputTokens: totalOutputTokensNormalized,
@@ -58,7 +72,7 @@ export const convertOpenAIUsage = (
   const finalData = {};
 
   Object.entries(data).forEach(([key, value]) => {
-    if (!!value) {
+    if (shouldKeepUsageValue(key, value)) {
       // @ts-ignore
       finalData[key] = value;
     }
@@ -98,32 +112,24 @@ export const convertOpenAIResponseUsage = (
     // and potentially filtered out later.
     acceptedPredictionTokens: undefined, // Not in ResponseUsage
     inputAudioTokens: undefined, // Not in ResponseUsage
-    inputCacheMissTokens: inputCacheMissTokens,
-    inputCachedTokens: inputCachedTokens,
+    inputCacheMissTokens,
+    inputCachedTokens,
     inputCitationTokens: undefined, // Not in ResponseUsage
-    inputTextTokens: inputTextTokens,
+    inputTextTokens,
     outputAudioTokens: undefined, // Not in ResponseUsage
-    outputImageTokens: outputImageTokens,
-    outputReasoningTokens: outputReasoningTokens,
-    outputTextTokens: outputTextTokens,
+    outputImageTokens,
+    outputReasoningTokens,
+    outputTextTokens,
     rejectedPredictionTokens: undefined, // Not in ResponseUsage
-    totalInputTokens: totalInputTokens,
-    totalOutputTokens: totalOutputTokens,
+    totalInputTokens,
+    totalOutputTokens,
     totalTokens: overallTotalTokens,
   } satisfies ModelTokensUsage; // This helps ensure all keys of ModelTokensUsage are considered
 
-  // 4. Filter out zero/falsy values, as done in the reference implementation
+  // 4. Filter out zero/falsy values using the shared retention rules above.
   const finalData: Partial<ModelUsage> = {}; // Use Partial for type safety during construction
   Object.entries(data).forEach(([key, value]) => {
-    if (
-      value !== undefined &&
-      value !== null &&
-      (typeof value !== 'number' || value !== 0) && // A more explicit check than `!!value` if we want to be very specific about
-      // keeping non-numeric truthy values, but the reference uses `!!value`.
-      // `!!value` will filter out 0, which is often desired for token counts.
-      // Let's stick to the reference's behavior:
-      !!value
-    ) {
+    if (shouldKeepUsageValue(key, value)) {
       // @ts-ignore - We are building an object that will conform to ModelTokensUsage
       // by selectively adding properties.
       finalData[key as keyof ModelUsage] = value as number;

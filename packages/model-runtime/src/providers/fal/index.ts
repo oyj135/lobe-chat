@@ -1,12 +1,12 @@
 import { fal } from '@fal-ai/client';
 import debug from 'debug';
 import { pick } from 'es-toolkit/compat';
-import { RuntimeImageGenParamsValue } from 'model-bank';
-import { ClientOptions } from 'openai';
+import type { RuntimeImageGenParamsValue } from 'model-bank';
+import type { ClientOptions } from 'openai';
 
-import { LobeRuntimeAI } from '../../core/BaseAI';
+import type { LobeRuntimeAI } from '../../core/BaseAI';
 import { AgentRuntimeErrorType } from '../../types/error';
-import { CreateImagePayload, CreateImageResponse } from '../../types/image';
+import type { CreateImagePayload, CreateImageResponse } from '../../types/image';
 import { AgentRuntimeError } from '../../utils/createError';
 
 // Create debug logger
@@ -71,7 +71,9 @@ export class LobeFalAI implements LobeRuntimeAI {
     // Ensure model has fal-ai/ prefix
     let endpoint = model.startsWith('fal-ai/') ? model : `fal-ai/${model}`;
     const hasImageUrls = (params.imageUrls?.length ?? 0) > 0;
-    if (['fal-ai/bytedance/seedream/v4', 'fal-ai/hunyuan-image/v3'].includes(endpoint)) {
+    if (
+      ['fal-ai/bytedance/seedream/v', 'fal-ai/hunyuan-image/v'].some((m) => endpoint.startsWith(m))
+    ) {
       endpoint += hasImageUrls ? '/edit' : '/text-to-image';
     } else if (endpoint === 'fal-ai/nano-banana' && hasImageUrls) {
       endpoint += '/edit';
@@ -99,6 +101,22 @@ export class LobeFalAI implements LobeRuntimeAI {
         throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey, {
           error,
         });
+      }
+
+      // 422 ValidationError with content_policy_violation — show a clean message
+      if (error instanceof Error && 'status' in error && error.status === 422) {
+        const body = 'body' in error ? (error as any).body : undefined;
+        const hasContentPolicyViolation =
+          Array.isArray(body?.detail) &&
+          body.detail.some((d: any) => d.type === 'content_policy_violation');
+
+        if (hasContentPolicyViolation) {
+          throw AgentRuntimeError.createError(AgentRuntimeErrorType.ProviderBizError, {
+            error,
+            message:
+              'The request content violates content policy. Please modify your prompt and try again.',
+          });
+        }
       }
 
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.ProviderBizError, { error });

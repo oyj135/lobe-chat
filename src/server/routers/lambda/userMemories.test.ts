@@ -1,8 +1,9 @@
 // @vitest-environment node
-import { LayersEnum } from '@lobechat/types';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LayersEnum, TypesEnum } from '@lobechat/types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getServerDB } from '@/database/core/db-adaptor';
+import type * as UserMemoryModule from '@/database/models/userMemory';
 import { UserMemoryModel } from '@/database/models/userMemory';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
@@ -23,17 +24,28 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
 }));
 
 vi.mock('@/database/models/userMemory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/database/models/userMemory')>();
+  const actual = await importOriginal<typeof UserMemoryModule>();
   const mockUserMemoryModel: any = vi.fn();
   mockUserMemoryModel.parseDateFromString = actual.UserMemoryModel.parseDateFromString;
+  mockUserMemoryModel.parseAssociatedLocations = actual.UserMemoryModel.parseAssociatedLocations;
+  mockUserMemoryModel.parseAssociatedObjects = actual.UserMemoryModel.parseAssociatedObjects;
+  mockUserMemoryModel.parseAssociatedSubjects = actual.UserMemoryModel.parseAssociatedSubjects;
   return {
     ...actual,
     UserMemoryModel: mockUserMemoryModel,
-  } satisfies typeof import('@/database/models/userMemory');
+  } satisfies typeof UserMemoryModule;
 });
 
 const embeddingsMock = vi.fn();
-const mockCtx = { authorizationHeader: 'Bearer mock-token', userId: 'test-user' };
+const mockCtx = { userId: 'test-user' };
+const makeServerDBMock = (query: Record<string, any> = {}) => ({
+  query: {
+    userSettings: {
+      findFirst: vi.fn().mockResolvedValue({ memory: null }),
+    },
+    ...query,
+  },
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -48,6 +60,10 @@ beforeEach(() => {
   } as any);
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('memoryRouter.reEmbedMemories', () => {
   it('re-embeds memories across tables and returns aggregate stats', async () => {
     const updateUserMemoryVectors = vi.fn().mockResolvedValue(undefined);
@@ -55,6 +71,7 @@ describe('memoryRouter.reEmbedMemories', () => {
     const updatePreferenceVectors = vi.fn().mockResolvedValue(undefined);
     const updateIdentityVectors = vi.fn().mockResolvedValue(undefined);
     const updateExperienceVectors = vi.fn().mockResolvedValue(undefined);
+    const updateActivityVectors = vi.fn().mockResolvedValue(undefined);
 
     vi.mocked(UserMemoryModel).mockImplementation(
       () =>
@@ -62,6 +79,7 @@ describe('memoryRouter.reEmbedMemories', () => {
           updateContextVectors,
           updateExperienceVectors,
           updateIdentityVectors,
+          updateActivityVectors,
           updatePreferenceVectors,
           updateUserMemoryVectors,
         }) as any,
@@ -79,26 +97,30 @@ describe('memoryRouter.reEmbedMemories', () => {
         situation: 'situation text',
       },
     ];
+    const activitiesRows = [
+      { feedback: 'feedback text', id: 'activity-1', narrative: 'narrative text' },
+    ];
 
-    const dbStub = {
-      query: {
-        userMemories: {
-          findMany: vi.fn().mockResolvedValue(userMemoriesRows),
-        },
-        userMemoriesContexts: {
-          findMany: vi.fn().mockResolvedValue(contextsRows),
-        },
-        userMemoriesExperiences: {
-          findMany: vi.fn().mockResolvedValue(experiencesRows),
-        },
-        userMemoriesIdentities: {
-          findMany: vi.fn().mockResolvedValue(identitiesRows),
-        },
-        userMemoriesPreferences: {
-          findMany: vi.fn().mockResolvedValue(preferencesRows),
-        },
+    const dbStub = makeServerDBMock({
+      userMemories: {
+        findMany: vi.fn().mockResolvedValue(userMemoriesRows),
       },
-    } as const;
+      userMemoriesContexts: {
+        findMany: vi.fn().mockResolvedValue(contextsRows),
+      },
+      userMemoriesExperiences: {
+        findMany: vi.fn().mockResolvedValue(experiencesRows),
+      },
+      userMemoriesIdentities: {
+        findMany: vi.fn().mockResolvedValue(identitiesRows),
+      },
+      userMemoriesPreferences: {
+        findMany: vi.fn().mockResolvedValue(preferencesRows),
+      },
+      userMemoriesActivities: {
+        findMany: vi.fn().mockResolvedValue(activitiesRows),
+      },
+    });
 
     vi.mocked(getServerDB).mockResolvedValue(dbStub as any);
 
@@ -107,12 +129,13 @@ describe('memoryRouter.reEmbedMemories', () => {
     const result = await caller.reEmbedMemories();
 
     expect(result.success).toBe(true);
-    expect(result.aggregate).toEqual({ failed: 0, skipped: 0, succeeded: 5, total: 5 });
+    expect(result.aggregate).toEqual({ failed: 0, skipped: 0, succeeded: 6, total: 6 });
     expect(result.results?.userMemories).toEqual({ failed: 0, skipped: 0, succeeded: 1, total: 1 });
     expect(result.results?.contexts).toEqual({ failed: 0, skipped: 0, succeeded: 1, total: 1 });
     expect(result.results?.preferences).toEqual({ failed: 0, skipped: 0, succeeded: 1, total: 1 });
     expect(result.results?.identities).toEqual({ failed: 0, skipped: 0, succeeded: 1, total: 1 });
     expect(result.results?.experiences).toEqual({ failed: 0, skipped: 0, succeeded: 1, total: 1 });
+    expect(result.results?.activities).toEqual({ failed: 0, skipped: 0, succeeded: 1, total: 1 });
 
     expect(updateUserMemoryVectors).toHaveBeenCalledWith('memory-1', {
       detailsVector1024: [2],
@@ -132,8 +155,16 @@ describe('memoryRouter.reEmbedMemories', () => {
       keyLearningVector: [3],
       situationVector: [1],
     });
+    expect(updateActivityVectors).toHaveBeenCalledWith('activity-1', {
+      feedbackVector: [2],
+      narrativeVector: [1],
+    });
 
-    expect(embeddingsMock).toHaveBeenCalledTimes(5);
+    expect(embeddingsMock).toHaveBeenCalledTimes(6);
+
+    for (const call of embeddingsMock.mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({ user: 'test-user' }));
+    }
   });
 });
 
@@ -153,9 +184,7 @@ describe('userMemories.queryMemories', () => {
         }) as any,
     );
 
-    vi.mocked(getServerDB).mockResolvedValue({
-      query: {},
-    } as any);
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
 
     const caller = userMemoriesRouter.createCaller(mockCtx as any);
 
@@ -201,9 +230,7 @@ describe('userMemories.queryMemories', () => {
         }) as any,
     );
 
-    vi.mocked(getServerDB).mockResolvedValue({
-      query: {},
-    } as any);
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
 
     const caller = userMemoriesRouter.createCaller(mockCtx as any);
 
@@ -226,9 +253,7 @@ describe('userMemories.getMemoryDetail', () => {
         }) as any,
     );
 
-    vi.mocked(getServerDB).mockResolvedValue({
-      query: {},
-    } as any);
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
 
     const caller = userMemoriesRouter.createCaller(mockCtx as any);
 
@@ -254,9 +279,7 @@ describe('userMemories.getMemoryDetail', () => {
         }) as any,
     );
 
-    vi.mocked(getServerDB).mockResolvedValue({
-      query: {},
-    } as any);
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
 
     const caller = userMemoriesRouter.createCaller(mockCtx as any);
 
@@ -271,7 +294,8 @@ describe('userMemories.getMemoryDetail', () => {
 
 describe('userMemories.retrieveMemory', () => {
   it('returns aggregated memory search results', async () => {
-    const searchWithEmbedding = vi.fn().mockResolvedValue({
+    const searchMemory = vi.fn().mockResolvedValue({
+      activities: [],
       contexts: [
         {
           accessedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -309,6 +333,18 @@ describe('userMemories.retrieveMemory', () => {
           userMemoryId: 'mem-2',
         },
       ],
+      identities: [],
+      meta: {
+        appliedFilters: { queries: ['Project Atlas'] },
+        appliedQueries: ['Project Atlas'],
+        layers: {
+          activities: { hasMore: false, returned: 0, total: 0 },
+          contexts: { hasMore: false, returned: 1, total: 1 },
+          experiences: { hasMore: false, returned: 1, total: 1 },
+          identities: { hasMore: false, returned: 0, total: 0 },
+          preferences: { hasMore: false, returned: 1, total: 1 },
+        },
+      },
       preferences: [
         {
           accessedAt: new Date('2024-01-03T00:00:00.000Z'),
@@ -329,27 +365,29 @@ describe('userMemories.retrieveMemory', () => {
     vi.mocked(UserMemoryModel).mockImplementation(
       () =>
         ({
-          searchWithEmbedding,
+          searchMemory,
         }) as any,
     );
 
-    vi.mocked(getServerDB).mockResolvedValue({
-      query: {},
-    } as any);
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
 
     const caller = userMemoriesRouter.createCaller(mockCtx as any);
 
     const result = await caller.searchMemory({
-      query: 'Project Atlas',
-      topK: { contexts: 1, experiences: 1, preferences: 1 },
+      queries: ['Project Atlas'],
+      topK: { activities: 1, contexts: 1, experiences: 1, identities: 1, preferences: 1 },
     });
 
     expect(embeddingsMock).toHaveBeenCalledTimes(1);
-    expect(searchWithEmbedding.mock.calls[0][0]).toBeTypeOf('object');
-    expect(searchWithEmbedding.mock.calls[0][0]).toStrictEqual({
-      embedding: [1],
-      limits: { contexts: 1, experiences: 1, preferences: 1 },
+    expect(embeddingsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ user: 'test-user' }),
+    );
+    expect(searchMemory.mock.calls[0][0]).toStrictEqual({
+      queries: ['Project Atlas'],
+      topK: { activities: 1, contexts: 0, experiences: 0, identities: 1, preferences: 1 },
     });
+    expect(searchMemory.mock.calls[0][1]).toStrictEqual([[1]]);
 
     expect(result.contexts[0]).toMatchObject({
       id: 'ctx-1',
@@ -364,5 +402,276 @@ describe('userMemories.retrieveMemory', () => {
       id: 'pref-1',
       conclusionDirectives: 'Always provide concise weekly status updates for Project Atlas',
     });
+  });
+
+  it('coerces singleton string filters into arrays before searching', async () => {
+    const searchMemory = vi.fn().mockResolvedValue({
+      activities: [],
+      contexts: [],
+      experiences: [],
+      identities: [],
+      meta: {
+        appliedFilters: { layers: ['preference'], queries: ['meal preference tomato eggs tofu'] },
+        appliedQueries: ['meal preference tomato eggs tofu'],
+        layers: {
+          activities: { hasMore: false, returned: 0, total: 0 },
+          contexts: { hasMore: false, returned: 0, total: 0 },
+          experiences: { hasMore: false, returned: 0, total: 0 },
+          identities: { hasMore: false, returned: 0, total: 0 },
+          preferences: { hasMore: false, returned: 0, total: 0 },
+        },
+      },
+      preferences: [],
+    });
+
+    vi.mocked(UserMemoryModel).mockImplementation(
+      () =>
+        ({
+          searchMemory,
+        }) as any,
+    );
+
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
+
+    const caller = userMemoriesRouter.createCaller(mockCtx as any);
+
+    await caller.searchMemory({
+      layers: 'preference' as any,
+      queries: 'meal preference tomato eggs tofu' as any,
+      topK: { preferences: 10 },
+    });
+
+    expect(searchMemory).toHaveBeenCalledWith(
+      {
+        layers: ['preference'],
+        queries: ['meal preference tomato eggs tofu'],
+        topK: {
+          activities: 3,
+          contexts: 0,
+          experiences: 0,
+          identities: 2,
+          preferences: 3,
+        },
+      },
+      [[1]],
+    );
+  });
+
+  it('normalizes timeIntent month selectors into timeRange before querying', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-27T12:00:00.000Z'));
+
+    const searchMemory = vi.fn().mockResolvedValue({
+      activities: [],
+      contexts: [],
+      experiences: [],
+      identities: [],
+      meta: {
+        appliedFilters: {
+          queries: ['Electron ONNX Runtime debugging'],
+          timeRange: {
+            end: new Date('2025-12-31T23:59:59.999Z'),
+            field: 'createdAt',
+            start: new Date('2025-12-01T00:00:00.000Z'),
+          },
+        },
+        appliedQueries: ['Electron ONNX Runtime debugging'],
+        layers: {
+          activities: { hasMore: false, returned: 0, total: 0 },
+          contexts: { hasMore: false, returned: 0, total: 0 },
+          experiences: { hasMore: false, returned: 0, total: 0 },
+          identities: { hasMore: false, returned: 0, total: 0 },
+          preferences: { hasMore: false, returned: 0, total: 0 },
+        },
+      },
+      preferences: [],
+    });
+
+    vi.mocked(UserMemoryModel).mockImplementation(
+      () =>
+        ({
+          searchMemory,
+        }) as any,
+    );
+
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
+
+    const caller = userMemoriesRouter.createCaller(mockCtx as any);
+
+    await caller.searchMemory({
+      queries: ['Electron ONNX Runtime debugging'],
+      timeIntent: { month: 12, selector: 'month', year: 2025 },
+      topK: { activities: 5, contexts: 5, experiences: 5, identities: 3 },
+    });
+
+    expect(searchMemory).toHaveBeenCalledWith(
+      {
+        queries: ['Electron ONNX Runtime debugging'],
+        timeIntent: undefined,
+        timeRange: {
+          end: new Date('2025-12-31T23:59:59.999Z'),
+          field: 'createdAt',
+          start: new Date('2025-12-01T00:00:00.000Z'),
+        },
+        topK: {
+          activities: 3,
+          contexts: 0,
+          experiences: 0,
+          identities: 2,
+          preferences: 3,
+        },
+      },
+      [[1]],
+    );
+  });
+
+  it('ignores any client-provided timeIntent field and always uses createdAt', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-27T12:00:00.000Z'));
+
+    const searchMemory = vi.fn().mockResolvedValue({
+      activities: [],
+      contexts: [],
+      experiences: [],
+      identities: [],
+      meta: {
+        appliedFilters: {
+          queries: ['activities'],
+          timeRange: {
+            end: new Date('2026-01-31T23:59:59.999Z'),
+            field: 'createdAt',
+            start: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        },
+        appliedQueries: ['activities'],
+        layers: {
+          activities: { hasMore: false, returned: 0, total: 0 },
+          contexts: { hasMore: false, returned: 0, total: 0 },
+          experiences: { hasMore: false, returned: 0, total: 0 },
+          identities: { hasMore: false, returned: 0, total: 0 },
+          preferences: { hasMore: false, returned: 0, total: 0 },
+        },
+      },
+      preferences: [],
+    });
+
+    vi.mocked(UserMemoryModel).mockImplementation(
+      () =>
+        ({
+          searchMemory,
+        }) as any,
+    );
+
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
+
+    const caller = userMemoriesRouter.createCaller(mockCtx as any);
+
+    await caller.searchMemory({
+      queries: ['activities'],
+      timeIntent: { field: 'startsAt', month: 1, selector: 'month', year: 2026 } as any,
+      topK: { activities: 10 },
+    });
+
+    expect(searchMemory).toHaveBeenCalledWith(
+      {
+        queries: ['activities'],
+        timeIntent: undefined,
+        timeRange: {
+          end: new Date('2026-01-31T23:59:59.999Z'),
+          field: 'createdAt',
+          start: new Date('2026-01-01T00:00:00.000Z'),
+        },
+        topK: {
+          activities: 3,
+          contexts: 0,
+          experiences: 0,
+          identities: 2,
+          preferences: 3,
+        },
+      },
+      [[1]],
+    );
+  });
+});
+
+describe('userMemories.toolAddActivityMemory', () => {
+  it('creates activity memory with embeddings and normalized fields', async () => {
+    const createActivityMemory = vi.fn().mockResolvedValue({
+      activity: { id: 'activity-1' },
+      memory: { id: 'memory-1' },
+    });
+
+    vi.mocked(UserMemoryModel).mockImplementation(
+      () =>
+        ({
+          createActivityMemory,
+        }) as any,
+    );
+
+    vi.mocked(getServerDB).mockResolvedValue(makeServerDBMock() as any);
+
+    const caller = userMemoriesRouter.createCaller(mockCtx as any);
+
+    const input = {
+      details: 'Discussed roadmap',
+      memoryCategory: 'work',
+      memoryType: TypesEnum.Activity,
+      summary: 'Roadmap sync with Alice',
+      tags: ['meeting'],
+      title: 'Roadmap sync',
+      withActivity: {
+        associatedLocations: [{ name: 'HQ', type: 'place' }],
+        associatedObjects: [{ name: 'Slides', type: 'item' }],
+        associatedSubjects: [{ name: 'Alice', type: 'person' }],
+        endsAt: '2024-05-01T11:00:00Z',
+        feedback: 'Productive',
+        metadata: { source: 'chat' },
+        narrative: 'We reviewed milestones and risks',
+        notes: 'Follow up with action items',
+        startsAt: '2024-05-01T10:00:00Z',
+        status: 'completed',
+        tags: ['product'],
+        timezone: 'UTC',
+        type: 'meeting',
+      },
+    };
+
+    const result = await caller.toolAddActivityMemory(input as any);
+
+    expect(createActivityMemory).toHaveBeenCalledTimes(1);
+    expect(createActivityMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activity: expect.objectContaining({
+          associatedLocations: [{ name: 'HQ', type: 'place' }],
+          associatedObjects: [{ name: 'Slides' }],
+          associatedSubjects: [{ name: 'Alice' }],
+          endsAt: new Date('2024-05-01T11:00:00Z'),
+          feedback: 'Productive',
+          metadata: { source: 'chat' },
+          narrative: 'We reviewed milestones and risks',
+          notes: 'Follow up with action items',
+          startsAt: new Date('2024-05-01T10:00:00Z'),
+          status: 'completed',
+          tags: ['product'],
+          timezone: 'UTC',
+          type: 'meeting',
+        }),
+        memoryLayer: LayersEnum.Activity,
+        memoryType: TypesEnum.Activity,
+        summaryEmbedding: [1],
+      }),
+    );
+
+    expect(result).toEqual({
+      activityId: 'activity-1',
+      memoryId: 'memory-1',
+      message: 'Memory saved successfully',
+      success: true,
+    });
+    expect(embeddingsMock).toHaveBeenCalledTimes(4);
+
+    for (const call of embeddingsMock.mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({ user: 'test-user' }));
+    }
   });
 });

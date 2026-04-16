@@ -1,4 +1,4 @@
-import { AIChatModelCard } from '../types/aiModel';
+import type { AIChatModelCard } from '../types/aiModel';
 
 // https://openrouter.ai/docs/api-reference/list-available-models
 const openrouterChatModels: AIChatModelCard[] = [
@@ -33,12 +33,65 @@ const openrouterChatModels: AIChatModelCard[] = [
   {
     abilities: {
       imageOutput: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 65_536 + 65_536,
+    description:
+      'Gemini 3.1 Flash Image Preview, a.k.a. "Nano Banana 2," is Google’s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines advanced contextual understanding with fast, cost-efficient inference, making complex image generation and iterative edits significantly more accessible.',
+    displayName: 'Nano Banana 2',
+    id: 'google/gemini-3.1-flash-image-preview',
+    maxOutput: 65_536,
+    pricing: {
+      approximatePricePerImage: 0.067,
+      units: [
+        { name: 'imageOutput', rate: 60, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 0.25, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 1.5, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-02-26',
+    settings: {
+      extendParams: ['imageAspectRatio2', 'imageResolution2', 'thinkingLevel4'],
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      imageOutput: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 131_072 + 32_768,
+    description:
+      'Nano Banana Pro is Google’s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and high-fidelity visual synthesis. The model generates context-rich graphics, from infographics and diagrams to cinematic composites, and can incorporate real-time information via Search grounding.',
+    displayName: 'Nano Banana Pro',
+    id: 'google/gemini-3-pro-image-preview',
+    maxOutput: 32_768,
+    pricing: {
+      approximatePricePerImage: 0.134,
+      units: [
+        { name: 'imageOutput', rate: 120, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 12, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2025-11-20',
+    settings: {
+      extendParams: ['imageAspectRatio', 'imageResolution'],
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      imageOutput: true,
       vision: true,
     },
     contextWindowTokens: 32_768 + 8192,
-    description: 'Gemini 2.5 Flash experimental model with image generation support.',
+    description:
+      'Gemini 2.5 Flash Image, a.k.a. "Nano Banana," is now generally available. It is a state of the art image generation model with contextual understanding. It is capable of image generation, edits, and multi-turn conversations.',
     displayName: 'Nano Banana',
-    id: 'google/gemini-2.5-flash-image-preview',
+    id: 'google/gemini-2.5-flash-image',
     maxOutput: 8192,
     pricing: {
       approximatePricePerImage: 0.039,
@@ -48,26 +101,10 @@ const openrouterChatModels: AIChatModelCard[] = [
         { name: 'textOutput', rate: 2.5, strategy: 'fixed', unit: 'millionTokens' },
       ],
     },
-    releasedAt: '2025-08-26',
-    type: 'chat',
-  },
-  {
-    abilities: {
-      functionCall: true,
-      reasoning: true,
+    releasedAt: '2025-10-07',
+    settings: {
+      extendParams: ['imageAspectRatio', 'imageResolution'],
     },
-    contextWindowTokens: 163_840,
-    description:
-      'DeepSeek-V3.1 is a large hybrid reasoning model with 128K context and efficient mode switching, delivering excellent performance and speed for tool use, code generation, and complex reasoning.',
-    displayName: 'DeepSeek V3.1',
-    id: 'deepseek/deepseek-chat-v3.1',
-    pricing: {
-      units: [
-        { name: 'textInput', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
-        { name: 'textOutput', rate: 0.8, strategy: 'fixed', unit: 'millionTokens' },
-      ],
-    },
-    releasedAt: '2025-08-21',
     type: 'chat',
   },
   {
@@ -442,7 +479,8 @@ const openrouterChatModels: AIChatModelCard[] = [
       vision: true,
     },
     contextWindowTokens: 1_047_576,
-    description: 'GPT-4.1 is the flagship model for complex tasks and cross-domain problem solving.',
+    description:
+      'GPT-4.1 is the flagship model for complex tasks and cross-domain problem solving.',
     displayName: 'GPT-4.1',
     id: 'openai/gpt-4.1',
     maxOutput: 32_768,
@@ -523,7 +561,8 @@ const openrouterChatModels: AIChatModelCard[] = [
       reasoning: true,
     },
     contextWindowTokens: 200_000,
-    description: 'o3-mini delivers higher intelligence at the same cost and latency targets as o1-mini.',
+    description:
+      'o3-mini delivers higher intelligence at the same cost and latency targets as o1-mini.',
     displayName: 'o3-mini',
     id: 'openai/o3-mini',
     maxOutput: 100_000,
@@ -1015,23 +1054,6 @@ const openrouterChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
-      vision: true,
-    },
-    contextWindowTokens: 131_072,
-    description:
-      'LLaMA 3.2 is designed for tasks combining vision and text. It excels at image captioning and visual QA, bridging language generation and visual reasoning.',
-    displayName: 'Llama 3.2 90B Vision',
-    id: 'meta-llama/llama-3.2-90b-vision-instruct',
-    pricing: {
-      units: [
-        { name: 'textInput', rate: 0.4, strategy: 'fixed', unit: 'millionTokens' },
-        { name: 'textOutput', rate: 0.4, strategy: 'fixed', unit: 'millionTokens' },
-      ],
-    },
-    type: 'chat',
-  },
-  {
-    abilities: {
       functionCall: true,
     },
     contextWindowTokens: 131_072,
@@ -1060,14 +1082,16 @@ const openrouterChatModels: AIChatModelCard[] = [
   },
   {
     contextWindowTokens: 32_768,
-    description: 'Qwen2 is a new large language model family with stronger understanding and generation.',
+    description:
+      'Qwen2 is a new large language model family with stronger understanding and generation.',
     displayName: 'Qwen2 7B (Free)',
     id: 'qwen/qwen-2-7b-instruct:free',
     type: 'chat',
   },
   {
     contextWindowTokens: 131_072,
-    description: 'LLaMA 3.1 offers multilingual support and is one of the leading generative models.',
+    description:
+      'LLaMA 3.1 offers multilingual support and is one of the leading generative models.',
     displayName: 'Llama 3.1 8B (Free)',
     id: 'meta-llama/llama-3.1-8b-instruct:free',
     type: 'chat',
@@ -1077,20 +1101,6 @@ const openrouterChatModels: AIChatModelCard[] = [
     description: 'Gemma 2 is Google’s lightweight open-source text model family.',
     displayName: 'Gemma 2 9B (Free)',
     id: 'google/gemma-2-9b-it:free',
-    type: 'chat',
-  },
-  {
-    abilities: {
-      functionCall: true,
-      vision: true,
-    },
-    contextWindowTokens: 1_048_576 + 8192,
-    description:
-      'Gemini 2.0 Flash Experimental is Google’s latest experimental multimodal AI model with quality improvements over prior versions, especially in world knowledge, code, and long context.',
-    displayName: 'Gemini 2.0 Flash Experimental (Free)',
-    id: 'google/gemini-2.0-flash-exp:free',
-    maxOutput: 8192,
-    releasedAt: '2024-12-11',
     type: 'chat',
   },
 ];

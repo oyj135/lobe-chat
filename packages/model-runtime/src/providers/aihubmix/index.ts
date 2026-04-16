@@ -3,7 +3,7 @@ import urlJoin from 'url-join';
 
 import { responsesAPIModels } from '../../const/models';
 import { createRouterRuntime } from '../../core/RouterRuntime';
-import { CreateRouterRuntimeOptions } from '../../core/RouterRuntime/createRuntime';
+import type { CreateRouterRuntimeOptions } from '../../core/RouterRuntime/createRuntime';
 import { detectModelProvider, processMultiProviderModelList } from '../../utils/modelParse';
 
 export interface AiHubMixModelCard {
@@ -13,7 +13,7 @@ export interface AiHubMixModelCard {
   owned_by: string;
 }
 
-const baseURL = 'https://aihubmix.com';
+const baseURL = 'https://api.aihubmix.com';
 
 export const params: CreateRouterRuntimeOptions = {
   debug: {

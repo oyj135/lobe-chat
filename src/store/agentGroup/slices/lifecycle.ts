@@ -1,29 +1,33 @@
-import type { NewChatGroup } from '@lobechat/types';
-import { type StateCreator } from 'zustand/vanilla';
+import { type NewChatGroup } from '@lobechat/types';
+import urlJoin from 'url-join';
 
 import { chatGroupService } from '@/services/chatGroup';
-import { type ChatGroupStore } from '@/store/agentGroup/store';
-import { getSessionStoreState } from '@/store/session';
+import { useChatStore } from '@/store/chat';
+import { getHomeStoreState } from '@/store/home';
 
-export interface ChatGroupLifecycleAction {
-  createGroup: (
-    group: Omit<NewChatGroup, 'userId'>,
+import { type ChatGroupStore } from '../store';
+
+type ChatGroupStoreWithSwitchTopic = ChatGroupStore & {
+  switchTopic: (topicId?: string | null) => void;
+};
+
+export class ChatGroupLifecycleAction {
+  readonly #get: () => ChatGroupStoreWithSwitchTopic;
+
+  constructor(_set: unknown, get: () => ChatGroupStoreWithSwitchTopic, _api?: unknown) {
+    // keep signature aligned with StateCreator params: (set, get, api)
+    void _set;
+    void _api;
+
+    this.#get = get;
+  }
+
+  createGroup = async (
+    newGroup: Omit<NewChatGroup, 'userId'>,
     agentIds?: string[],
-    silent?: boolean,
-  ) => Promise<string>;
-}
-
-export const chatGroupLifecycleSlice: StateCreator<
-  ChatGroupStore,
-  [['zustand/devtools', never]],
-  [],
-  ChatGroupLifecycleAction
-> = (_, get) => ({
-  /**
-   * @param silent - if true, do not switch to the new group session
-   */
-  createGroup: async (newGroup, agentIds, silent = false) => {
-    const { switchSession } = getSessionStoreState();
+    silent: any = false,
+  ) => {
+    const { switchToGroup, refreshAgentList } = getHomeStoreState();
 
     const { group } = await chatGroupService.createGroup(newGroup);
 
@@ -37,15 +41,43 @@ export const chatGroupLifecycleSlice: StateCreator<
       });
     }
 
-    get().internal_dispatchChatGroup({ payload: group, type: 'addGroup' });
+    this.#get().internal_dispatchChatGroup({ payload: group, type: 'addGroup' });
 
-    await get().loadGroups();
-    await getSessionStoreState().refreshSessions();
+    // Fetch full group detail to get supervisorAgentId and agents for tools injection
+    await this.#get().internal_fetchGroupDetail(group.id);
+
+    refreshAgentList();
 
     if (!silent) {
-      switchSession(group.id);
+      switchToGroup(group.id);
     }
 
     return group.id;
-  },
-});
+  };
+
+  /**
+   * Switch to a new topic in the group
+   * Clears activeTopicId and navigates to group root
+   */
+  switchToNewTopic = () => {
+    this.#get().switchTopic(undefined);
+  };
+
+  /**
+   * Switch to a topic in the group with proper route handling
+   * @param topicId - Topic ID to switch to, or undefined/null for new topic
+   */
+  switchTopic = (topicId?: string | null) => {
+    const { activeGroupId, router } = this.#get();
+    if (!activeGroupId || !router) return;
+
+    // Update chat store's activeTopicId
+    useChatStore.getState().switchTopic(topicId ?? undefined);
+
+    // Navigate with replace to avoid stale query params
+    router.push(urlJoin('/group', activeGroupId), {
+      query: { topic: topicId ?? null },
+      replace: true,
+    });
+  };
+}

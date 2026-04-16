@@ -1,16 +1,34 @@
 import { z } from 'zod';
 
-import { UIChatMessage } from './message';
-import { OpenAIChatMessage } from './openai/chat';
-import { LobeUniformTool, LobeUniformToolSchema } from './tool';
-import { ChatTopic } from './topic';
-import { IThreadType, ThreadType } from './topic/thread';
+import type { UIChatMessage } from './message';
+import type { MessageMetadata } from './message/common';
+import { ChatToolPayloadSchema, MessageMetadataSchema } from './message/common';
+import type { CreateMessageParams, PageSelection } from './message/ui/params';
+import { PageSelectionSchema } from './message/ui/params';
+import type { OpenAIChatMessage } from './openai/chat';
+import type { LobeUniformTool } from './tool';
+import { LobeUniformToolSchema } from './tool';
+import type { ChatTopic } from './topic';
+import type { ChatThreadType } from './topic/thread';
+import { ThreadType } from './topic/thread';
 
 export interface SendNewMessage {
   content: string;
+  /** Lexical editor JSON state for rich text rendering */
+  editorData?: Record<string, any>;
   // if message has attached with files, then add files to message and the agent
   files?: string[];
+  /** Page selections attached to this message (for Ask AI functionality) */
+  pageSelections?: PageSelection[];
   parentId?: string;
+}
+
+export interface SendPreloadMessage extends Omit<
+  Pick<CreateMessageParams, 'content' | 'metadata' | 'plugin' | 'tool_call_id' | 'tools'>,
+  'metadata'
+> {
+  metadata?: MessageMetadata;
+  role: 'assistant' | 'tool';
 }
 
 /**
@@ -24,7 +42,7 @@ export interface CreateThreadWithMessageParams {
   /** Optional thread title */
   title?: string;
   /** Thread type */
-  type: IThreadType;
+  type: ChatThreadType;
 }
 
 export interface SendMessageServerParams {
@@ -52,9 +70,10 @@ export interface SendMessageServerParams {
     topicMessageIds?: string[];
   };
   newUserMessage: SendNewMessage;
+  preloadMessages?: SendPreloadMessage[];
   sessionId?: string;
   threadId?: string;
-  // if there is activeTopicId，then add topicId to message
+  // if there is activeTopicId, then add topicId to message
   topicId?: string;
 }
 
@@ -63,6 +82,22 @@ export const CreateThreadWithMessageSchema = z.object({
   sourceMessageId: z.string().optional(),
   title: z.string().optional(),
   type: z.enum([ThreadType.Continuation, ThreadType.Standalone, ThreadType.Isolation]),
+});
+
+const SendPreloadMessageSchema = z.object({
+  content: z.string(),
+  metadata: MessageMetadataSchema.optional(),
+  plugin: z
+    .object({
+      apiName: z.string(),
+      arguments: z.string(),
+      identifier: z.string(),
+      type: z.string(),
+    })
+    .optional(),
+  role: z.enum(['assistant', 'tool']),
+  tool_call_id: z.string().optional(),
+  tools: z.array(ChatToolPayloadSchema).optional(),
 });
 
 export const AiSendMessageServerSchema = z.object({
@@ -80,9 +115,12 @@ export const AiSendMessageServerSchema = z.object({
       topicMessageIds: z.array(z.string()).optional(),
     })
     .optional(),
+  preloadMessages: z.array(SendPreloadMessageSchema).optional(),
   newUserMessage: z.object({
     content: z.string(),
+    editorData: z.record(z.unknown()).optional(),
     files: z.array(z.string()).optional(),
+    pageSelections: z.array(PageSelectionSchema).optional(),
     parentId: z.string().optional(),
   }),
   sessionId: z.string().optional(),

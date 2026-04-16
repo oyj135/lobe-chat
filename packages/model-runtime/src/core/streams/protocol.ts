@@ -1,8 +1,8 @@
-import { ChatCitationItem, ModelPerformance, ModelUsage } from '@lobechat/types';
+import type { ChatCitationItem, ModelPerformance, ModelUsage } from '@lobechat/types';
 import type { Pricing } from 'model-bank';
 
 import { parseToolCalls } from '../../helpers';
-import { ChatStreamCallbacks } from '../../types';
+import type { ChatStreamCallbacks } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { safeParseJSON } from '../../utils/safeParseJSON';
 import { nanoid } from '../../utils/uuid';
@@ -19,6 +19,7 @@ export type ChatPayloadForTransformStream = {
  * context in the stream to save temporarily data
  */
 export interface StreamContext {
+  chunkIndex?: number;
   id: string;
   /**
    * As pplx citations is in every chunk, but we only need to return it once
@@ -59,6 +60,11 @@ export interface StreamContext {
     name: string;
   };
   toolIndex?: number;
+  /**
+   * Map of tool information by index for parallel tool calls
+   * Used when multiple tools are called in parallel (e.g., GPT-5.2 parallel search)
+   */
+  tools?: Record<number, { id: string; index: number; name: string }>;
   usage?: ModelUsage;
 }
 
@@ -139,16 +145,26 @@ const chatStreamable = async function* <T>(stream: AsyncIterable<T>) {
 const ERROR_CHUNK_PREFIX = '%FIRST_CHUNK_ERROR%: ';
 
 export function readableFromAsyncIterable<T>(iterable: AsyncIterable<T>) {
-  let it = iterable[Symbol.asyncIterator]();
+  const it = iterable[Symbol.asyncIterator]();
   return new ReadableStream<T>({
     async cancel(reason) {
       await it.return?.(reason);
     },
 
     async pull(controller) {
-      const { done, value } = await it.next();
-      if (done) controller.close();
-      else controller.enqueue(value);
+      try {
+        const { done, value } = await it.next();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (e) {
+        const error = e as Error;
+
+        controller.enqueue(
+          (ERROR_CHUNK_PREFIX +
+            JSON.stringify({ message: error.message, name: error.name, stack: error.stack })) as T,
+        );
+        controller.close();
+      }
     },
   });
 }
@@ -159,16 +175,26 @@ export const convertIterableToStream = <T>(stream: AsyncIterable<T>) => {
 
   // copy from https://github.com/vercel/ai/blob/d3aa5486529e3d1a38b30e3972b4f4c63ea4ae9a/packages/ai/streams/ai-stream.ts#L284
   // and add an error handle
-  let it = iterable[Symbol.asyncIterator]();
+  const it = iterable[Symbol.asyncIterator]();
 
   return new ReadableStream<T>({
     async cancel(reason) {
       await it.return?.(reason);
     },
     async pull(controller) {
-      const { done, value } = await it.next();
-      if (done) controller.close();
-      else controller.enqueue(value);
+      try {
+        const { done, value } = await it.next();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (e) {
+        const error = e as Error;
+
+        controller.enqueue(
+          (ERROR_CHUNK_PREFIX +
+            JSON.stringify({ message: error.message, name: error.name, stack: error.stack })) as T,
+        );
+        controller.close();
+      }
     },
 
     async start(controller) {
@@ -241,15 +267,17 @@ export function createCallbacksTransformer(cb: ChatStreamCallbacks | undefined) 
   let speed: ModelPerformance | undefined;
   let grounding: any;
   let toolsCalling: any;
+  let streamError: any;
   // Track base64 images for accumulation
-  let base64Images: Array<{ data: string; id: string }> = [];
+  const base64Images: Array<{ data: string; id: string }> = [];
 
   let currentType = '' as unknown as StreamProtocolChunk['type'];
   const callbacks = cb || {};
 
-  return new TransformStream({
+  return new TransformStream<string, Uint8Array>({
     async flush(): Promise<void> {
       const data = {
+        error: streamError,
         grounding,
         speed,
         text: aggregatedText,
@@ -360,6 +388,13 @@ export function createCallbacksTransformer(cb: ChatStreamCallbacks | undefined) 
             toolsCalling = parseToolCalls(toolsCalling, data);
 
             await callbacks.onToolsCalling?.({ chunk: data, toolsCalling });
+            break;
+          }
+
+          case 'error': {
+            streamError = data;
+            await callbacks.onError?.(data);
+            break;
           }
         }
       }
@@ -397,25 +432,25 @@ export const createFirstErrorHandleTransformer = (
 export const createSSEDataExtractor = () =>
   new TransformStream({
     transform(chunk: Uint8Array, controller) {
-      // 将 Uint8Array 转换为字符串
+      // Convert Uint8Array to string
       const text = new TextDecoder().decode(chunk, { stream: true });
 
-      // 处理多行数据的情况
+      // Handle multi-line data case
       const lines = text.split('\n');
 
       for (const line of lines) {
-        // 只处理以 "data: " 开头的行
+        // Only process lines starting with "data: "
         if (line.startsWith('data: ')) {
-          // 提取 "data: " 后面的实际数据
+          // Extract the actual data after "data: "
           const jsonText = line.slice(6);
 
-          // 跳过心跳消息
+          // Skip heartbeat messages
           if (jsonText === '[DONE]') continue;
 
           try {
-            // 解析 JSON 数据
+            // Parse JSON data
             const data = JSON.parse(jsonText);
-            // 将解析后的数据传递给下一个处理器
+            // Pass parsed data to the next processor
             controller.enqueue(data);
           } catch {
             console.warn('Failed to parse SSE data:', jsonText);
@@ -436,15 +471,26 @@ export const createTokenSpeedCalculator = (
   {
     inputStartAt,
     streamStack,
-    enableStreaming = true, // 选择 TPS 计算方式（非流式时传 false）
+    enableStreaming = true, // Select TPS calculation method (pass false for non-streaming)
   }: { enableStreaming?: boolean; inputStartAt?: number; streamStack?: StreamContext } = {},
 ) => {
   let outputStartAt: number | undefined;
 
   const process = (chunk: StreamProtocolChunk) => {
-    let result = [chunk];
-    // if the chunk is the first text or reasoning chunk, set as output start
-    if (!outputStartAt && (chunk.type === 'text' || chunk.type === 'reasoning')) {
+    const result = [chunk];
+    // Set outputStartAt when receiving the first content chunk (for TTFT calculation)
+    // - text/reasoning: standard text output events
+    // - content_part/reasoning_part: multimodal output events used by Gemini 3+ models
+    //   which emit structured parts instead of plain text events
+    // - tool_calls: function calling output events
+    if (
+      !outputStartAt &&
+      (chunk.type === 'text' ||
+        chunk.type === 'reasoning' ||
+        chunk.type === 'content_part' ||
+        chunk.type === 'reasoning_part' ||
+        chunk.type === 'tool_calls')
+    ) {
       outputStartAt = Date.now();
     }
 

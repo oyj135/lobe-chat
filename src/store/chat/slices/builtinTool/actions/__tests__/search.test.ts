@@ -1,8 +1,8 @@
 import { WebBrowsingApiName, WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
-import { SearchQuery } from '@lobechat/types';
-import { UIChatMessage } from '@lobechat/types';
+import { type SearchQuery, type UIChatMessage } from '@lobechat/types';
 import { act, renderHook } from '@testing-library/react';
-import { Mock, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type Mock } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Import after mocks
 import { useChatStore } from '@/store/chat';
@@ -32,7 +32,6 @@ describe('search actions', () => {
     useChatStore.setState({
       activeAgentId: 'session-id',
       activeTopicId: 'topic-id',
-      searchLoading: {},
       messageOperationMap: {},
       optimisticUpdateMessageContent: vi.fn(),
       optimisticUpdateMessagePluginError: vi.fn(),
@@ -44,7 +43,7 @@ describe('search actions', () => {
       invokeBuiltinTool: vi.fn(),
     });
 
-    // Default mock for dbMessageSelectors - returns undefined to use activeId/activeTopicId
+    // Default mock for dbMessageSelectors - returns undefined to use activeAgentId/activeTopicId
     vi.spyOn(dbMessageSelectors, 'getDbMessageById').mockImplementation(() => () => undefined);
   });
 

@@ -1,16 +1,18 @@
-import type { UIChatMessage } from '@lobechat/types';
+import { type UIChatMessage } from '@lobechat/types';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LOADING_FLAT } from '@/const/message';
 import { mutate } from '@/libs/swr';
 import { chatService } from '@/services/chat';
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
+import { PortalViewType } from '@/store/chat/slices/portal/initialState';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 import { useSessionStore } from '@/store/session';
-import { ChatTopic } from '@/types/topic';
+import { type ChatTopic } from '@/types/topic';
 
 import { useChatStore } from '../../store';
 
@@ -28,6 +30,7 @@ vi.mock('zustand/traditional');
 vi.mock('@/services/topic', () => ({
   topicService: {
     removeTopics: vi.fn(),
+    removeTopicsByAgentId: vi.fn(),
     removeAllTopic: vi.fn(),
     removeTopic: vi.fn(),
     cloneTopic: vi.fn(),
@@ -261,6 +264,196 @@ describe('topic action', () => {
       expect(updateFavoriteSpy).toHaveBeenCalledWith(topicId, { favorite: favState });
       expect(refreshTopicSpy).toHaveBeenCalled();
     });
+
+    // Regression tests for issue #12072
+    it('should handle non-array groups in SWR cache without throwing TypeError', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const topicId = 'topic-id';
+      const favState = true;
+      const activeAgentId = 'test-agent';
+
+      await act(async () => {
+        useChatStore.setState({ activeAgentId });
+      });
+
+      const updateFavoriteSpy = vi
+        .spyOn(topicService, 'updateTopic')
+        .mockResolvedValue(undefined as any);
+
+      // Mock mutate to receive a non-array value (malformed cache)
+      (mutate as Mock).mockImplementation(async (_key, updateFn) => {
+        if (typeof updateFn === 'function') {
+          // Pass non-array values to test defensive checks
+          const testCases = [
+            null,
+            undefined,
+            'string-instead-of-array',
+            { wrongStructure: true },
+            42,
+          ];
+
+          for (const malformedData of testCases) {
+            const result = updateFn(malformedData);
+            // Should return the malformed data as-is without throwing
+            expect(result).toBe(malformedData);
+          }
+        }
+      });
+
+      // Should not throw TypeError when cache has malformed data
+      await act(async () => {
+        await expect(result.current.favoriteTopic(topicId, favState)).resolves.not.toThrow();
+      });
+
+      expect(updateFavoriteSpy).toHaveBeenCalledWith(topicId, { favorite: favState });
+    });
+
+    it('should handle groups with non-array topics field without throwing TypeError', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const topicId = 'topic-id';
+      const favState = true;
+      const activeAgentId = 'test-agent';
+
+      await act(async () => {
+        useChatStore.setState({ activeAgentId });
+      });
+
+      const updateFavoriteSpy = vi
+        .spyOn(topicService, 'updateTopic')
+        .mockResolvedValue(undefined as any);
+
+      // Mock mutate to test groups with malformed topics field
+      (mutate as Mock).mockImplementation(async (_key, updateFn) => {
+        if (typeof updateFn === 'function') {
+          // Test groups where topics is not an array
+          const malformedGroups = [
+            {
+              cronJob: {},
+              cronJobId: 'job-1',
+              topics: null, // topics is null
+            },
+            {
+              cronJob: {},
+              cronJobId: 'job-2',
+              topics: undefined, // topics is undefined
+            },
+            {
+              cronJob: {},
+              cronJobId: 'job-3',
+              topics: 'not-an-array', // topics is a string
+            },
+            {
+              cronJob: {},
+              cronJobId: 'job-4',
+              topics: { id: 'malformed' }, // topics is an object
+            },
+          ];
+
+          const result = updateFn(malformedGroups);
+
+          // When no topic matches, the function returns original groups unchanged
+          // The important thing is it doesn't throw a TypeError on .map()
+          expect(result).toBe(malformedGroups);
+        }
+      });
+
+      // Should not throw TypeError when groups have malformed topics
+      await act(async () => {
+        await expect(result.current.favoriteTopic(topicId, favState)).resolves.not.toThrow();
+      });
+
+      expect(updateFavoriteSpy).toHaveBeenCalledWith(topicId, { favorite: favState });
+    });
+
+    it('should correctly update favorite state in well-formed cache data', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const topicId = 'topic-to-favorite';
+      const favState = true;
+      const activeAgentId = 'test-agent';
+
+      await act(async () => {
+        useChatStore.setState({ activeAgentId });
+      });
+
+      const updateFavoriteSpy = vi
+        .spyOn(topicService, 'updateTopic')
+        .mockResolvedValue(undefined as any);
+
+      // Mock mutate to test correct behavior with well-formed data
+      (mutate as Mock).mockImplementation(async (_key, updateFn) => {
+        if (typeof updateFn === 'function') {
+          const wellFormedGroups = [
+            {
+              cronJob: {},
+              cronJobId: 'job-1',
+              topics: [
+                { id: 'other-topic', favorite: false, title: 'Other' },
+                { id: topicId, favorite: false, title: 'Target' },
+              ],
+            },
+          ];
+
+          const result = updateFn(wellFormedGroups);
+
+          // Should return updated array with favorite state changed
+          expect(Array.isArray(result)).toBe(true);
+          const updatedTopic = result[0].topics.find((t: any) => t.id === topicId);
+          expect(updatedTopic).toBeDefined();
+          expect(updatedTopic.favorite).toBe(favState);
+
+          // Other topics should remain unchanged
+          const otherTopic = result[0].topics.find((t: any) => t.id === 'other-topic');
+          expect(otherTopic.favorite).toBe(false);
+        }
+      });
+
+      await act(async () => {
+        await result.current.favoriteTopic(topicId, favState);
+      });
+
+      expect(updateFavoriteSpy).toHaveBeenCalledWith(topicId, { favorite: favState });
+    });
+
+    it('should return original groups when no updates are needed', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const topicId = 'topic-already-favorited';
+      const favState = true;
+      const activeAgentId = 'test-agent';
+
+      await act(async () => {
+        useChatStore.setState({ activeAgentId });
+      });
+
+      const updateFavoriteSpy = vi
+        .spyOn(topicService, 'updateTopic')
+        .mockResolvedValue(undefined as any);
+
+      // Mock mutate to test no-op scenario
+      (mutate as Mock).mockImplementation(async (_key, updateFn) => {
+        if (typeof updateFn === 'function') {
+          const originalGroups = [
+            {
+              cronJob: {},
+              cronJobId: 'job-1',
+              topics: [
+                { id: topicId, favorite: true, title: 'Already Favorited' }, // Already has the target state
+              ],
+            },
+          ];
+
+          const result = updateFn(originalGroups);
+
+          // Should return the same reference when no updates are made
+          expect(result).toBe(originalGroups);
+        }
+      });
+
+      await act(async () => {
+        await result.current.favoriteTopic(topicId, favState);
+      });
+
+      expect(updateFavoriteSpy).toHaveBeenCalledWith(topicId, { favorite: favState });
+    });
   });
   describe('useFetchTopics', () => {
     it('should fetch topics for a given session id', async () => {
@@ -346,22 +539,6 @@ describe('topic action', () => {
       expect(refreshMessagesSpy).toHaveBeenCalled();
     });
 
-    it('should support boolean as second parameter for backward compatibility', async () => {
-      const topicId = 'topic-id';
-      const { result } = renderHook(() => useChatStore());
-
-      const refreshMessagesSpy = vi.spyOn(result.current, 'refreshMessages');
-
-      // Call with boolean (old API)
-      await act(async () => {
-        await result.current.switchTopic(topicId, true);
-      });
-
-      expect(useChatStore.getState().activeTopicId).toBe(topicId);
-      // Should not call refreshMessages when skipRefreshMessage is true
-      expect(refreshMessagesSpy).not.toHaveBeenCalled();
-    });
-
     it('should support options object as second parameter', async () => {
       const topicId = 'topic-id';
       const { result } = renderHook(() => useChatStore());
@@ -377,7 +554,7 @@ describe('topic action', () => {
       expect(refreshMessagesSpy).not.toHaveBeenCalled();
     });
 
-    it('should clear new key data when switching to new state (main scope)', async () => {
+    it('should clear new key data when switching to null (main scope)', async () => {
       const { result } = renderHook(() => useChatStore());
       const activeAgentId = 'test-agent-id';
       const newKey = messageMapKey({ agentId: activeAgentId, topicId: null });
@@ -393,14 +570,16 @@ describe('topic action', () => {
           messagesMap: {
             [newKey]: [{ id: 'msg-1' }, { id: 'msg-2' }] as any,
           },
+          portalStack: [{ type: PortalViewType.Home }],
+          showPortal: true,
         });
       });
 
       const replaceMessagesSpy = vi.spyOn(result.current, 'replaceMessages');
 
-      // Switch to new state (id = undefined)
+      // Switch to new state (id = null)
       await act(async () => {
-        await result.current.switchTopic(undefined, { skipRefreshMessage: true });
+        await result.current.switchTopic(null, { skipRefreshMessage: true });
       });
 
       // Verify replaceMessages was called to clear the new key
@@ -416,9 +595,11 @@ describe('topic action', () => {
 
       // Verify activeTopicId is now null
       expect(useChatStore.getState().activeTopicId).toBeNull();
+      expect(useChatStore.getState().portalStack).toEqual([]);
+      expect(useChatStore.getState().showPortal).toBe(false);
     });
 
-    it('should clear new key data when switching to new state (group scope)', async () => {
+    it('should clear new key data when switching to null (group scope)', async () => {
       const { result } = renderHook(() => useChatStore());
       const activeAgentId = 'test-agent-id';
       const activeGroupId = 'test-group-id';
@@ -434,9 +615,9 @@ describe('topic action', () => {
 
       const replaceMessagesSpy = vi.spyOn(result.current, 'replaceMessages');
 
-      // Switch to new state
+      // Switch to new state with null
       await act(async () => {
-        await result.current.switchTopic(undefined, { skipRefreshMessage: true });
+        await result.current.switchTopic(null, { skipRefreshMessage: true });
       });
 
       // Verify replaceMessages was called with group scope
@@ -464,15 +645,43 @@ describe('topic action', () => {
 
       const replaceMessagesSpy = vi.spyOn(result.current, 'replaceMessages');
 
-      // Switch to new state with explicit scope
+      // Switch to null with explicit scope
       await act(async () => {
-        await result.current.switchTopic(undefined, { skipRefreshMessage: true, scope: 'group' });
+        await result.current.switchTopic(null, { skipRefreshMessage: true, scope: 'group' });
       });
 
       // Verify replaceMessages was called with explicit scope
       expect(replaceMessagesSpy).toHaveBeenCalledWith([], {
         context: expect.objectContaining({
           scope: 'group',
+        }),
+        action: expect.any(String),
+      });
+    });
+
+    it('should clear new key data when switching with undefined (same as null)', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const activeAgentId = 'test-agent-id';
+
+      await act(async () => {
+        useChatStore.setState({
+          activeAgentId,
+          activeTopicId: 'existing-topic',
+        });
+      });
+
+      const replaceMessagesSpy = vi.spyOn(result.current, 'replaceMessages');
+
+      // Switch with undefined (should clear because id == null matches both null and undefined)
+      await act(async () => {
+        await result.current.switchTopic(undefined, { skipRefreshMessage: true });
+      });
+
+      // replaceMessages SHOULD be called when switching with undefined
+      expect(replaceMessagesSpy).toHaveBeenCalledWith([], {
+        context: expect.objectContaining({
+          agentId: activeAgentId,
+          topicId: null,
         }),
         action: expect.any(String),
       });
@@ -499,6 +708,50 @@ describe('topic action', () => {
       // replaceMessages should not be called when switching to existing topic
       expect(replaceMessagesSpy).not.toHaveBeenCalled();
     });
+
+    it('should clear new key data when clearNewKey option is true (even with existing topic)', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const activeAgentId = 'test-agent-id';
+      const newKey = messageMapKey({ agentId: activeAgentId, topicId: null });
+
+      // Setup initial state with some messages in the new key
+      await act(async () => {
+        useChatStore.setState({
+          activeAgentId,
+          activeTopicId: undefined,
+          dbMessagesMap: {
+            [newKey]: [{ id: 'msg-1' }, { id: 'msg-2' }] as any,
+          },
+          messagesMap: {
+            [newKey]: [{ id: 'msg-1' }, { id: 'msg-2' }] as any,
+          },
+        });
+      });
+
+      const replaceMessagesSpy = vi.spyOn(result.current, 'replaceMessages');
+
+      // Switch to an existing topic with clearNewKey option
+      await act(async () => {
+        await result.current.switchTopic('new-created-topic-id', {
+          clearNewKey: true,
+          skipRefreshMessage: true,
+        });
+      });
+
+      // replaceMessages should be called to clear the new key
+      expect(replaceMessagesSpy).toHaveBeenCalledWith([], {
+        context: {
+          agentId: activeAgentId,
+          groupId: undefined,
+          scope: 'main',
+          topicId: null,
+        },
+        action: expect.any(String),
+      });
+
+      // Verify activeTopicId is set to the new topic
+      expect(useChatStore.getState().activeTopicId).toBe('new-created-topic-id');
+    });
   });
   describe('removeSessionTopics', () => {
     it('should remove all topics from the current session and refresh the topic list', async () => {
@@ -514,7 +767,7 @@ describe('topic action', () => {
         await result.current.removeSessionTopics();
       });
 
-      expect(topicService.removeTopics).toHaveBeenCalledWith(activeAgentId);
+      expect(topicService.removeTopicsByAgentId).toHaveBeenCalledWith(activeAgentId);
       expect(refreshTopicSpy).toHaveBeenCalled();
       expect(switchTopicSpy).toHaveBeenCalled();
     });

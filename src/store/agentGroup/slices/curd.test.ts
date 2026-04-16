@@ -1,8 +1,9 @@
-import { AgentGroupDetail } from '@lobechat/types';
+import { type AgentGroupDetail } from '@lobechat/types';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_CHAT_GROUP_CHAT_CONFIG } from '@/const/settings';
+import type * as SwrModule from '@/libs/swr';
 import { mutate } from '@/libs/swr';
 import { chatGroupService } from '@/services/chatGroup';
 
@@ -16,7 +17,7 @@ vi.mock('@/services/chatGroup', () => ({
 }));
 
 vi.mock('@/libs/swr', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/libs/swr')>();
+  const actual = await importOriginal<typeof SwrModule>();
   return { ...actual, mutate: vi.fn().mockResolvedValue(undefined) };
 });
 
@@ -87,13 +88,13 @@ describe('ChatGroupCurdSlice', () => {
       const { result } = renderHook(() => useAgentGroupStore());
 
       await act(async () => {
-        await result.current.updateGroupConfig({ enableSupervisor: false });
+        await result.current.updateGroupConfig({ allowDM: false });
       });
 
       expect(chatGroupService.updateGroup).toHaveBeenCalledWith('group-1', {
         config: expect.objectContaining({
           ...DEFAULT_CHAT_GROUP_CHAT_CONFIG,
-          enableSupervisor: false,
+          allowDM: false,
         }),
       });
     });
@@ -109,7 +110,7 @@ describe('ChatGroupCurdSlice', () => {
       const { result } = renderHook(() => useAgentGroupStore());
 
       await act(async () => {
-        await result.current.updateGroupConfig({ enableSupervisor: false });
+        await result.current.updateGroupConfig({ allowDM: false });
       });
 
       expect(chatGroupService.updateGroup).not.toHaveBeenCalled();
@@ -121,7 +122,7 @@ describe('ChatGroupCurdSlice', () => {
       const { result } = renderHook(() => useAgentGroupStore());
 
       await act(async () => {
-        await result.current.updateGroupConfig({ scene: 'casual' });
+        await result.current.updateGroupConfig({ revealDM: true });
       });
 
       expect(mutate).toHaveBeenCalledWith(['fetchGroupDetail', 'group-1']);

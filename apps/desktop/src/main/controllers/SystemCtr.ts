@@ -1,14 +1,25 @@
-import { ElectronAppState, ThemeMode } from '@lobechat/electron-client-ipc';
-import { app, dialog, nativeTheme, shell, systemPreferences } from 'electron';
-import { macOS } from 'electron-is';
-import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
+import type { ElectronAppState, ThemeMode } from '@lobechat/electron-client-ipc';
+import { app, dialog, nativeTheme, shell } from 'electron';
+import { macOS } from 'electron-is';
+import { pathExists, readdir } from 'fs-extra';
+
+import { legacyLocalDbDir } from '@/const/dir';
 import { createLogger } from '@/utils/logger';
+import {
+  getAccessibilityStatus,
+  getFullDiskAccessStatus,
+  getMediaAccessStatus,
+  openFullDiskAccessSettings,
+  requestAccessibilityAccess,
+  requestMicrophoneAccess,
+  requestScreenCaptureAccess,
+} from '@/utils/permissions';
 
 import { ControllerModule, IpcMethod } from './index';
-import fullDiskAccessAutoAddScript from './scripts/full-disk-access.applescript?raw';
 
 const logger = createLogger('controllers:SystemCtr');
 
@@ -38,6 +49,8 @@ export default class SystemController extends ControllerModule {
       isLinux: platform === 'linux',
       isMac: platform === 'darwin',
       isWindows: platform === 'win32',
+      locale: this.app.storeManager.get('locale', 'auto'),
+
       platform: platform as 'darwin' | 'win32' | 'linux',
       userPath: {
         // User Paths (ensure keys match UserPathData / DesktopAppState interface)
@@ -55,137 +68,98 @@ export default class SystemController extends ControllerModule {
 
   @IpcMethod()
   requestAccessibilityAccess() {
-    if (!macOS()) return true;
-    return systemPreferences.isTrustedAccessibilityClient(true);
+    return requestAccessibilityAccess();
   }
 
   @IpcMethod()
   getAccessibilityStatus() {
-    if (!macOS()) return true;
-    return systemPreferences.isTrustedAccessibilityClient(false);
+    const status = getAccessibilityStatus();
+    return status === 'granted';
+  }
+
+  @IpcMethod()
+  getFullDiskAccessStatus(): boolean {
+    const status = getFullDiskAccessStatus();
+    return status === 'granted';
+  }
+
+  /**
+   * Prompt the user with a native dialog if Full Disk Access is not granted.
+   *
+   * @param options - Dialog options
+   * @returns 'granted' if already granted, 'opened_settings' if user chose to open settings,
+   *          'skipped' if user chose to skip, 'cancelled' if dialog was cancelled
+   */
+  @IpcMethod()
+  async promptFullDiskAccessIfNotGranted(options?: {
+    message?: string;
+    openSettingsButtonText?: string;
+    skipButtonText?: string;
+    title?: string;
+  }): Promise<'cancelled' | 'granted' | 'opened_settings' | 'skipped'> {
+    // Check if already granted
+    const status = getFullDiskAccessStatus();
+    if (status === 'granted') {
+      logger.info('[FullDiskAccess] Already granted, skipping prompt');
+      return 'granted';
+    }
+
+    if (!macOS()) {
+      logger.info('[FullDiskAccess] Not macOS, returning granted');
+      return 'granted';
+    }
+
+    const mainWindow = this.app.browserManager.getMainWindow()?.browserWindow;
+
+    // Get localized strings
+    const t = this.app.i18n.ns('dialog');
+    const title = options?.title || t('fullDiskAccess.title');
+    const message = options?.message || t('fullDiskAccess.message');
+    const openSettingsButtonText =
+      options?.openSettingsButtonText || t('fullDiskAccess.openSettings');
+    const skipButtonText = options?.skipButtonText || t('fullDiskAccess.skip');
+
+    logger.info('[FullDiskAccess] Showing native prompt dialog');
+
+    const result = await dialog.showMessageBox(mainWindow!, {
+      buttons: [openSettingsButtonText, skipButtonText],
+      cancelId: 1,
+      defaultId: 0,
+      message,
+      title,
+      type: 'info',
+    });
+
+    if (result.response === 0) {
+      // User chose to open settings
+      logger.info('[FullDiskAccess] User chose to open settings');
+      await this.openFullDiskAccessSettings();
+      return 'opened_settings';
+    } else {
+      // User chose to skip or cancelled
+      logger.info('[FullDiskAccess] User chose to skip');
+      return 'skipped';
+    }
   }
 
   @IpcMethod()
   async getMediaAccessStatus(mediaType: 'microphone' | 'screen'): Promise<string> {
-    if (!macOS()) return 'granted';
-    return systemPreferences.getMediaAccessStatus(mediaType);
+    return getMediaAccessStatus(mediaType);
   }
 
   @IpcMethod()
   async requestMicrophoneAccess(): Promise<boolean> {
-    if (!macOS()) return true;
-    return systemPreferences.askForMediaAccess('microphone');
+    return requestMicrophoneAccess();
   }
 
   @IpcMethod()
   async requestScreenAccess(): Promise<boolean> {
-    if (!macOS()) return true;
-
-    // IMPORTANT:
-    // On macOS, the app may NOT appear in "Screen Recording" list until it actually
-    // requests the permission once (TCC needs to register this app).
-    // So we try to proactively request it first, then open System Settings for manual toggle.
-    // 1) Best-effort: try Electron runtime API if available (not typed in Electron 38).
-    try {
-      const status = systemPreferences.getMediaAccessStatus('screen');
-      if (status !== 'granted') {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-        await (systemPreferences as any).askForMediaAccess?.('screen');
-      }
-    } catch (error) {
-      logger.warn('Failed to request screen recording access via systemPreferences', error);
-    }
-
-    // 2) Reliable trigger: run a one-shot getDisplayMedia in renderer to register TCC entry.
-    // This will show the OS capture picker; once the user selects/cancels, we stop tracks immediately.
-    try {
-      const status = systemPreferences.getMediaAccessStatus('screen');
-      if (status !== 'granted') {
-        const mainWindow = this.app.browserManager.getMainWindow()?.browserWindow;
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          const script = `
-(() => {
-  const stop = (stream) => {
-    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-  };
-  return navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
-    .then((stream) => { stop(stream); return true; })
-    .catch(() => false);
-})()
-          `.trim();
-
-          await mainWindow.webContents.executeJavaScript(script, true);
-        }
-      }
-    } catch (error) {
-      logger.warn('Failed to request screen recording access via getDisplayMedia', error);
-    }
-
-    await shell.openExternal(
-      'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
-    );
-
-    return systemPreferences.getMediaAccessStatus('screen') === 'granted';
+    return requestScreenCaptureAccess();
   }
 
   @IpcMethod()
-  openFullDiskAccessSettings(payload?: { autoAdd?: boolean }) {
-    if (!macOS()) return;
-    const { autoAdd = false } = payload || {};
-
-    // NOTE:
-    // - Full Disk Access cannot be requested programmatically like microphone/screen.
-    // - On macOS 13+ (Ventura), System Preferences is replaced by System Settings,
-    //   and deep links may differ. We try multiple known schemes for compatibility.
-    const candidates = [
-      // macOS 13+ (System Settings)
-      'com.apple.settings:Privacy&path=FullDiskAccess',
-      // Older macOS (System Preferences)
-      'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
-    ];
-    if (autoAdd) this.tryAutoAddFullDiskAccess();
-
-    (async () => {
-      for (const url of candidates) {
-        try {
-          await shell.openExternal(url);
-          return;
-        } catch (error) {
-          logger.warn(`Failed to open Full Disk Access settings via ${url}`, error);
-        }
-      }
-    })();
-  }
-
-  /**
-   * Best-effort UI automation to add this app into Full Disk Access list.
-   *
-   * Limitations:
-   * - This uses AppleScript UI scripting (System Events) and may require the user to grant
-   *   additional "Automation" permission (to control System Settings).
-   * - UI structure differs across macOS versions/languages; we fall back silently.
-   */
-  private tryAutoAddFullDiskAccess() {
-    if (!macOS()) return;
-
-    const exePath = app.getPath('exe');
-    // /Applications/App.app/Contents/MacOS/App -> /Applications/App.app
-    const appBundlePath = path.resolve(path.dirname(exePath), '..', '..');
-
-    // Keep the script minimal and resilient; failure should not break onboarding flow.
-    const script = fullDiskAccessAutoAddScript.trim();
-
-    try {
-      const child = spawn('osascript', ['-e', script, appBundlePath], { env: process.env });
-      child.on('error', (error) => {
-        logger.warn('Full Disk Access auto-add (osascript) failed to start', error);
-      });
-      child.on('exit', (code) => {
-        logger.debug('Full Disk Access auto-add (osascript) exited', { code });
-      });
-    } catch (error) {
-      logger.warn('Full Disk Access auto-add failed', error);
-    }
+  async openFullDiskAccessSettings() {
+    return openFullDiskAccessSettings();
   }
 
   @IpcMethod()
@@ -193,14 +167,11 @@ export default class SystemController extends ControllerModule {
     return shell.openExternal(url);
   }
 
-  /**
-   * Open native folder picker dialog
-   */
   @IpcMethod()
   async selectFolder(payload?: {
     defaultPath?: string;
     title?: string;
-  }): Promise<string | undefined> {
+  }): Promise<{ path: string; repoType?: 'git' | 'github' } | undefined> {
     const mainWindow = this.app.browserManager.getMainWindow()?.browserWindow;
 
     const result = await dialog.showOpenDialog(mainWindow!, {
@@ -213,18 +184,21 @@ export default class SystemController extends ControllerModule {
       return undefined;
     }
 
-    return result.filePaths[0];
+    const folderPath = result.filePaths[0];
+    const repoType = await this.detectRepoType(folderPath);
+
+    return { path: folderPath, repoType };
   }
 
-  /**
-   * 更新应用语言设置
-   */
+  @IpcMethod()
+  getSystemLocale(): string {
+    return app.getLocale();
+  }
+
   @IpcMethod()
   async updateLocale(locale: string) {
-    // 保存语言设置
     this.app.storeManager.set('locale', locale);
 
-    // 更新i18n实例的语言
     await this.app.i18n.changeLanguage(locale === 'auto' ? app.getLocale() : locale);
     this.app.browserManager.broadcastToAllWindows('localeChanged', { locale });
 
@@ -235,12 +209,8 @@ export default class SystemController extends ControllerModule {
   async updateThemeModeHandler(themeMode: ThemeMode) {
     this.app.storeManager.set('themeMode', themeMode);
     this.app.browserManager.broadcastToAllWindows('themeChanged', { themeMode });
-
-    // Apply visual effects to all browser windows when theme mode changes
-    this.app.browserManager.handleAppThemeChange();
-    // Set app theme mode to the system theme mode
-
     this.setSystemThemeMode(themeMode);
+    this.app.browserManager.handleAppThemeChange();
   }
 
   @IpcMethod()
@@ -248,14 +218,38 @@ export default class SystemController extends ControllerModule {
     return nativeTheme.themeSource;
   }
 
+  /**
+   * Detect whether user used the legacy local database in older desktop versions.
+   * Legacy path: {app.getPath('userData')}/lobehub-storage/lobehub-local-db
+   */
   @IpcMethod()
-  async setSystemThemeMode(themeMode: ThemeMode) {
-    nativeTheme.themeSource = themeMode === 'auto' ? 'system' : themeMode;
+  async hasLegacyLocalDb(): Promise<boolean> {
+    if (!(await pathExists(legacyLocalDbDir))) return false;
+
+    try {
+      const entries = await readdir(legacyLocalDbDir);
+      return entries.length > 0;
+    } catch {
+      // If directory exists but cannot be read, treat as "used" to surface guidance.
+      return true;
+    }
   }
 
-  /**
-   * Initialize system theme listener to monitor OS theme changes
-   */
+  private async detectRepoType(dirPath: string): Promise<'git' | 'github' | undefined> {
+    const gitConfigPath = path.join(dirPath, '.git', 'config');
+    try {
+      const config = await readFile(gitConfigPath, 'utf8');
+      if (config.includes('github.com')) return 'github';
+      return 'git';
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async setSystemThemeMode(themeMode: ThemeMode) {
+    nativeTheme.themeSource = themeMode;
+  }
+
   private initializeSystemThemeListener() {
     if (this.systemThemeListenerInitialized) {
       logger.debug('System theme listener already initialized');

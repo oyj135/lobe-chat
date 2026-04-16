@@ -1,5 +1,6 @@
-import { AnimatePresence, m as motion } from 'motion/react';
-import { type CSSProperties, type ReactNode, memo } from 'react';
+import { AnimatePresence, m } from 'motion/react';
+import { type CSSProperties, type ReactNode } from 'react';
+import { memo } from 'react';
 
 interface AnimatedCollapsedProps {
   children: ReactNode;
@@ -24,14 +25,14 @@ const AnimatedCollapsed = memo<AnimatedCollapsedProps>(
     return (
       <AnimatePresence initial={false}>
         {open && (
-          <motion.div
+          <m.div
             animate="open"
             exit="collapsed"
             initial="collapsed"
             style={style}
             transition={{
               duration: 0.2,
-              ease: [0.4, 0, 0.2, 1], // 使用 ease-out 缓动函数
+              ease: [0.4, 0, 0.2, 1], // Use ease-out easing function
             }}
             variants={{
               collapsed: {
@@ -49,7 +50,7 @@ const AnimatedCollapsed = memo<AnimatedCollapsedProps>(
             }}
           >
             {children}
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
     );

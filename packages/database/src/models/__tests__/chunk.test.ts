@@ -2,11 +2,12 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { LobeChatDatabase } from '../../type';import { uuid } from '@/utils/uuid';
+import { uuid } from '@/utils/uuid';
 
-import { chunks, embeddings, fileChunks, files, unstructuredChunks, users } from '../../schemas';
-import { ChunkModel } from '../chunk';
 import { getTestDB } from '../../core/getTestDB';
+import { chunks, embeddings, fileChunks, files, unstructuredChunks, users } from '../../schemas';
+import type { LobeChatDatabase } from '../../type';
+import { ChunkModel } from '../chunk';
 import { codeEmbedding, designThinkingQuery, designThinkingQuery2 } from './fixtures/embedding';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -68,17 +69,17 @@ describe('ChunkModel', () => {
       expect(createdChunks[1]).toMatchObject(params[1]);
     });
 
-    // 测试空参数场景
+    // Test empty params scenario
     it('should handle empty params array', async () => {
       const result = await chunkModel.bulkCreate([], '1');
       expect(result).toHaveLength(0);
     });
 
-    // 测试事务回滚
+    // Test transaction rollback
     it('should rollback transaction on error', async () => {
       const invalidParams = [
         { text: 'Chunk 1', userId },
-        { index: 'abc', userId }, // 这会导致错误
+        { index: 'abc', userId }, // This will cause an error
       ] as any;
 
       await expect(chunkModel.bulkCreate(invalidParams, '1')).rejects.toThrow();
@@ -202,7 +203,7 @@ describe('ChunkModel', () => {
       expect(result[1].id).toBe(chunk2.id);
       expect(result[0].similarity).toBeGreaterThan(result[1].similarity);
     });
-    // 补充无文件 ID 的搜索场景
+    // Additional search scenario without file ID
     it('should perform semantic search without fileIds', async () => {
       const [chunk1, chunk2] = await serverDB
         .insert(chunks)
@@ -227,7 +228,7 @@ describe('ChunkModel', () => {
       expect(result).toHaveLength(2);
     });
 
-    // 测试空结果场景
+    // Test empty result scenario
     it('should return empty array when no matches found', async () => {
       const result = await chunkModel.semanticSearch({
         embedding: designThinkingQuery,
@@ -523,7 +524,7 @@ content in Table html is below:
   });
 
   describe('semanticSearchForChat', () => {
-    // 测试空文件 ID 列表场景
+    // Test empty file ID list scenario
     it('should return empty array when fileIds is empty', async () => {
       const result = await chunkModel.semanticSearchForChat({
         embedding: designThinkingQuery,
@@ -534,14 +535,14 @@ content in Table html is below:
       expect(result).toHaveLength(0);
     });
 
-    // 测试结果限制
+    // Test result limit
     it('should limit results to 15 items', async () => {
       const fileId = '1';
       // Create 24 chunks
       const chunkResult = await serverDB
         .insert(chunks)
         .values(
-          Array(24)
+          Array.from({ length: 24 })
             .fill(0)
             .map((_, i) => ({ text: `Test Chunk ${i}`, userId })),
         )

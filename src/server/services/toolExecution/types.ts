@@ -1,8 +1,26 @@
 import { type LobeToolManifest } from '@lobechat/context-engine';
+import { type LobeChatDatabase } from '@lobechat/database';
 import { type ChatToolPayload } from '@lobechat/types';
 
 export interface ToolExecutionContext {
+  /** Target device ID for device proxy tool calls */
+  activeDeviceId?: string;
+  /** Agent ID executing the tool call */
+  agentId?: string;
+  /** Memory tool permission from agent chat config */
+  memoryToolPermission?: 'read-only' | 'read-write';
+  /** Server database for LobeHub Skills execution */
+  serverDB?: LobeChatDatabase;
+  /** Task ID when executing within the Task system */
+  taskId?: string;
   toolManifestMap: Record<string, LobeToolManifest>;
+  /**
+   * Maximum length for tool execution result content (in characters)
+   * @default 6000
+   */
+  toolResultMaxLength?: number;
+  /** Topic ID for sandbox session management */
+  topicId?: string;
   userId?: string;
 }
 
@@ -18,5 +36,8 @@ export interface ToolExecutionResultResponse extends ToolExecutionResult {
 }
 
 export interface IToolExecutor {
-  execute(payload: ChatToolPayload, context: ToolExecutionContext): Promise<ToolExecutionResult>;
+  execute: (
+    payload: ChatToolPayload,
+    context: ToolExecutionContext,
+  ) => Promise<ToolExecutionResult>;
 }

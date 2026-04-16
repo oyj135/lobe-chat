@@ -1,8 +1,9 @@
+import { type UIChatMessage } from '@lobechat/types';
 import { TraceEventType } from '@lobechat/types';
-import type { UIChatMessage } from '@lobechat/types';
 import * as lobeUIModules from '@lobehub/ui';
-import { act, renderHook, waitFor } from '@testing-library/react';
-import { Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mutate } from '@/libs/swr';
 import { messageService } from '@/services/message';
@@ -75,7 +76,7 @@ afterEach(() => {
 
 describe('chatMessage actions', () => {
   describe('addAIMessage', () => {
-    it('should return early if activeId is undefined', async () => {
+    it('should return early if activeAgentId is undefined', async () => {
       useChatStore.setState({ activeAgentId: undefined });
       const { result } = renderHook(() => useChatStore());
       const updateMessageInputSpy = vi.spyOn(result.current, 'updateMessageInput');
@@ -117,7 +118,7 @@ describe('chatMessage actions', () => {
   });
 
   describe('addUserMessage', () => {
-    it('should return early if activeId is undefined', async () => {
+    it('should return early if activeAgentId is undefined', async () => {
       useChatStore.setState({ activeAgentId: undefined });
       const { result } = renderHook(() => useChatStore());
       const updateMessageInputSpy = vi.spyOn(result.current, 'updateMessageInput');
@@ -739,7 +740,7 @@ describe('chatMessage actions', () => {
       useChatStore.setState({ refreshMessages: realRefreshMessages });
 
       const { result } = renderHook(() => useChatStore());
-      const activeId = useChatStore.getState().activeAgentId;
+      const activeAgentId = useChatStore.getState().activeAgentId;
       const activeTopicId = useChatStore.getState().activeTopicId;
 
       // 在这里，我们不需要再次模拟 mutate，因为它已经在顶部被模拟了
@@ -750,13 +751,13 @@ describe('chatMessage actions', () => {
       // 确保 mutate 调用了正确的参数（session 和 group 两次）
       expect(mutate).toHaveBeenCalledWith([
         'SWR_USE_FETCH_MESSAGES',
-        activeId,
+        activeAgentId,
         activeTopicId,
         'session',
       ]);
       expect(mutate).toHaveBeenCalledWith([
         'SWR_USE_FETCH_MESSAGES',
-        activeId,
+        activeAgentId,
         activeTopicId,
         'group',
       ]);
@@ -777,31 +778,6 @@ describe('chatMessage actions', () => {
 
       // 确保恢复 mutate 的模拟，以免影响其他测试
       (mutate as Mock).mockReset();
-    });
-  });
-
-  describe('internal_toggleMessageLoading', () => {
-    it('should add message id to messageLoadingIds when loading is true', () => {
-      const { result } = renderHook(() => useChatStore());
-      const messageId = 'message-id';
-
-      act(() => {
-        result.current.internal_toggleMessageLoading(true, messageId);
-      });
-
-      expect(result.current.messageLoadingIds).toContain(messageId);
-    });
-
-    it('should remove message id from messageLoadingIds when loading is false', () => {
-      const { result } = renderHook(() => useChatStore());
-      const messageId = 'ddd-id';
-
-      act(() => {
-        result.current.internal_toggleMessageLoading(true, messageId);
-        result.current.internal_toggleMessageLoading(false, messageId);
-      });
-
-      expect(result.current.messageLoadingIds).not.toContain(messageId);
     });
   });
 
@@ -1012,6 +988,71 @@ describe('chatMessage actions', () => {
       expect(replaceMessagesSpy).toHaveBeenCalledWith([], {
         context: { agentId: 'session-id', topicId: 'topic-id', threadId: undefined },
       });
+    });
+
+    it('should sync mirrored tool state into the parent assistant tools array', async () => {
+      const { result } = renderHook(() => useChatStore());
+      const assistantMessage = {
+        id: 'assistant-id',
+        role: 'assistant',
+        content: 'assistant',
+        tools: [
+          {
+            apiName: 'askUserQuestion',
+            arguments: '{}',
+            id: 'tool-call-id',
+            identifier: 'lobe-user-interaction',
+            intervention: { status: 'pending' },
+          },
+        ],
+      } as UIChatMessage;
+      const toolMessage = {
+        id: 'tool-message-id',
+        role: 'tool',
+        content: '',
+        parentId: assistantMessage.id,
+        plugin: {
+          apiName: 'askUserQuestion',
+          arguments: '{}',
+          identifier: 'lobe-user-interaction',
+          intervention: { status: 'pending' },
+        },
+        tool_call_id: 'tool-call-id',
+      } as UIChatMessage;
+      const dispatchSpy = vi.spyOn(result.current, 'internal_dispatchMessage');
+
+      act(() => {
+        useChatStore.setState({
+          messagesMap: {
+            [messageMapKey({ agentId: 'session-id', topicId: 'topic-id' })]: [
+              assistantMessage,
+              toolMessage,
+            ],
+          },
+          dbMessagesMap: {
+            [messageMapKey({ agentId: 'session-id', topicId: 'topic-id' })]: [
+              assistantMessage,
+              toolMessage,
+            ],
+          },
+        });
+      });
+
+      await act(async () => {
+        await result.current.optimisticUpdateMessagePlugin(toolMessage.id, {
+          intervention: { status: 'approved' },
+        });
+      });
+
+      expect(dispatchSpy).toHaveBeenCalledWith(
+        {
+          id: assistantMessage.id,
+          tool_call_id: 'tool-call-id',
+          type: 'updateMessageTools',
+          value: { intervention: { status: 'approved' } },
+        },
+        undefined,
+      );
     });
 
     it('should use context operationId when provided', async () => {

@@ -1,14 +1,12 @@
-# LobeChat Development Guidelines
+# LobeHub Development Guidelines
 
-This document serves as a comprehensive guide for all team members when developing LobeChat.
+This document serves as a comprehensive guide for all team members when developing LobeHub.
 
 ## Project Description
 
-You are developing an open-source, modern-design AI Agent Workspace: LobeHub(previous LobeChat).
+You are developing an open-source, modern-design AI Agent Workspace: LobeHub (previously LobeChat).
 
 ## Tech Stack
-
-Built with modern technologies:
 
 - **Frontend**: Next.js 16, React 19, TypeScript
 - **UI Components**: Ant Design, @lobehub/ui, antd-style
@@ -19,24 +17,37 @@ Built with modern technologies:
 
 ## Directory Structure
 
-The project follows a well-organized monorepo structure:
-
-- `apps/` - Main applications
-- `packages/` - Shared packages and libraries
-- `src/` - Main source code
-- `docs/` - Documentation
-- `.cursor/rules/` - Development rules and guidelines
-- PR titles starting with `✨ feat/` or `🐛 fix` will trigger the release workflow upon merge. Only use these prefixes for significant user-facing feature changes or bug fixes
+```plaintext
+lobehub/
+├── apps/desktop/           # Electron desktop app
+├── packages/               # Shared packages (@lobechat/*)
+│   ├── database/           # Database schemas, models, repositories
+│   ├── agent-runtime/      # Agent runtime
+│   └── ...
+├── src/
+│   ├── app/                # Next.js app router
+│   ├── spa/                # SPA entry points (entry.*.tsx) and router config
+│   ├── routes/             # SPA page components (roots)
+│   ├── features/           # Business components by domain
+│   ├── store/              # Zustand stores
+│   ├── services/           # Client services
+│   ├── server/             # Server services and routers
+│   └── ...
+├── .agents/skills/         # AI development skills
+└── e2e/                    # E2E tests (Cucumber + Playwright)
+```
 
 ## Development Workflow
 
 ### Git Workflow
 
-- The current release branch is `next` instead of `main` until v2.0.0 is officially released
+- **Branch strategy**: `canary` is the development branch (cloud production); `main` is the release branch (periodically cherry-picks from canary)
+- New branches should be created from `canary`; PRs should target `canary`
 - Use rebase for git pull
 - Git commit messages should prefix with gitmoji
-- Git branch name format: `username/feat/feature-name`
+- Git branch name format: `feat/feature-name`
 - Use `.github/PULL_REQUEST_TEMPLATE.md` for PR descriptions
+- **Protection of local changes**: Never use `git restore`, `git checkout --`, `git reset --hard`, or any other command or workflow that can forcibly overwrite, discard, or silently replace user-owned uncommitted changes. Before any revert or restoration affecting existing files, inspect the working tree carefully and obtain explicit user confirmation.
 
 ### Package Management
 
@@ -52,12 +63,13 @@ The project follows a well-organized monorepo structure:
 
 ### Testing Strategy
 
-**Required Rule**: `testing-guide/testing-guide.mdc`
+```bash
+# Web tests
+bunx vitest run --silent='passed-only' '[file-path-pattern]'
 
-**Commands**:
-
-- Web: `bunx vitest run --silent='passed-only' '[file-path-pattern]'`
-- Packages: `cd packages/[package-name] && bunx vitest run --silent='passed-only' '[file-path-pattern]'` (each subpackage contains its own vitest.config.mts)
+# Package tests (e.g., database)
+cd packages/[package-name] && bunx vitest run --silent='passed-only' '[file-path-pattern]'
+```
 
 **Important Notes**:
 
@@ -74,40 +86,15 @@ The project follows a well-organized monorepo structure:
 - **Dev**: Translate `locales/zh-CN/namespace.json` locale file only for preview
 - DON'T run `pnpm i18n`, let CI auto handle it
 
-## Project Rules Index
+## SPA Routes and Features
 
-All following rules are saved under `.cursor/rules/` directory:
+- **`src/routes/`** holds only page segments (`_layout/index.tsx`, `index.tsx`, `[id]/index.tsx`). Keep route files **thin** — import from `@/features/*` and compose, no business logic.
+- **`src/features/`** holds business components by **domain** (e.g. `Pages`, `PageEditor`, `Home`). Layout pieces, hooks, and domain UI go here.
+- **Desktop router parity:** When changing the main SPA route tree, update **both** `src/spa/router/desktopRouter.config.tsx` (dynamic imports) and `src/spa/router/desktopRouter.config.desktop.tsx` (sync imports) so paths and nesting match. Changing only one can leave routes unregistered and cause **blank screens**.
+- See the **spa-routes** skill (`.agents/skills/spa-routes/SKILL.md`) for the full convention and file-division rules.
 
-### Backend
+## Skills (Auto-loaded)
 
-- `drizzle-schema-style-guide.mdc` – Style guide for defining Drizzle ORM schemas
+All AI development skills are available in `.agents/skills/` directory and auto-loaded by Claude Code when relevant.
 
-### Frontend
-
-- `react.mdc` – React component style guide and conventions
-- `i18n.mdc` – Internationalization guide using react-i18next
-- `typescript.mdc` – TypeScript code style guide
-- `packages/react-layout-kit.mdc` – Usage guide for Flexbox and Center components from @lobehub/ui
-
-### State Management
-
-- `zustand-action-patterns.mdc` – Recommended patterns for organizing Zustand actions
-- `zustand-slice-organization.mdc` – Best practices for structuring Zustand slices
-
-### Desktop (Electron)
-
-- `desktop-feature-implementation.mdc` – Implementing new Electron desktop features
-- `desktop-controller-tests.mdc` – Desktop controller unit testing guide
-- `desktop-local-tools-implement.mdc` – Workflow to add new desktop local tools
-- `desktop-menu-configuration.mdc` – Desktop menu configuration guide
-- `desktop-window-management.mdc` – Desktop window management guide
-
-### Debugging
-
-- `debug-usage.mdc` – Using the debug package and namespace conventions
-
-### Testing
-
-- `testing-guide/testing-guide.mdc` – Comprehensive testing guide for Vitest
-- `testing-guide/electron-ipc-test.mdc` – Electron IPC interface testing strategy
-- `testing-guide/db-model-test.mdc` – Database Model testing guide
+**IMPORTANT**: When reviewing PRs or code diffs, ALWAYS read `.agents/skills/code-review/SKILL.md` first.

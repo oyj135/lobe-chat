@@ -1,8 +1,9 @@
 import debug from 'debug';
-import type { TFunction } from 'i18next';
-import { type ChangeEvent, useCallback, useRef, useState } from 'react';
+import { type TFunction } from 'i18next';
+import { type ChangeEvent } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
-import type { DocumentAction } from '@/store/file/slices/document/action';
+import { type DocumentAction } from '@/store/file/slices/document/action';
 import { unzipFile } from '@/utils/unzipFile';
 
 const log = debug('resource:notion-import');
@@ -11,7 +12,7 @@ interface UseNotionImportOptions {
   createDocument: DocumentAction['createDocument'];
   currentFolderId?: string | null;
   libraryId?: string | null;
-  refreshFileList: () => Promise<void>;
+  refetchResources?: () => Promise<void>;
   t: TFunction<'file'>;
 }
 
@@ -19,7 +20,7 @@ const useNotionImport = ({
   createDocument,
   currentFolderId,
   libraryId,
-  refreshFileList,
+  refetchResources,
   t,
 }: UseNotionImportOptions) => {
   const notionInputRef = useRef<HTMLInputElement>(null);
@@ -171,8 +172,7 @@ const useNotionImport = ({
           );
         }
 
-        // Refresh file list to show imported documents
-        await refreshFileList();
+        await refetchResources?.();
       } catch (error) {
         console.error('Failed to import Notion export:', error);
         const { message } = await import('antd');
@@ -182,7 +182,7 @@ const useNotionImport = ({
       // Reset input to allow re-uploading
       event.target.value = '';
     },
-    [createDocument, currentFolderId, libraryId, refreshFileList, t],
+    [createDocument, currentFolderId, libraryId, refetchResources, t],
   );
 
   return {

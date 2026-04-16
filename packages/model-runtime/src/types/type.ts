@@ -1,8 +1,8 @@
-import { ModelProvider } from 'model-bank';
-import OpenAI from 'openai';
+import type { ModelProvider } from 'model-bank';
+import type OpenAI from 'openai';
 
-import { ChatStreamPayload } from './chat';
-import { ILobeAgentRuntimeErrorType } from './error';
+import type { ChatStreamPayload } from './chat';
+import type { ILobeAgentRuntimeErrorType } from './error';
 
 export interface AgentInitErrorPayload {
   error: object;
@@ -14,6 +14,7 @@ export interface ChatCompletionErrorPayload {
   endpoint?: string;
   error: object;
   errorType: ILobeAgentRuntimeErrorType;
+  message?: string;
   provider: string;
 }
 

@@ -1,5 +1,6 @@
-import {
+import type {
   SSOProvider,
+  UserGeneralConfig,
   UserGuide,
   UserKeyVaults,
   UserPreference,
@@ -7,21 +8,15 @@ import {
 } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import dayjs from 'dayjs';
-import { and, eq, gt, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
 import { today } from '@/utils/time';
 
-import {
-  NewUser,
-  UserItem,
-  UserSettingsItem,
-  nextauthAccounts,
-  userSettings,
-  users,
-} from '../schemas';
-import { LobeChatDatabase } from '../type';
+import type { NewUser, UserItem, UserSettingsItem } from '../schemas';
+import { messages, nextauthAccounts, topics, users, userSettings } from '../schemas';
+import type { LobeChatDatabase } from '../type';
 
 type DecryptUserKeyVaults = (
   encryptKeyVaultsStr: string | null,
@@ -44,6 +39,13 @@ export type ListUsersForMemoryExtractorOptions = {
   limit?: number;
   whitelist?: string[];
 };
+
+export type ListUsersForHourlyMemoryExtractorOptions = ListUsersForMemoryExtractorOptions;
+
+export interface UserInfoForAIGeneration {
+  responseLanguage: string;
+  userName: string;
+}
 
 export class UserModel {
   private userId: string;
@@ -78,6 +80,7 @@ export class UserModel {
     const result = await this.db
       .select({
         avatar: users.avatar,
+        agentOnboarding: users.agentOnboarding,
         email: users.email,
         firstName: users.firstName,
         fullName: users.fullName,
@@ -136,6 +139,7 @@ export class UserModel {
 
     return {
       avatar: state.avatar || undefined,
+      agentOnboarding: state.agentOnboarding || undefined,
       email: state.email || undefined,
       firstName: state.firstName || undefined,
       fullName: state.fullName || undefined,
@@ -292,6 +296,11 @@ export class UserModel {
     return db.query.users.findFirst({ where: eq(users.email, email) });
   };
 
+  static findByIds = async (db: LobeChatDatabase, ids: string[]) => {
+    if (ids.length === 0) return [];
+    return db.query.users.findMany({ where: inArray(users.id, ids) });
+  };
+
   static getUserApiKeys = async (
     db: LobeChatDatabase,
     id: string,
@@ -338,5 +347,78 @@ export class UserModel {
       orderBy: (fields, { asc }) => [asc(fields.createdAt), asc(fields.id)],
       where,
     });
+  };
+
+  static listUsersForHourlyMemoryExtractor = (
+    db: LobeChatDatabase,
+    options: ListUsersForHourlyMemoryExtractorOptions = {},
+  ) => {
+    const cursorCondition = options.cursor
+      ? or(
+          gt(users.createdAt, options.cursor.createdAt),
+          and(eq(users.createdAt, options.cursor.createdAt), gt(users.id, options.cursor.id)),
+        )
+      : undefined;
+
+    const whitelistCondition =
+      options.whitelist && options.whitelist.length > 0
+        ? inArray(users.id, options.whitelist)
+        : undefined;
+
+    // User memory defaults to enabled=true when user settings are missing.
+    const memoryEnabledCondition = sql`COALESCE((${userSettings.memory} ->> 'enabled')::boolean, true) = true`;
+    // Eligible users must have at least one topic with at least one user message.
+    const hasChattedTopicCondition = sql`
+      EXISTS (
+        SELECT 1
+        FROM ${topics}
+        INNER JOIN ${messages}
+          ON ${messages.topicId} = ${topics.id}
+          AND ${messages.userId} = ${users.id}
+          AND ${messages.role} = 'user'
+        WHERE ${topics.userId} = ${users.id}
+      )
+    `;
+
+    const query = db
+      .select({
+        createdAt: users.createdAt,
+        id: users.id,
+      })
+      .from(users)
+      .leftJoin(userSettings, eq(users.id, userSettings.id))
+      .where(
+        and(cursorCondition, whitelistCondition, memoryEnabledCondition, hasChattedTopicCondition),
+      )
+      .orderBy(asc(users.createdAt), asc(users.id));
+
+    return options.limit !== undefined ? query.limit(options.limit) : query;
+  };
+
+  /**
+   * Get user info for AI generation (name and language preference)
+   */
+  static getInfoForAIGeneration = async (
+    db: LobeChatDatabase,
+    userId: string,
+  ): Promise<UserInfoForAIGeneration> => {
+    const result = await db
+      .select({
+        firstName: users.firstName,
+        fullName: users.fullName,
+        general: userSettings.general,
+      })
+      .from(users)
+      .leftJoin(userSettings, eq(users.id, userSettings.id))
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    const user = result[0];
+    const general = user?.general as UserGeneralConfig | undefined;
+
+    return {
+      responseLanguage: general?.responseLanguage || 'en-US',
+      userName: user?.fullName || user?.firstName || 'User',
+    };
   };
 }

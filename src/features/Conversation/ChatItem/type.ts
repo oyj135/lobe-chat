@@ -35,7 +35,9 @@ export interface ChatItemProps extends Omit<FlexboxProps, 'children' | 'onChange
    */
   message?: ReactNode;
   messageExtra?: ReactNode;
-  newScreen?: boolean;
+  /**
+   * Avatar click handler
+   */
   onAvatarClick?: () => void;
   onDoubleClick?: DivProps['onDoubleClick'];
   /**

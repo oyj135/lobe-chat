@@ -1,4 +1,6 @@
 import {
+  type AuditSafePathsParams,
+  type AuditSafePathsResult,
   type EditLocalFileParams,
   type EditLocalFileResult,
   type GetCommandOutputParams,
@@ -10,6 +12,7 @@ import {
   type KillCommandParams,
   type KillCommandResult,
   type ListLocalFileParams,
+  type ListLocalFilesResult,
   type LocalFileItem,
   type LocalMoveFilesResultItem,
   type LocalReadFileParams,
@@ -19,9 +22,15 @@ import {
   type MoveLocalFilesParams,
   type OpenLocalFileParams,
   type OpenLocalFolderParams,
+  type PrepareSkillDirectoryParams,
+  type PrepareSkillDirectoryResult,
   type RenameLocalFileParams,
+  type ResolveSkillResourcePathParams,
+  type ResolveSkillResourcePathResult,
   type RunCommandParams,
   type RunCommandResult,
+  type ShowSaveDialogParams,
+  type ShowSaveDialogResult,
   type WriteLocalFileParams,
 } from '@lobechat/electron-client-ipc';
 
@@ -29,7 +38,7 @@ import { ensureElectronIpc } from '@/utils/electron/ipc';
 
 class LocalFileService {
   // File Operations
-  async listLocalFiles(params: ListLocalFileParams): Promise<LocalFileItem[]> {
+  async listLocalFiles(params: ListLocalFileParams): Promise<ListLocalFilesResult> {
     return ensureElectronIpc().localSystem.listLocalFiles(params);
   }
 
@@ -65,6 +74,22 @@ class LocalFileService {
     return ensureElectronIpc().localSystem.handleWriteFile(params);
   }
 
+  async auditSafePaths(params: AuditSafePathsParams): Promise<AuditSafePathsResult> {
+    return ensureElectronIpc().localSystem.auditSafePaths(params);
+  }
+
+  async prepareSkillDirectory(
+    params: PrepareSkillDirectoryParams,
+  ): Promise<PrepareSkillDirectoryResult> {
+    return ensureElectronIpc().localSystem.handlePrepareSkillDirectory(params);
+  }
+
+  async resolveSkillResourcePath(
+    params: ResolveSkillResourcePathParams,
+  ): Promise<ResolveSkillResourcePathResult> {
+    return ensureElectronIpc().localSystem.handleResolveSkillResourcePath(params);
+  }
+
   async editLocalFile(params: EditLocalFileParams): Promise<EditLocalFileResult> {
     return ensureElectronIpc().localSystem.handleEditFile(params);
   }
@@ -89,6 +114,11 @@ class LocalFileService {
 
   async globFiles(params: GlobFilesParams): Promise<GlobFilesResult> {
     return ensureElectronIpc().localSystem.handleGlobFiles(params);
+  }
+
+  // Dialog
+  async showSaveDialog(params: ShowSaveDialogParams): Promise<ShowSaveDialogResult> {
+    return ensureElectronIpc().localSystem.handleShowSaveDialog(params);
   }
 
   // Helper methods

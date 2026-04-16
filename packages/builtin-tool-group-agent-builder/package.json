@@ -4,16 +4,23 @@
   "private": true,
   "exports": {
     ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./executor": "./src/executor.ts",
     "./executionRuntime": "./src/ExecutionRuntime/index.ts"
   },
   "main": "./src/index.ts",
   "dependencies": {
+    "@lobechat/agent-manager-runtime": "workspace:*",
     "@lobechat/builtin-tool-agent-builder": "workspace:*"
   },
   "devDependencies": {
     "@lobechat/types": "workspace:*"
   },
   "peerDependencies": {
-    "react": "*"
+    "@lobehub/ui": "^5",
+    "antd": "^6",
+    "lucide-react": "*",
+    "react": "*",
+    "react-i18next": "*"
   }
 }

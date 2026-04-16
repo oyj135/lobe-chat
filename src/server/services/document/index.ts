@@ -1,5 +1,6 @@
 import { type LobeChatDatabase } from '@lobechat/database';
-import { type DocumentItem, documents, files } from '@lobechat/database/schemas';
+import { type DocumentItem } from '@lobechat/database/schemas';
+import { documents, files } from '@lobechat/database/schemas';
 import { loadFile } from '@lobechat/file-loaders';
 import debug from 'debug';
 import { and, eq } from 'drizzle-orm';
@@ -16,15 +17,20 @@ export class DocumentService {
   userId: string;
   private fileModel: FileModel;
   private documentModel: DocumentModel;
-  private fileService: FileService;
+  private fileServiceInstance?: FileService;
   private db: LobeChatDatabase;
 
   constructor(db: LobeChatDatabase, userId: string) {
     this.userId = userId;
     this.db = db;
     this.fileModel = new FileModel(db, userId);
-    this.fileService = new FileService(db, userId);
     this.documentModel = new DocumentModel(db, userId);
+  }
+
+  private get fileService() {
+    this.fileServiceInstance ??= new FileService(this.db, this.userId);
+
+    return this.fileServiceInstance;
   }
 
   /**
@@ -86,6 +92,7 @@ export class DocumentService {
       fileId,
       fileType,
       filename: title,
+      knowledgeBaseId, // Set knowledge_base_id column for all document types
       metadata: finalMetadata,
       pages: undefined,
       parentId,
@@ -98,6 +105,28 @@ export class DocumentService {
     });
 
     return document;
+  }
+
+  /**
+   * Create multiple documents in batch (optimized for folder creation)
+   * Returns array of created documents with same order as input
+   */
+  async createDocuments(
+    documents: Array<{
+      content?: string;
+      editorData: Record<string, any>;
+      fileType?: string;
+      knowledgeBaseId?: string;
+      metadata?: Record<string, any>;
+      parentId?: string;
+      slug?: string;
+      title: string;
+    }>,
+  ): Promise<DocumentItem[]> {
+    // Create all documents in parallel for better performance
+    const results = await Promise.all(documents.map((params) => this.createDocument(params)));
+
+    return results;
   }
 
   /**
@@ -230,13 +259,13 @@ export class DocumentService {
     const { filePath, file, cleanup } = await this.fileService.downloadFileToLocal(fileId);
 
     const logPrefix = `[${file.name}]`;
-    log(`${logPrefix} 开始解析文件为文档, 路径: ${filePath}`);
+    log(`${logPrefix} Starting to parse file as document, path: ${filePath}`);
 
     try {
-      // 使用loadFile加载文件内容
+      // Use loadFile to load file content
       const fileDocument = await loadFile(filePath);
 
-      log(`${logPrefix} 文件解析成功 %O`, {
+      log(`${logPrefix} File parsed successfully %O`, {
         fileType: fileDocument.fileType,
         size: fileDocument.content.length,
       });
@@ -269,7 +298,7 @@ export class DocumentService {
 
       return document as LobeDocument;
     } catch (error) {
-      console.error(`${logPrefix} 文件解析失败:`, error);
+      console.error(`${logPrefix} File parsing failed:`, error);
       throw error;
     } finally {
       cleanup();
@@ -277,20 +306,24 @@ export class DocumentService {
   }
 
   /**
-   * 解析文件内容
+   * Parse file content
    *
    */
   async parseFile(fileId: string): Promise<LobeDocument> {
+    // Idempotent: return existing document if already parsed
+    const existingDoc = await this.documentModel.findByFileId(fileId);
+    if (existingDoc) return existingDoc as LobeDocument;
+
     const { filePath, file, cleanup } = await this.fileService.downloadFileToLocal(fileId);
 
     const logPrefix = `[${file.name}]`;
-    log(`${logPrefix} 开始解析文件, 路径: ${filePath}`);
+    log(`${logPrefix} Starting to parse file, path: ${filePath}`);
 
     try {
-      // 使用loadFile加载文件内容
+      // Use loadFile to load file content
       const fileDocument = await loadFile(filePath);
 
-      log(`${logPrefix} 文件解析成功 %O`, {
+      log(`${logPrefix} File parsed successfully %O`, {
         fileType: fileDocument.fileType,
         size: fileDocument.content.length,
       });
@@ -318,7 +351,7 @@ export class DocumentService {
 
       return document as LobeDocument;
     } catch (error) {
-      console.error(`${logPrefix} 文件解析失败:`, error);
+      console.error(`${logPrefix} File parsing failed:`, error);
       throw error;
     } finally {
       cleanup();

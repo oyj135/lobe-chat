@@ -1,10 +1,10 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
-import dayjs from 'dayjs';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { uuid } from '@/utils/uuid';
 
+import { getTestDB } from '../../../core/getTestDB';
 import {
   agents,
   agentsToSessions,
@@ -14,21 +14,19 @@ import {
   embeddings,
   fileChunks,
   files,
-  messagePlugins,
   messageQueries,
   messageQueryChunks,
-  messageTTS,
-  messageTranslates,
   messages,
   messagesFiles,
+  messageTranslates,
+  messageTTS,
   sessions,
   threads,
   topics,
   users,
 } from '../../../schemas';
-import { LobeChatDatabase } from '../../../type';
+import type { LobeChatDatabase } from '../../../type';
 import { MessageModel } from '../../message';
-import { getTestDB } from '../../../core/getTestDB';
 import { codeEmbedding } from '../fixtures/embedding';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -52,7 +50,7 @@ beforeEach(async () => {
     ]);
     await trx.insert(files).values({
       id: 'f1',
-      userId: userId,
+      userId,
       url: 'abc',
       name: 'file-1',
       fileType: 'image/png',
@@ -350,7 +348,7 @@ describe('MessageModel Query Tests', () => {
         { id: '3', userId, role: 'user', content: 'message 3' },
       ]);
 
-      // 测试 current 和 pageSize 的边界情况
+      // Test boundary cases for current and pageSize
       const result1 = await messageModel.query({ current: 0, pageSize: 2 });
       expect(result1).toHaveLength(2);
 
@@ -406,9 +404,9 @@ describe('MessageModel Query Tests', () => {
           content: 'test message',
         });
 
-        // 创建两个查询，查询结果应该只包含其中一个
-        // Note: 由于 messageQueries 表没有排序字段，返回哪个 query 是不确定的
-        // 但应该只返回一个
+        // Create two queries, the result should only contain one of them
+        // Note: since the messageQueries table has no sort field, which query is returned is non-deterministic
+        // but only one should be returned
         await serverDB.insert(messageQueries).values([
           {
             id: queryId1,
@@ -429,10 +427,10 @@ describe('MessageModel Query Tests', () => {
         // Call query method
         const result = await messageModel.query();
 
-        // Assert result - 应该只包含一个查询（具体是哪个取决于数据库实现）
+        // Assert result - should only contain one query (which one depends on database implementation)
         expect(result).toHaveLength(1);
         expect(result[0].id).toBe(messageId);
-        // 验证返回的是两个 query 中的一个
+        // Verify the returned value is one of the two queries
         expect([queryId1, queryId2]).toContain(result[0].ragQueryId);
         expect(['rewritten query 1', 'rewritten query 2']).toContain(result[0].ragQuery);
         expect(['original query 1', 'original query 2']).toContain(result[0].ragRawQuery);
@@ -443,7 +441,7 @@ describe('MessageModel Query Tests', () => {
       await serverDB.transaction(async (trx) => {
         const chunk1Id = uuid();
         const query1Id = uuid();
-        // 创建基础消息
+        // Create base message
         await trx.insert(messages).values({
           id: 'msg1',
           userId,
@@ -452,7 +450,7 @@ describe('MessageModel Query Tests', () => {
           createdAt: new Date('2023-01-01'),
         });
 
-        // 创建文件
+        // Create file
         await trx.insert(files).values([
           {
             id: 'file1',
@@ -464,27 +462,27 @@ describe('MessageModel Query Tests', () => {
           },
         ]);
 
-        // 创建文件块
+        // Create file chunk
         await trx.insert(chunks).values({
           id: chunk1Id,
           text: 'chunk content',
         });
 
-        // 关联消息和文件
+        // Associate message with file
         await trx.insert(messagesFiles).values({
           messageId: 'msg1',
           userId,
           fileId: 'file1',
         });
 
-        // 创建文件块关联
+        // Create file chunk association
         await trx.insert(fileChunks).values({
           fileId: 'file1',
           userId,
           chunkId: chunk1Id,
         });
 
-        // 创建消息查询
+        // Create message query
         await trx.insert(messageQueries).values({
           id: query1Id,
           messageId: 'msg1',
@@ -493,7 +491,7 @@ describe('MessageModel Query Tests', () => {
           rewriteQuery: 'rewritten query',
         });
 
-        // 创建消息查询块关联
+        // Create message query chunk association
         await trx.insert(messageQueryChunks).values({
           messageId: 'msg1',
           queryId: query1Id,
@@ -1196,7 +1194,7 @@ describe('MessageModel Query Tests', () => {
   });
 
   describe('queryAll', () => {
-    it('should return all messages belonging to the user in ascending order', async () => {
+    it('should return all messages belonging to the user in descending order', async () => {
       // Create test data
       await serverDB.insert(messages).values([
         {
@@ -1225,10 +1223,10 @@ describe('MessageModel Query Tests', () => {
       // Call queryAll method
       const result = await messageModel.queryAll();
 
-      // Assert result
+      // Assert result - descending by createdAt
       expect(result).toHaveLength(2);
-      expect(result[0].id).toBe('1');
-      expect(result[1].id).toBe('2');
+      expect(result[0].id).toBe('2');
+      expect(result[1].id).toBe('1');
     });
   });
 
@@ -1405,7 +1403,9 @@ describe('MessageModel Query Tests', () => {
     });
   });
 
-  describe('queryByKeyWord', () => {
+  // BM25 search requires pg_search extension (ParadeDB), not available in PGlite
+  const isServerDB = process.env.TEST_SERVER_DB === '1';
+  describe.skipIf(!isServerDB)('queryByKeyWord', () => {
     it('should query messages by keyword', async () => {
       // Create test data
       await serverDB.insert(messages).values([

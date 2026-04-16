@@ -22,7 +22,6 @@ const exportProcedure = authedProcedure.use(serverDatabase).use(async (opts) => 
   });
 });
 
-
 const REGULAR_FONT_URL =
   'https://cdn.jsdelivr.net/gh/adobe-fonts/source-han-sans@2.004R/OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf';
 
@@ -156,7 +155,7 @@ const generatePdfFromMarkdown = async (
           });
       }
 
-      // 完成文档
+      // Finalize document
       doc.end();
     } catch (error) {
       reject(

@@ -1,18 +1,21 @@
 import { type ToolIntervention } from '@lobechat/types';
 import { Block, Icon, Tooltip } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
-import { Ban, Check, HandIcon, Loader2Icon, PauseIcon, X } from 'lucide-react';
+import { AlertTriangle, Ban, Check, HandIcon, PauseIcon, X } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
 import { LOADING_FLAT } from '@/const/message';
 
 interface StatusIndicatorProps {
   intervention?: ToolIntervention;
   result?: { content: string | null; error?: any; state?: any };
+  /** Successful tool payload that should surface as warning (e.g. activateTools with only notFound). */
+  successVariant?: 'default' | 'warning';
 }
 
-const StatusIndicator = memo<StatusIndicatorProps>(({ intervention, result }) => {
+const StatusIndicator = memo<StatusIndicatorProps>(({ intervention, result, successVariant }) => {
   const { t } = useTranslation('chat');
 
   const hasError = !!result?.error;
@@ -40,25 +43,27 @@ const StatusIndicator = memo<StatusIndicatorProps>(({ intervention, result }) =>
     icon = <Icon color={cssVar.colorError} icon={X} />;
   } else if (isPending) {
     icon = <Icon color={cssVar.colorInfo} icon={HandIcon} />;
+  } else if (hasSuccessResult && !hasError && successVariant === 'warning') {
+    icon = <Icon color={cssVar.colorWarning} icon={AlertTriangle} />;
   } else if (hasResult) {
     icon = <Icon color={cssVar.colorSuccess} icon={Check} />;
   } else {
-    icon = <Icon color={cssVar.colorTextDescription} icon={Loader2Icon} spin />;
+    icon = <NeuralNetworkLoading size={16} />;
   }
 
   return (
     <Block
+      horizontal
       align={'center'}
       flex={'none'}
       gap={4}
       height={24}
-      horizontal
       justify={'center'}
+      variant={'outlined'}
+      width={24}
       style={{
         fontSize: 12,
       }}
-      variant={'outlined'}
-      width={24}
     >
       {icon}
     </Block>

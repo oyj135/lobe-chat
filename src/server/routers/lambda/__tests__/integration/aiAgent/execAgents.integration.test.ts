@@ -5,7 +5,7 @@
  * Note: AgentStateManager and StreamEventManager will automatically use
  * InMemory implementations when Redis is not available (test environment).
  */
-import { LobeChatDatabase } from '@lobechat/database';
+import { type LobeChatDatabase } from '@lobechat/database';
 import { agents, topics } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { eq } from 'drizzle-orm';
@@ -35,7 +35,6 @@ vi.mock('@/server/services/file', () => ({
   })),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mockResponsesCreate: any;
 
 let serverDB: LobeChatDatabase;
@@ -120,12 +119,16 @@ describe('Batch Execution (execAgents)', () => {
     expect(result.results[0]).toMatchObject({
       success: true,
       taskIndex: 0,
-      operationId: expect.stringMatching(/^op_\d+_agt_.+_tpc_.+_\w+$/),
+      operationId: expect.stringMatching(
+        /^op_\d+_agt_.+_tpc_.(?:[^\n\r_\u2028\u2029]*_[^\w\n\r\u2028\u2029])*[^\n\r_\u2028\u2029]*_\w+(?:[^\w\n\r\u2028\u2029](?:[^\n\r_\u2028\u2029]*_[^\w\n\r\u2028\u2029])*[^\n\r_\u2028\u2029]*_\w+)*$/,
+      ),
     });
     expect(result.results[1]).toMatchObject({
       success: true,
       taskIndex: 1,
-      operationId: expect.stringMatching(/^op_\d+_agt_.+_tpc_.+_\w+$/),
+      operationId: expect.stringMatching(
+        /^op_\d+_agt_.+_tpc_.(?:[^\n\r_\u2028\u2029]*_[^\w\n\r\u2028\u2029])*[^\n\r_\u2028\u2029]*_\w+(?:[^\w\n\r\u2028\u2029](?:[^\n\r_\u2028\u2029]*_[^\w\n\r\u2028\u2029])*[^\n\r_\u2028\u2029]*_\w+)*$/,
+      ),
     });
 
     expect(result.results[0].operationId).not.toBe(result.results[1].operationId);
@@ -204,6 +207,42 @@ describe('Batch Execution (execAgents)', () => {
 
     expect(createdTopics).toHaveLength(2);
     expect(createdTopics.map((t) => t.title).sort()).toEqual(['Topic 1 prompt', 'Topic 2 prompt']);
+  });
+
+  it('should preserve deviceId bindings for batch tasks', async () => {
+    mockResponsesCreate.mockResolvedValue(
+      createMockResponsesAPIStream('Response for device-bound topics') as any,
+    );
+
+    const caller = aiAgentRouter.createCaller(createTestContext());
+
+    await caller.execAgents({
+      tasks: [
+        {
+          agentId: testAgentId,
+          autoStart: false,
+          deviceId: 'device-batch-1',
+          prompt: 'Device-bound task 1',
+        },
+        {
+          agentId: testAgentId,
+          autoStart: false,
+          deviceId: 'device-batch-2',
+          prompt: 'Device-bound task 2',
+        },
+      ],
+    });
+
+    const createdTopics = await serverDB
+      .select()
+      .from(topics)
+      .where(eq(topics.agentId, testAgentId));
+
+    expect(createdTopics).toHaveLength(2);
+    expect(createdTopics.map((topic) => topic.metadata?.boundDeviceId).sort()).toEqual([
+      'device-batch-1',
+      'device-batch-2',
+    ]);
   });
 
   it('should support autoStart for batch tasks', async () => {

@@ -1,20 +1,23 @@
 import { renderPlaceholderTemplate } from '@lobechat/context-engine';
 
-import { ContextMemory, ContextMemorySchema } from '../schemas';
-import { ExtractorTemplateProps } from '../types';
+import { contextPrompt } from '../prompts';
+import type { ContextMemory } from '../schemas';
+import { ContextMemorySchema } from '../schemas';
+import type { ExtractorTemplateProps } from '../types';
 import { buildGenerateObjectSchema } from '../utils/zod';
 import { BaseMemoryExtractor } from './base';
 
 export class ContextExtractor extends BaseMemoryExtractor<ContextMemory> {
-  getPromptFileName(): string {
-    return 'layers/context.md';
+  getPrompt(): string {
+    return contextPrompt;
+  }
+
+  protected getPromptName(): string {
+    return 'layer-context';
   }
 
   getSchema() {
-    return buildGenerateObjectSchema(
-      ContextMemorySchema,
-      { name: 'context_extraction' },
-    );
+    return buildGenerateObjectSchema(ContextMemorySchema, { name: 'context_extraction' });
   }
 
   getResultSchema() {

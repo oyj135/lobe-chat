@@ -3,6 +3,15 @@ import debug from 'debug';
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { MessageToolCall, PipelineContext, ProcessorOptions } from '../types';
 
+declare module '../types' {
+  interface PipelineContextMetadataOverrides {
+    supportTools?: boolean;
+    toolCallProcessed?: number;
+    toolCallsConverted?: number;
+    toolMessagesConverted?: number;
+  }
+}
+
 const log = debug('context-engine:processor:ToolCallProcessor');
 
 export interface ToolCallConfig {
@@ -110,7 +119,7 @@ export class ToolCallProcessor extends BaseProcessor {
 
     if (!supportTools || (!hasTools && hasEmptyToolCalls)) {
       // If tools not supported or only has empty tool calls, return regular message (remove tool-related properties)
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
       const { tools, tool_calls, ...messageWithoutTools } = message;
       return messageWithoutTools;
     }

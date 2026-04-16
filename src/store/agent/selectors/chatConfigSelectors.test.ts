@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_CHAT_CONFIG, DEFAULT_AGENT_SEARCH_FC_MODEL } from '@lobechat/const';
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgentStoreState } from '@/store/agent/initialState';
+import { type AgentStoreState } from '@/store/agent/initialState';
 import { initialAgentSliceState } from '@/store/agent/slices/agent/initialState';
 import { initialBuiltinAgentSliceState } from '@/store/agent/slices/builtin/initialState';
 
@@ -60,13 +60,13 @@ describe('agentChatConfigSelectors', () => {
       expect(agentChatConfigSelectors.agentSearchMode(state)).toBe('auto');
     });
 
-    it('should return "off" as default', () => {
+    it('should return "auto" as default', () => {
       const state = createState({
         activeAgentId: 'agent-1',
         agentMap: { 'agent-1': {} },
       });
 
-      expect(agentChatConfigSelectors.agentSearchMode(state)).toBe('off');
+      expect(agentChatConfigSelectors.agentSearchMode(state)).toBe('auto');
     });
   });
 
@@ -143,7 +143,7 @@ describe('agentChatConfigSelectors', () => {
   });
 
   describe('enableHistoryCount', () => {
-    it('should return false when context caching enabled and model supports it', () => {
+    it('should return enableHistoryCount value even when context caching is enabled', () => {
       const state = createState({
         activeAgentId: 'agent-1',
         agentMap: {
@@ -154,10 +154,10 @@ describe('agentChatConfigSelectors', () => {
         },
       });
 
-      expect(agentChatConfigSelectors.enableHistoryCount(state)).toBe(false);
+      expect(agentChatConfigSelectors.enableHistoryCount(state)).toBe(true);
     });
 
-    it('should return false when search enabled and model is claude-3-7-sonnet', () => {
+    it('should return enableHistoryCount value even when search is enabled', () => {
       const state = createState({
         activeAgentId: 'agent-1',
         agentMap: {
@@ -172,10 +172,10 @@ describe('agentChatConfigSelectors', () => {
         },
       });
 
-      expect(agentChatConfigSelectors.enableHistoryCount(state)).toBe(false);
+      expect(agentChatConfigSelectors.enableHistoryCount(state)).toBe(true);
     });
 
-    it('should return enableHistoryCount value when no special cases apply', () => {
+    it('should return enableHistoryCount value directly from config', () => {
       const state = createState({
         activeAgentId: 'agent-1',
         agentMap: {

@@ -1,16 +1,48 @@
-import { LobeChatPluginManifest } from '@lobehub/chat-plugin-sdk';
-import { PluginItem } from '@lobehub/market-sdk';
+import type * as LobechatConstModule from '@lobechat/const';
+import { type ToolManifest } from '@lobechat/types';
+import { type PluginItem } from '@lobehub/market-sdk';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { TRPCClientError } from '@trpc/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { discoverService } from '@/services/discover';
 import { mcpService } from '@/services/mcp';
 import { pluginService } from '@/services/plugin';
 import { globalHelpers } from '@/store/global/helpers';
-import { CheckMcpInstallResult, MCPInstallStep } from '@/types/plugins';
+import { type CheckMcpInstallResult } from '@/types/plugins';
+import { MCPInstallStep } from '@/types/plugins';
 
 import { useToolStore } from '../../store';
+
+vi.mock('@/libs/trpc/client', () => ({
+  asyncClient: {},
+  lambdaClient: {
+    market: {
+      getMcpCategories: { query: vi.fn() },
+      getMcpDetail: { query: vi.fn() },
+      getMcpList: { query: vi.fn() },
+      getMcpManifest: { query: vi.fn() },
+      registerClientInMarketplace: {
+        mutate: vi.fn().mockResolvedValue({
+          clientId: 'test-client-id',
+          clientSecret: 'test-client-secret',
+        }),
+      },
+      registerM2MToken: { query: vi.fn().mockResolvedValue({ success: true }) },
+      reportCall: { mutate: vi.fn().mockResolvedValue(undefined) },
+      reportMcpEvent: { mutate: vi.fn().mockResolvedValue(undefined) },
+      reportMcpInstallResult: { mutate: vi.fn().mockResolvedValue(undefined) },
+    },
+  },
+  toolsClient: {
+    market: {
+      callCloudMcpEndpoint: { mutate: vi.fn() },
+    },
+    mcp: {
+      callTool: { mutate: vi.fn() },
+      getStreamableMcpServerManifest: { query: vi.fn() },
+    },
+  },
+}));
 
 // Keep zustand mock as it's needed globally
 vi.mock('zustand/traditional');
@@ -20,15 +52,12 @@ vi.mock('@/utils/sleep', () => ({
   sleep: vi.fn().mockResolvedValue(undefined),
 }));
 
-const ORIGINAL_DESKTOP_ENV = process.env.NEXT_PUBLIC_IS_DESKTOP_APP;
-
 const bootstrapToolStoreWithDesktop = async (isDesktopEnv: boolean) => {
   vi.resetModules();
   vi.mock('zustand/traditional');
-  process.env.NEXT_PUBLIC_IS_DESKTOP_APP = isDesktopEnv ? '1' : '0';
 
   vi.doMock('@lobechat/const', async () => {
-    const actual = await vi.importActual<typeof import('@lobechat/const')>('@lobechat/const');
+    const actual = await vi.importActual<typeof LobechatConstModule>('@lobechat/const');
     return {
       ...actual,
       isDesktop: isDesktopEnv,
@@ -43,11 +72,6 @@ const bootstrapToolStoreWithDesktop = async (isDesktopEnv: boolean) => {
     vi.resetModules();
     vi.doUnmock('@lobechat/const');
     vi.mock('zustand/traditional');
-    if (ORIGINAL_DESKTOP_ENV === undefined) {
-      delete process.env.NEXT_PUBLIC_IS_DESKTOP_APP;
-    } else {
-      process.env.NEXT_PUBLIC_IS_DESKTOP_APP = ORIGINAL_DESKTOP_ENV;
-    }
   };
 
   return {
@@ -60,6 +84,13 @@ const bootstrapToolStoreWithDesktop = async (isDesktopEnv: boolean) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+
+  vi.spyOn(discoverService, 'injectMPToken').mockResolvedValue(undefined);
+  vi.spyOn(discoverService, 'registerClient').mockResolvedValue({
+    clientId: 'test-client-id',
+    clientSecret: 'test-client-secret',
+  });
+  vi.spyOn(discoverService, 'reportMcpEvent').mockResolvedValue(undefined as any);
 
   // Reset store state
   act(() => {
@@ -87,11 +118,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  if (ORIGINAL_DESKTOP_ENV === undefined) {
-    delete process.env.NEXT_PUBLIC_IS_DESKTOP_APP;
-  } else {
-    process.env.NEXT_PUBLIC_IS_DESKTOP_APP = ORIGINAL_DESKTOP_ENV;
-  }
+  vi.resetModules();
 });
 
 describe('mcpStore actions', () => {
@@ -203,7 +230,7 @@ describe('mcpStore actions', () => {
   });
 
   describe('testMcpConnection', () => {
-    const mockManifest: LobeChatPluginManifest = {
+    const mockManifest: ToolManifest = {
       api: [],
       gateway: '',
       identifier: 'test-plugin',
@@ -690,7 +717,7 @@ describe('mcpStore actions', () => {
       },
     };
 
-    const mockServerManifest: LobeChatPluginManifest = {
+    const mockServerManifest: ToolManifest = {
       api: [],
       gateway: '',
       identifier: 'test-plugin',
@@ -1143,7 +1170,7 @@ describe('mcpStore actions', () => {
           version: '1.5.0',
         };
 
-        const serverManifestWithVersion: LobeChatPluginManifest = {
+        const serverManifestWithVersion: ToolManifest = {
           api: [],
           gateway: '',
           identifier: 'test-plugin',

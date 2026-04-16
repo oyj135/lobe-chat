@@ -1,4 +1,4 @@
-import { AIChatModelCard } from '../types/aiModel';
+import type { AIChatModelCard } from '../types/aiModel';
 
 // https://platform.sensenova.cn/pricing
 // https://www.sensecore.cn/help/docs/model-as-a-service/nova/release
@@ -7,6 +7,7 @@ const sensenovaChatModels: AIChatModelCard[] = [
   {
     abilities: {
       reasoning: true,
+      // video: true,
       vision: true,
     },
     contextWindowTokens: 131_072,
@@ -31,6 +32,7 @@ const sensenovaChatModels: AIChatModelCard[] = [
   {
     abilities: {
       reasoning: true,
+      // video: true,
       vision: true,
     },
     contextWindowTokens: 131_072,
@@ -101,6 +103,7 @@ const sensenovaChatModels: AIChatModelCard[] = [
   {
     abilities: {
       reasoning: true,
+      // video: true,
       vision: true,
     },
     contextWindowTokens: 32_768,
@@ -120,6 +123,7 @@ const sensenovaChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
+      // video: true,
       vision: true,
     },
     contextWindowTokens: 32_768,
@@ -139,6 +143,7 @@ const sensenovaChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
+      // video: true,
       vision: true,
     },
     contextWindowTokens: 32_768,
@@ -267,8 +272,7 @@ const sensenovaChatModels: AIChatModelCard[] = [
   },
   {
     contextWindowTokens: 131_072,
-    description:
-      'Base V4 with 128K context, strong in long-text understanding and generation.',
+    description: 'Base V4 with 128K context, strong in long-text understanding and generation.',
     displayName: 'SenseChat 4.0 128K',
     id: 'SenseChat-128K',
     maxOutput: 131_072,

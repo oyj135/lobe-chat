@@ -1,14 +1,13 @@
-import { type ModelProviderCard } from '@/types/llm';
+import type { ModelProviderCard } from '@/types/llm';
 
-// ref: https://platform.moonshot.cn/docs/intro#模型列表
 const Moonshot: ModelProviderCard = {
   chatModels: [],
-  checkModel: 'kimi-latest',
+  checkModel: 'kimi-k2.5',
   description:
     'Moonshot, from Moonshot AI (Beijing Moonshot Technology), offers multiple NLP models for use cases like content creation, research, recommendations, and medical analysis, with strong long-context and complex generation support.',
   id: 'moonshot',
   modelList: { showModelFetcher: true },
-  modelsUrl: 'https://platform.moonshot.cn/docs/intro',
+  modelsUrl: 'https://platform.moonshot.ai/docs/pricing/chat',
   name: 'Moonshot',
   settings: {
     disableBrowserRequest: true, // CORS error
@@ -22,7 +21,7 @@ const Moonshot: ModelProviderCard = {
     sdkType: 'openai',
     showModelFetcher: true,
   },
-  url: 'https://www.moonshot.cn',
+  url: 'https://www.moonshot.ai/',
 };
 
 export default Moonshot;

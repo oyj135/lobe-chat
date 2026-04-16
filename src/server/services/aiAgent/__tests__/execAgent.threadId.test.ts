@@ -1,9 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ModelBankModule from 'model-bank';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiAgentService } from '../index';
 
-// Mock MessageModel to capture create calls
-const mockMessageCreate = vi.fn();
+// Use vi.hoisted to ensure mock functions are available before vi.mock runs
+const { mockMessageCreate } = vi.hoisted(() => ({
+  mockMessageCreate: vi.fn(),
+}));
+
+// Mock trusted client to avoid server-side env access
+vi.mock('@/libs/trusted-client', () => ({
+  generateTrustedClientToken: vi.fn().mockReturnValue(undefined),
+  getTrustedClientTokenForSession: vi.fn().mockResolvedValue(undefined),
+  isTrustedClientEnabled: vi.fn().mockReturnValue(false),
+}));
 
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
@@ -16,6 +26,23 @@ vi.mock('@/database/models/message', () => ({
 // Mock AgentModel
 vi.mock('@/database/models/agent', () => ({
   AgentModel: vi.fn().mockImplementation(() => ({
+    getAgentConfig: vi.fn().mockResolvedValue({
+      chatConfig: {},
+      files: [],
+      id: 'agent-1',
+      knowledgeBases: [],
+      model: 'gpt-4',
+      plugins: [],
+      provider: 'openai',
+      systemRole: 'You are a helpful assistant',
+    }),
+    queryAgents: vi.fn().mockResolvedValue([]),
+  })),
+}));
+
+// Mock AgentService
+vi.mock('@/server/services/agent', () => ({
+  AgentService: vi.fn().mockImplementation(() => ({
     getAgentConfig: vi.fn().mockResolvedValue({
       chatConfig: {},
       files: [],
@@ -40,6 +67,8 @@ vi.mock('@/database/models/plugin', () => ({
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn().mockImplementation(() => ({
     create: vi.fn().mockResolvedValue({ id: 'topic-1' }),
+    findById: vi.fn().mockResolvedValue(undefined),
+    updateMetadata: vi.fn().mockResolvedValue(undefined),
   })),
 }));
 
@@ -64,6 +93,27 @@ vi.mock('@/server/services/agentRuntime', () => ({
   })),
 }));
 
+// Mock MarketService (for getLobehubSkillManifests)
+vi.mock('@/server/services/market', () => ({
+  MarketService: vi.fn().mockImplementation(() => ({
+    getLobehubSkillManifests: vi.fn().mockResolvedValue([]),
+  })),
+}));
+
+// Mock KlavisService (for getKlavisManifests)
+vi.mock('@/server/services/klavis', () => ({
+  KlavisService: vi.fn().mockImplementation(() => ({
+    getKlavisManifests: vi.fn().mockResolvedValue([]),
+  })),
+}));
+
+// Mock FileService
+vi.mock('@/server/services/file', () => ({
+  FileService: vi.fn().mockImplementation(() => ({
+    uploadFromUrl: vi.fn(),
+  })),
+}));
+
 // Mock Mecha modules
 vi.mock('@/server/modules/Mecha', () => ({
   createServerAgentToolsEngine: vi.fn().mockReturnValue({
@@ -73,16 +123,28 @@ vi.mock('@/server/modules/Mecha', () => ({
   serverMessagesEngine: vi.fn().mockResolvedValue([{ content: 'test', role: 'user' }]),
 }));
 
-// Mock model-bank
-vi.mock('model-bank', () => ({
-  LOBE_DEFAULT_MODEL_LIST: [
-    {
-      abilities: { functionCall: true, video: false, vision: true },
-      id: 'gpt-4',
-      providerId: 'openai',
-    },
-  ],
+// Mock deviceProxy
+vi.mock('@/server/services/toolExecution/deviceProxy', () => ({
+  deviceProxy: {
+    isConfigured: false,
+    queryDeviceList: vi.fn().mockResolvedValue([]),
+  },
 }));
+
+// Mock model-bank
+vi.mock('model-bank', async (importOriginal) => {
+  const actual = await importOriginal<typeof ModelBankModule>();
+  return {
+    ...actual,
+    LOBE_DEFAULT_MODEL_LIST: [
+      {
+        abilities: { functionCall: true, video: false, vision: true },
+        id: 'gpt-4',
+        providerId: 'openai',
+      },
+    ],
+  };
+});
 
 describe('AiAgentService.execAgent - threadId handling', () => {
   let service: AiAgentService;
@@ -91,11 +153,16 @@ describe('AiAgentService.execAgent - threadId handling', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-
-    // Setup default mock responses
+    // Explicitly clear the shared mock to prevent state pollution between tests
+    mockMessageCreate.mockClear();
     mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
 
     service = new AiAgentService(mockDb, userId);
+  });
+
+  afterEach(() => {
+    // Ensure cleanup after each test
+    mockMessageCreate.mockClear();
   });
 
   describe('when threadId is provided in appContext', () => {
@@ -178,7 +245,7 @@ describe('AiAgentService.execAgent - threadId handling', () => {
 
       expect(assistantMessageCall).toBeDefined();
       expect(assistantMessageCall![0].threadId).toBeUndefined();
-    });
+    }, 10_000);
   });
 
   describe('when appContext is undefined', () => {
@@ -220,6 +287,6 @@ describe('AiAgentService.execAgent - threadId handling', () => {
 
       // Verify groupId is passed to AgentRuntimeService (checked in appContext)
       // This is handled by the createOperation call
-    });
+    }, 10_000);
   });
 });

@@ -1,7 +1,8 @@
 import { Flexbox, Highlighter } from '@lobehub/ui';
-import Image from 'next/image';
-import Link from 'next/link';
-import { type ReactNode, memo } from 'react';
+import { type ReactNode } from 'react';
+import { memo } from 'react';
+
+import Image from '@/libs/next/Image';
 
 const TooltipContent = memo<{ children: ReactNode }>(({ children }) => {
   if (typeof children !== 'string') return children;
@@ -9,19 +10,19 @@ const TooltipContent = memo<{ children: ReactNode }>(({ children }) => {
   if (children.startsWith('data:image')) {
     return (
       <Image
+        unoptimized
         alt={'tooltip-image'}
         src={children}
         style={{ height: 'auto', maxWidth: '100%' }}
-        unoptimized
       />
     );
   }
 
   if (children.startsWith('http'))
     return (
-      <Link href={children} target={'_blank'}>
+      <a href={children} rel="noreferrer" target="_blank">
         {children}
-      </Link>
+      </a>
     );
 
   const code = children.trim().trimEnd();
@@ -30,11 +31,11 @@ const TooltipContent = memo<{ children: ReactNode }>(({ children }) => {
     return (
       <Highlighter
         language={'json'}
+        variant={'borderless'}
         style={{
           maxHeight: 400,
           overflow: 'auto',
         }}
-        variant={'borderless'}
       >
         {JSON.stringify(JSON.parse(code), null, 2)}
       </Highlighter>

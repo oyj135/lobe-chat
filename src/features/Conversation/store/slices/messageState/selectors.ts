@@ -1,7 +1,7 @@
 import { useChatStore } from '@/store/chat';
 import { threadSelectors } from '@/store/chat/selectors';
 
-import type { State } from '../../initialState';
+import { type State } from '../../initialState';
 import { dataSelectors } from '../data/selectors';
 
 /**
@@ -42,6 +42,11 @@ const messageLoadingIds = (s: State) => s.messageLoadingIds;
 const isAIGenerating = (s: State) => s.operationState.isAIGenerating;
 
 /**
+ * Check if input should be in loading state (from sendMessage through AI generation)
+ */
+const isInputLoading = (s: State) => s.operationState.isInputLoading;
+
+/**
  * Get send message error for this context (if any)
  */
 const sendMessageError = (s: State) => s.operationState.sendMessageError;
@@ -69,6 +74,12 @@ const isMessageRegenerating = (id: string) => (s: State) =>
  */
 const isMessageContinuing = (id: string) => (s: State) =>
   s.operationState.getMessageOperationState(id).isContinuing;
+
+/**
+ * Check if a message generation was interrupted by user
+ */
+const isMessageInterrupted = (id: string) => (s: State) =>
+  s.operationState.getMessageOperationState(id).isInterrupted;
 
 /**
  * Check if a message is in reasoning state
@@ -119,7 +130,7 @@ const isToolApiNameShining =
  * Check if a message has a thread by source message ID
  * This is a bridge selector that reads from global ChatStore
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+
 const hasThreadBySourceMsgId = (id: string) => (_s: State) => {
   const chatState = useChatStore.getState();
   return threadSelectors.hasThreadBySourceMsgId(id)(chatState);
@@ -129,7 +140,7 @@ const hasThreadBySourceMsgId = (id: string) => (_s: State) => {
  * Check if we are in thread mode (has active thread ID)
  * This is a bridge selector that reads from global ChatStore
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+
 const isThreadMode = (_s: State) => {
   const chatState = useChatStore.getState();
   return !!chatState.activeThreadId;
@@ -138,12 +149,14 @@ const isThreadMode = (_s: State) => {
 export const messageStateSelectors = {
   hasThreadBySourceMsgId,
   isAIGenerating,
+  isInputLoading,
   isMessageCollapsed,
   isMessageContinuing,
   isMessageCreating,
   isMessageEditing,
   isMessageGenerating,
   isMessageInReasoning,
+  isMessageInterrupted,
   isMessageLoading,
   isMessageProcessing,
   isMessageRegenerating,

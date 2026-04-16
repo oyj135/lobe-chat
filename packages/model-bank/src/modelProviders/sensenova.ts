@@ -1,4 +1,4 @@
-import { type ModelProviderCard } from '@/types/llm';
+import type { ModelProviderCard } from '@/types/llm';
 
 // ref https://platform.sensenova.cn/pricing
 // ref https://platform.sensenova.cn/release?path=/release-202409.md
@@ -15,7 +15,7 @@ const SenseNova: ModelProviderCard = {
   settings: {
     disableBrowserRequest: true,
     proxyUrl: {
-      placeholder: 'https://api.sensenova.cn/compatible-mode/v1',
+      placeholder: 'https://api.sensenova.cn/compatible-mode/v2',
     },
     sdkType: 'openai',
     showModelFetcher: true,

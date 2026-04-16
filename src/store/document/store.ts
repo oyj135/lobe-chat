@@ -3,35 +3,41 @@ import { createWithEqualityFn } from 'zustand/traditional';
 import { type StateCreator } from 'zustand/vanilla';
 
 import { createDevtools } from '../middleware/createDevtools';
-import { type EditorAction, type EditorState, createEditorSlice, initialEditorState } from './slices/editor';
-import {
-  type NotebookAction,
-  type NotebookState,
-  createNotebookSlice,
-  initialNotebookState,
-} from './slices/notebook';
+import { expose } from '../middleware/expose';
+import { flattenActions } from '../utils/flattenActions';
+import { type ResetableStore, ResetableStoreAction } from '../utils/resetableStore';
+import { type DocumentAction } from './slices/document';
+import { createDocumentSlice } from './slices/document';
+import { type EditorAction, type EditorState } from './slices/editor';
+import { createEditorSlice, initialEditorState } from './slices/editor';
 
-// Combined state type
-export type DocumentState = EditorState & NotebookState;
+// State type
+export type DocumentState = EditorState;
 
-// Combined action type
-export type DocumentAction = EditorAction & NotebookAction;
+// Action type
+export type DocumentStoreAction = DocumentAction & EditorAction & ResetableStore;
 
 // Full store type
-export type DocumentStore = DocumentState & DocumentAction;
+export type DocumentStore = DocumentState & DocumentStoreAction;
 
 // Initial state
 const initialState: DocumentState = {
   ...initialEditorState,
-  ...initialNotebookState,
 };
 
+class DocumentStoreResetAction extends ResetableStoreAction<DocumentStore> {
+  protected readonly resetActionName = 'resetDocumentStore';
+}
+
 const createStore: StateCreator<DocumentStore, [['zustand/devtools', never]]> = (
-  ...parameters
+  ...parameters: Parameters<StateCreator<DocumentStore, [['zustand/devtools', never]]>>
 ) => ({
   ...initialState,
-  ...createEditorSlice(...parameters),
-  ...createNotebookSlice(...parameters),
+  ...flattenActions<DocumentStoreAction>([
+    createDocumentSlice(...parameters),
+    createEditorSlice(...parameters),
+    new DocumentStoreResetAction(...parameters),
+  ]),
 });
 
 const devtools = createDevtools('document');
@@ -40,5 +46,7 @@ export const useDocumentStore = createWithEqualityFn<DocumentStore>()(
   devtools(createStore),
   shallow,
 );
+
+expose('document', useDocumentStore);
 
 export const getDocumentStoreState = () => useDocumentStore.getState();

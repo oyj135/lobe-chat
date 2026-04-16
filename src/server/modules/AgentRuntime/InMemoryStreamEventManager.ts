@@ -1,15 +1,27 @@
 import debug from 'debug';
 
-import type { StreamChunkData, StreamEvent } from './StreamEventManager';
-import type { IStreamEventManager } from './types';
+import { type StreamChunkData, type StreamEvent } from './StreamEventManager';
+import { type IStreamEventManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:in-memory-stream-event-manager');
+
+const getDefaultReasonDetail = (finalState: any, reason?: string): string => {
+  if (reason === 'error') {
+    return finalState?.error?.message || finalState?.error?.type || 'Agent runtime failed';
+  }
+
+  if (reason === 'interrupted') {
+    return finalState?.error?.message || 'Agent runtime interrupted';
+  }
+
+  return 'Agent runtime completed successfully';
+};
 
 type EventCallback = (events: StreamEvent[]) => void;
 
 /**
  * In-Memory Stream Event Manager
- * 内存实现，用于测试和本地开发环境
+ * In-memory implementation for testing and local development environments
  */
 export class InMemoryStreamEventManager implements IStreamEventManager {
   private streams: Map<string, StreamEvent[]> = new Map();
@@ -34,7 +46,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
       timestamp: Date.now(),
     };
 
-    // 获取或创建 stream
+    // Get or create stream
     let stream = this.streams.get(operationId);
     if (!stream) {
       stream = [];
@@ -43,14 +55,14 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
 
     stream.push(eventData);
 
-    // 限制流长度，防止内存溢出
+    // Limit stream length to prevent memory overflow
     if (stream.length > 1000) {
       stream.shift();
     }
 
     log('Published event %s for operation %s:%d', eventData.type, operationId, eventData.stepIndex);
 
-    // 通知订阅者
+    // Notify subscribers
     const callbacks = this.subscribers.get(operationId);
     if (callbacks) {
       for (const callback of callbacks) {
@@ -98,7 +110,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
         operationId,
         phase: 'execution_complete',
         reason: reason || 'completed',
-        reasonDetail: reasonDetail || 'Agent runtime completed successfully',
+        reasonDetail: reasonDetail || getDefaultReasonDetail(finalState, reason),
       },
       stepIndex,
       type: 'agent_runtime_end',
@@ -111,7 +123,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
       return [];
     }
 
-    // 返回最近的 count 条事件（倒序）
+    // Return most recent count events (in reverse order)
     return stream.slice(-count).reverse();
   }
 
@@ -126,12 +138,48 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
   }
 
   async disconnect(): Promise<void> {
-    // 内存实现无需断开连接
+    // In-memory implementation doesn't need to disconnect
     log('InMemoryStreamEventManager disconnected');
   }
 
   /**
-   * 订阅流式事件（用于测试）
+   * Subscribe to stream events (for SSE endpoint)
+   * Compatible with Redis StreamEventManager.subscribeStreamEvents
+   */
+  async subscribeStreamEvents(
+    operationId: string,
+    _lastEventId: string,
+    onEvents: (events: StreamEvent[]) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const unsubscribe = this.subscribe(operationId, (events) => {
+        onEvents(events);
+        // Check if agent_runtime_end was received — caller will handle closing
+        const hasEnd = events.some((e) => e.type === 'agent_runtime_end');
+        if (hasEnd) {
+          unsubscribe();
+          resolve();
+        }
+      });
+
+      // Handle abort signal
+      if (signal) {
+        const onAbort = () => {
+          unsubscribe();
+          resolve();
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+  }
+
+  /**
+   * Subscribe to stream events (for testing)
    */
   subscribe(operationId: string, callback: EventCallback): () => void {
     let callbacks = this.subscribers.get(operationId);
@@ -141,7 +189,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
     }
     callbacks.push(callback);
 
-    // 返回取消订阅函数
+    // Return unsubscribe function
     return () => {
       const cbs = this.subscribers.get(operationId);
       if (cbs) {
@@ -154,7 +202,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
   }
 
   /**
-   * 清空所有数据（用于测试）
+   * Clear all data (for testing)
    */
   clear(): void {
     this.streams.clear();
@@ -164,14 +212,14 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
   }
 
   /**
-   * 获取所有事件（用于测试验证）
+   * Get all events (for test verification)
    */
   getAllEvents(operationId: string): StreamEvent[] {
     return this.streams.get(operationId) ?? [];
   }
 
   /**
-   * 等待特定类型的事件（用于测试）
+   * Wait for a specific event type (for testing)
    */
   waitForEvent(
     operationId: string,
@@ -180,7 +228,6 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
   ): Promise<StreamEvent> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        // eslint-disable-next-line @typescript-eslint/no-use-before-define
         unsubscribe();
         reject(new Error(`Timeout waiting for event ${eventType}`));
       }, timeout);
@@ -196,7 +243,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
         }
       });
 
-      // 检查已有事件
+      // Check existing events
       const existingEvents = this.streams.get(operationId) ?? [];
       for (const event of existingEvents) {
         if (event.type === eventType) {
@@ -211,6 +258,6 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
 }
 
 /**
- * 单例实例，用于测试和本地开发环境
+ * Singleton instance for testing and local development environments
  */
 export const inMemoryStreamEventManager = new InMemoryStreamEventManager();

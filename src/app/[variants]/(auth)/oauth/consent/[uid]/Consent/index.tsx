@@ -23,7 +23,7 @@ interface ClientProps {
 }
 
 /**
- * 获取 Scope 的描述
+ * Get the description for a scope
  */
 function getScopeDescription(scope: string, t: any): string {
   return t(`consent.scope.${scope.replace(':', '-')}`, scope);
@@ -50,6 +50,8 @@ const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata
         logoUrl={clientMetadata.logo}
       />
       <AuthCard
+        subtitle={t('consent.description', { clientName: clientDisplayName })}
+        title={t('consent.title', { clientName: clientDisplayName })}
         footer={
           <form action="/oidc/consent" method="post" style={{ width: '100%' }}>
             <input name="uid" type="hidden" value={uid} />
@@ -58,12 +60,12 @@ const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata
                 htmlType="submit"
                 loading={isLoading}
                 name="consent"
-                onClick={() => {
-                  setIsLoading(true);
-                }}
                 size={'large'}
                 type="primary"
                 value="accept"
+                onClick={() => {
+                  setIsLoading(true);
+                }}
               >
                 {t('consent.buttons.accept')}
               </Button>
@@ -73,8 +75,6 @@ const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata
             </Flexbox>
           </form>
         }
-        subtitle={t('consent.description', { clientName: clientDisplayName })}
-        title={t('consent.title', { clientName: clientDisplayName })}
       >
         <Text fontSize={16} type={'secondary'}>
           {t('consent.permissionsTitle')}

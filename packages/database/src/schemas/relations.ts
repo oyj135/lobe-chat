@@ -1,14 +1,21 @@
-/* eslint-disable sort-keys-fix/sort-keys-fix  */
 import { relations } from 'drizzle-orm';
 import { index, pgTable, primaryKey, text, uuid, varchar } from 'drizzle-orm/pg-core';
 
 import { createdAt } from './_helpers';
 import { agents, agentsFiles, agentsKnowledgeBases } from './agent';
+import {
+  agentEvalBenchmarks,
+  agentEvalDatasets,
+  agentEvalRuns,
+  agentEvalRunTopics,
+  agentEvalTestCases,
+} from './agentEvals';
 import { asyncTasks } from './asyncTask';
 import { chatGroups, chatGroupsAgents } from './chatGroup';
+import { documentHistories } from './documentHistory';
 import { documents, files, knowledgeBases } from './file';
-import { generationBatches, generationTopics, generations } from './generation';
-import { messageGroups, messages, messagesFiles } from './message';
+import { generationBatches, generations, generationTopics } from './generation';
+import { messageGroups, messages, messagesFiles, messageTranslates } from './message';
 import { chunks, documentChunks, unstructuredChunks } from './rag';
 import { sessionGroups, sessions } from './session';
 import { threads, topicDocuments, topics } from './topic';
@@ -31,6 +38,7 @@ export const agentsToSessions = pgTable(
     primaryKey({ columns: [t.agentId, t.sessionId] }),
     index('agents_to_sessions_session_id_idx').on(t.sessionId),
     index('agents_to_sessions_agent_id_idx').on(t.agentId),
+    index('agents_to_sessions_user_id_idx').on(t.userId),
   ],
 );
 
@@ -49,6 +57,9 @@ export const filesToSessions = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.fileId, t.sessionId] }),
+    userIdIdx: index('files_to_sessions_user_id_idx').on(t.userId),
+    fileIdIdx: index('files_to_sessions_file_id_idx').on(t.fileId),
+    sessionIdIdx: index('files_to_sessions_session_id_idx').on(t.sessionId),
   }),
 );
 
@@ -64,6 +75,9 @@ export const fileChunks = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.fileId, t.chunkId] }),
+    userIdIdx: index('file_chunks_user_id_idx').on(t.userId),
+    fileIdIdx: index('file_chunks_file_id_idx').on(t.fileId),
+    chunkIdIdx: index('file_chunks_chunk_id_idx').on(t.chunkId),
   }),
 );
 export type NewFileChunkItem = typeof fileChunks.$inferInsert;
@@ -85,6 +99,10 @@ export const threadsRelations = relations(threads, ({ one }) => ({
 
 export const messagesRelations = relations(messages, ({ many, one }) => ({
   filesToMessages: many(messagesFiles),
+  translation: one(messageTranslates, {
+    fields: [messages.id],
+    references: [messageTranslates.id],
+  }),
 
   session: one(sessions, {
     fields: [messages.sessionId],
@@ -220,7 +238,7 @@ export const filesRelations = relations(files, ({ many, one }) => ({
   }),
 }));
 
-// Document 相关关系定义
+// Document-related relation definitions
 export const documentsRelations = relations(documents, ({ one, many }) => ({
   file: one(files, {
     fields: [documents.fileId],
@@ -229,6 +247,18 @@ export const documentsRelations = relations(documents, ({ one, many }) => ({
   }),
   topics: many(topicDocuments),
   chunks: many(documentChunks),
+  histories: many(documentHistories),
+}));
+
+export const documentHistoriesRelations = relations(documentHistories, ({ one }) => ({
+  document: one(documents, {
+    fields: [documentHistories.documentId],
+    references: [documents.id],
+  }),
+  user: one(users, {
+    fields: [documentHistories.userId],
+    references: [users.id],
+  }),
 }));
 
 export const topicDocumentsRelations = relations(topicDocuments, ({ one }) => ({
@@ -249,7 +279,7 @@ export const documentChunksRelations = relations(documentChunks, ({ one }) => ({
   }),
 }));
 
-// Generation 相关关系定义
+// Generation-related relation definitions
 export const generationTopicsRelations = relations(generationTopics, ({ one, many }) => ({
   user: one(users, {
     fields: [generationTopics.userId],
@@ -289,7 +319,7 @@ export const generationsRelations = relations(generations, ({ one }) => ({
   }),
 }));
 
-// Chat Groups 相关关系定义
+// Chat Groups-related relation definitions
 export const chatGroupsRelations = relations(chatGroups, ({ many, one }) => ({
   user: one(users, {
     fields: [chatGroups.userId],
@@ -313,7 +343,7 @@ export const chatGroupsAgentsRelations = relations(chatGroupsAgents, ({ one }) =
   }),
 }));
 
-// Message Groups 相关关系定义
+// Message Groups-related relation definitions
 export const messageGroupsRelations = relations(messageGroups, ({ many, one }) => ({
   user: one(users, {
     fields: [messageGroups.userId],
@@ -329,4 +359,61 @@ export const messageGroupsRelations = relations(messageGroups, ({ many, one }) =
   }),
   childGroups: many(messageGroups),
   messages: many(messages),
+}));
+
+// Agent Evaluation-related relation definitions
+export const agentEvalBenchmarksRelations = relations(agentEvalBenchmarks, ({ many }) => ({
+  datasets: many(agentEvalDatasets),
+}));
+
+export const agentEvalDatasetsRelations = relations(agentEvalDatasets, ({ one, many }) => ({
+  benchmark: one(agentEvalBenchmarks, {
+    fields: [agentEvalDatasets.benchmarkId],
+    references: [agentEvalBenchmarks.id],
+  }),
+  user: one(users, {
+    fields: [agentEvalDatasets.userId],
+    references: [users.id],
+  }),
+  testCases: many(agentEvalTestCases),
+  runs: many(agentEvalRuns),
+}));
+
+export const agentEvalTestCasesRelations = relations(agentEvalTestCases, ({ one, many }) => ({
+  dataset: one(agentEvalDatasets, {
+    fields: [agentEvalTestCases.datasetId],
+    references: [agentEvalDatasets.id],
+  }),
+  runTopics: many(agentEvalRunTopics),
+}));
+
+export const agentEvalRunsRelations = relations(agentEvalRuns, ({ one, many }) => ({
+  dataset: one(agentEvalDatasets, {
+    fields: [agentEvalRuns.datasetId],
+    references: [agentEvalDatasets.id],
+  }),
+  targetAgent: one(agents, {
+    fields: [agentEvalRuns.targetAgentId],
+    references: [agents.id],
+  }),
+  user: one(users, {
+    fields: [agentEvalRuns.userId],
+    references: [users.id],
+  }),
+  runTopics: many(agentEvalRunTopics),
+}));
+
+export const agentEvalRunTopicsRelations = relations(agentEvalRunTopics, ({ one }) => ({
+  run: one(agentEvalRuns, {
+    fields: [agentEvalRunTopics.runId],
+    references: [agentEvalRuns.id],
+  }),
+  topic: one(topics, {
+    fields: [agentEvalRunTopics.topicId],
+    references: [topics.id],
+  }),
+  testCase: one(agentEvalTestCases, {
+    fields: [agentEvalRunTopics.testCaseId],
+    references: [agentEvalTestCases.id],
+  }),
 }));

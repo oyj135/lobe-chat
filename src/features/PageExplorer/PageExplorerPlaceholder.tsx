@@ -12,6 +12,7 @@ import GuideVideo from '@/components/GuideVideo';
 import NavHeader from '@/features/NavHeader';
 import useNotionImport from '@/features/ResourceManager/components/Header/hooks/useNotionImport';
 import { useFileStore } from '@/store/file';
+import { usePageStore } from '@/store/page';
 import { DocumentSourceType } from '@/types/document';
 import { standardizeIdentifier } from '@/utils/identifier';
 
@@ -76,29 +77,30 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
   ({ hasPages = false, knowledgeBaseId }) => {
     const { t } = useTranslation(['file', 'common']);
     const [isUploading, setIsUploading] = useState(false);
+
+    // Page-specific operations from pageStore
     const [
       createNewPage,
-      createDocument,
-      createOptimisticDocument,
-      replaceTempDocumentWithReal,
+      createOptimisticPage,
+      replaceTempPageWithReal,
       setSelectedPageId,
-      refreshFileList,
       fetchDocuments,
-    ] = useFileStore((s) => [
+    ] = usePageStore((s) => [
       s.createNewPage,
-      s.createDocument,
-      s.createOptimisticDocument,
-      s.replaceTempDocumentWithReal,
+      s.createOptimisticPage,
+      s.replaceTempPageWithReal,
       s.setSelectedPageId,
-      s.refreshFileList,
       s.fetchDocuments,
     ]);
+
+    // File operations from FileStore (for uploads and notion import)
+    const [createDocument] = useFileStore((s) => [s.createDocument]);
 
     const notionImport = useNotionImport({
       createDocument,
       currentFolderId: null,
       libraryId: knowledgeBaseId ?? null,
-      refreshFileList,
+      refetchResources: fetchDocuments,
       t,
     });
 
@@ -107,10 +109,6 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
       event: React.ChangeEvent<HTMLInputElement>,
     ) => {
       await notionImport.handleNotionImport(event);
-      // Fetch documents to update the UI immediately
-      // The hook calls refreshFileList which invalidates SWR cache,
-      // but we need to explicitly fetch to update the zustand store
-      await fetchDocuments({ pageOnly: true });
     };
 
     const handleCreateDocument = async (content: string, title: string) => {
@@ -121,7 +119,7 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
       }
 
       // For markdown uploads with content, use optimistic pattern similar to createNewPage
-      const tempPageId = createOptimisticDocument(title);
+      const tempPageId = createOptimisticPage(title);
       // Set selected page to temp ID immediately (with URL update disabled for temp IDs)
       setSelectedPageId(tempPageId, false);
 
@@ -153,13 +151,13 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
         };
 
         // Replace optimistic with real
-        replaceTempDocumentWithReal(tempPageId, realPage);
+        replaceTempPageWithReal(tempPageId, realPage);
         // Update selected page ID and URL to the real page
         setSelectedPageId(newDoc.id);
       } catch (error) {
         console.error('Failed to create page:', error);
         // Remove temp document on error
-        useFileStore.getState().removeTempDocument(tempPageId);
+        usePageStore.getState().removeTempPage(tempPageId);
         setSelectedPageId(null);
         throw error;
       }
@@ -181,7 +179,7 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
           const fileName = file.name.replace(/\.(pdf|docx)$/i, '');
 
           // Create optimistic document but don't select it yet
-          const tempPageId = createOptimisticDocument(fileName);
+          const tempPageId = createOptimisticPage(fileName);
 
           try {
             // Upload file to server
@@ -221,7 +219,7 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
             };
 
             // Replace optimistic with real document in the store
-            replaceTempDocumentWithReal(tempPageId, realPage);
+            replaceTempPageWithReal(tempPageId, realPage);
 
             // Update selected page ID in store (with full ID including prefix)
             setSelectedPageId(parsedDocument.id, false);
@@ -233,7 +231,7 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
           } catch (error) {
             console.error('Failed to upload and parse file:', error);
             // Remove temp document on error
-            useFileStore.getState().removeTempDocument(tempPageId);
+            usePageStore.getState().removeTempPage(tempPageId);
             throw error;
           }
         }
@@ -256,11 +254,11 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
               <Text type={'secondary'}>{t('or', { ns: 'common' })}</Text>
             </Flexbox>
           )}
-          <Flexbox gap={12} horizontal>
+          <Flexbox horizontal gap={12}>
             <Flexbox
               className={styles.card}
-              onClick={() => handleCreateDocument('', t('pageList.untitled'))}
               padding={16}
+              onClick={() => handleCreateDocument('', t('pageList.untitled'))}
             >
               <span className={styles.actionTitle}>{t('pageEditor.empty.createNewDocument')}</span>
               <div className={styles.glow} style={{ background: cssVar.purple }} />
@@ -303,8 +301,8 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
             {/* Import from Notion */}
             <Flexbox
               className={styles.card}
-              onClick={notionImport.handleOpenNotionGuide}
               padding={16}
+              onClick={notionImport.handleOpenNotionGuide}
             >
               <span className={styles.actionTitle}>{t('pageEditor.empty.importNotion')}</span>
               <div className={styles.glow} style={{ background: cssVar.geekblue }} />
@@ -323,17 +321,17 @@ const PageExplorerPlaceholder = memo<PageExplorerPlaceholderProps>(
           cover={<GuideVideo height={269} src={FILE_URL.importFromNotionGuide} width={358} />}
           desc={t('header.actions.notionGuide.desc')}
           okText={t('header.actions.notionGuide.ok')}
-          onCancel={notionImport.handleCloseNotionGuide}
-          onOk={notionImport.handleStartNotionImport}
           open={notionImport.notionGuideOpen}
           title={t('header.actions.notionGuide.title')}
+          onCancel={notionImport.handleCloseNotionGuide}
+          onOk={notionImport.handleStartNotionImport}
         />
         <input
           accept=".zip"
-          onChange={handleNotionImportWithLocalUpdate}
           ref={notionImport.notionInputRef}
           style={{ display: 'none' }}
           type="file"
+          onChange={handleNotionImportWithLocalUpdate}
         />
       </>
     );

@@ -1,9 +1,11 @@
-import { type DropdownItem, DropdownMenu } from '@lobehub/ui';
-import { ArrowDownAZ } from 'lucide-react';
+import { DropdownMenu, Icon } from '@lobehub/ui';
+import { type LucideIcon } from 'lucide-react';
+import { ArrowDownAZ, CalendarIcon, Check, HardDriveIcon } from 'lucide-react';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useResourceManagerStore } from '@/app/[variants]/(main)/resource/features/store';
+import { type MenuProps } from '@/components/Menu';
+import { useResourceManagerStore } from '@/routes/(main)/resource/features/store';
 
 import ActionIconWithChevron from './ActionIconWithChevron';
 
@@ -12,24 +14,28 @@ const SortDropdown = memo(() => {
   const sorter = useResourceManagerStore((s) => s.sorter);
   const setSorter = useResourceManagerStore((s) => s.setSorter);
 
-  const sortOptions = useMemo(
+  const sortOptions: { icon: LucideIcon; key: string; label: string }[] = useMemo(
     () => [
-      { key: 'name', label: t('FileManager.sort.name') },
-      { key: 'createdAt', label: t('FileManager.sort.dateAdded') },
-      { key: 'size', label: t('FileManager.sort.size') },
+      { icon: ArrowDownAZ, key: 'name', label: t('FileManager.sort.name') },
+      { icon: CalendarIcon, key: 'createdAt', label: t('FileManager.sort.dateAdded') },
+      { icon: HardDriveIcon, key: 'size', label: t('FileManager.sort.size') },
     ],
     [t],
   );
 
-  const menuItems: DropdownItem[] = sortOptions.map((option) => ({
-    key: option.key,
-    label: option.label,
-    onClick: () => setSorter(option.key as 'name' | 'createdAt' | 'size'),
-    style:
-      option.key === (sorter || 'createdAt')
-        ? { backgroundColor: 'var(--ant-control-item-bg-active)' }
-        : {},
-  }));
+  const selectedKey = sorter || 'createdAt';
+
+  const menuItems: MenuProps['items'] = useMemo(
+    () =>
+      sortOptions.map((option) => ({
+        extra: option.key === selectedKey ? <Icon icon={Check} /> : undefined,
+        icon: <Icon icon={option.icon} />,
+        key: option.key,
+        label: option.label,
+        onClick: () => setSorter(option.key as 'name' | 'createdAt' | 'size'),
+      })),
+    [selectedKey, setSorter, sortOptions],
+  );
 
   const currentSortLabel =
     sortOptions.find((option) => option.key === sorter)?.label || t('FileManager.sort.dateAdded');

@@ -8,61 +8,65 @@ import Settings from './Settings';
 
 interface ActionsProps {
   assistantMessageId: string;
-  handleExpand?: (expand?: boolean) => void;
+  canToggleCustomToolRender?: boolean;
   identifier: string;
+  setShowCustomToolRender?: (show: boolean) => void;
   setShowDebug?: (show: boolean) => void;
-  setShowPluginRender: (show: boolean) => void;
-  showCustomPluginRender: boolean;
+  showCustomToolRender?: boolean;
   showDebug?: boolean;
-  showPluginRender: boolean;
+  /** When set, trash removes only this tool from the message instead of deleting the assistant message */
+  toolRemoval?: { messageId: string; toolCallId: string };
 }
 
 const Actions = memo<ActionsProps>(
   ({
     assistantMessageId,
+    canToggleCustomToolRender,
     identifier,
+    setShowCustomToolRender,
     setShowDebug,
-    setShowPluginRender,
-    showCustomPluginRender,
+    showCustomToolRender,
     showDebug,
-    showPluginRender,
-    handleExpand,
+    toolRemoval,
   }) => {
     const { t } = useTranslation('plugin');
-    const deleteAssistantMessage = useConversationStore((s) => s.deleteAssistantMessage);
+    const [deleteAssistantMessage, removeToolFromMessage] = useConversationStore((s) => [
+      s.deleteAssistantMessage,
+      s.removeToolFromMessage,
+    ]);
 
     return (
       <>
-        {showCustomPluginRender && (
+        {canToggleCustomToolRender && (
           <ActionIcon
-            icon={showPluginRender ? LogsIcon : LayoutPanelTop}
-            onClick={() => {
-              setShowPluginRender(!showPluginRender);
-              handleExpand?.(true);
-            }}
+            icon={showCustomToolRender ? LogsIcon : LayoutPanelTop}
             size={'small'}
-            title={showPluginRender ? t('inspector.args') : t('inspector.pluginRender')}
+            title={showCustomToolRender ? t('inspector.args') : t('inspector.pluginRender')}
+            onClick={() => {
+              setShowCustomToolRender?.(!showCustomToolRender);
+            }}
           />
         )}
         <ActionIcon
           active={showDebug}
           icon={showDebug ? LucideBugOff : LucideBug}
-          onClick={() => {
-            setShowDebug?.(!showDebug);
-            handleExpand?.(true);
-          }}
           size={'small'}
           title={t(showDebug ? 'debug.off' : 'debug.on')}
+          onClick={() => setShowDebug?.(!showDebug)}
         />
         <Settings id={identifier} />
         <ActionIcon
           danger
           icon={Trash2}
-          onClick={() => {
-            deleteAssistantMessage(assistantMessageId);
-          }}
           size={'small'}
           title={t('inspector.delete')}
+          onClick={() => {
+            if (toolRemoval) {
+              void removeToolFromMessage(toolRemoval.messageId, toolRemoval.toolCallId);
+            } else {
+              void deleteAssistantMessage(assistantMessageId);
+            }
+          }}
         />
       </>
     );

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  PlaceholderVariablesProcessor,
   formatPlaceholderValues,
   parsePlaceholderVariables,
   parsePlaceholderVariablesMessages,
+  PlaceholderVariablesProcessor,
   renderPlaceholderTemplate,
 } from '../PlaceholderVariables';
 
@@ -52,6 +52,18 @@ describe('PlaceholderVariablesProcessor', () => {
       const text = 'No placeholders here';
       const result = parsePlaceholderVariables(text, mockVariableGenerators);
       expect(result).toBe('No placeholders here');
+    });
+
+    it('should replace placeholders with surrounding whitespace', () => {
+      const text = 'Hello {{ username }}, today is {{ date }}';
+      const result = parsePlaceholderVariables(text, mockVariableGenerators);
+      expect(result).toBe('Hello TestUser, today is 2023-12-25');
+    });
+
+    it('should handle malformed repeated opening braces without backtracking issues', () => {
+      const text = '{{{{'.repeat(2000);
+      const result = parsePlaceholderVariables(text, mockVariableGenerators);
+      expect(result).toBe(text);
     });
   });
 

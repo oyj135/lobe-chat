@@ -1,5 +1,4 @@
-/* eslint-disable typescript-sort-keys/interface, sort-keys-fix/sort-keys-fix */
-import type { ConversationContext } from '@lobechat/types';
+import { type ConversationContext } from '@lobechat/types';
 
 /**
  * Operation Type Definitions
@@ -22,7 +21,7 @@ export type OperationType =
   | 'createAssistantMessage' // Create assistant message (sub-operation of execAgentRuntime)
   // === LLM execution (sub-operations) ===
   | 'callLLM' // Call LLM streaming response (sub-operation of execAgentRuntime)
-  // === (sub-operations) ===
+  // === (sub-operations) = ==
   | 'reasoning' // AI reasoning process (child operation)
 
   // === RAG and retrieval ===
@@ -37,6 +36,9 @@ export type OperationType =
   // === Tool intervention ===
   | 'approveToolCalling' // Approve tool intervention
   | 'rejectToolCalling' // Reject tool intervention
+  | 'submitToolInteraction' // Submit user interaction response
+  | 'skipToolInteraction' // Skip user interaction
+  | 'cancelToolInteraction' // Cancel user interaction
   // === (sub-operations of executeToolCall) ===
   | 'pluginApi' // Plugin API call
   | 'builtinToolSearch' // Builtin tool: search
@@ -53,10 +55,17 @@ export type OperationType =
   | 'groupAgentGenerate' // Group agent generate (deprecated, use groupAgentStream)
   | 'groupAgentStream' // Group agent SSE stream (sub-operation of execServerAgentRuntime)
 
+  // === Async Task (Desktop only) ===
+  | 'execClientTask' // Execute single async sub-agent task on desktop client
+  | 'execClientTasks' // Execute multiple async sub-agent tasks on desktop client
+
+  // === Context Compression ===
+  // Context compression (compress old messages into summary)
+  | 'contextCompression'
+  | 'createMessageGroup'
+  | 'generateSummary'
   // === Others ===
-  | 'translate' // Translate message
-  | 'topicSummary' // Topic summary
-  | 'historySummary'; // History summary
+  | 'translate'; // Translate message
 
 /**
  * Operation status
@@ -75,19 +84,19 @@ export type OperationStatus =
  * Captured when Operation is created, never changes afterwards
  */
 export interface OperationContext extends Partial<ConversationContext> {
-  messageId?: string; // Associated message ID
-  groupId?: string; // Associated group ID (Group Chat)
   agentId?: string; // Associated agent ID (specific agent in Group Chat)
+  groupId?: string; // Associated group ID (Group Chat)
+  messageId?: string; // Associated message ID
 }
 
 /**
  * Operation cancel context - passed to cancel handler
  */
 export interface OperationCancelContext {
-  operationId: string;
-  type: OperationType;
-  reason: string;
   metadata?: OperationMetadata;
+  operationId: string;
+  reason: string;
+  type: OperationType;
 }
 
 /**
@@ -111,17 +120,13 @@ export interface RuntimeHooks {
  * Operation metadata
  */
 export interface OperationMetadata {
-  // Progress information
-  progress?: {
-    current: number;
-    total: number;
-    percentage?: number;
-  };
+  // Other metadata (extensible)
+  [key: string]: any;
 
-  // Performance information
-  startTime: number;
-  endTime?: number;
+  // Cancel information
+  cancelReason?: string;
   duration?: number;
+  endTime?: number;
 
   // Error information
   error?: {
@@ -131,61 +136,175 @@ export interface OperationMetadata {
     details?: any;
   };
 
-  // Cancel information
-  cancelReason?: string;
-
   // UI state (for sendMessage operation)
   inputEditorTempState?: any | null; // Editor state snapshot for cancel restoration
+
   inputSendErrorMsg?: string; // Error message to display in UI
+  // Progress information
+  progress?: {
+    current: number;
+    total: number;
+    percentage?: number;
+  };
 
   // Runtime hooks (collected during execution, executed after completion)
   runtimeHooks?: RuntimeHooks;
 
-  // Other metadata (extensible)
-  [key: string]: any;
+  // Performance information
+  startTime: number;
 }
 
 /**
  * Operation definition
  */
 export interface Operation {
-  // === Basic information ===
-  id: string; // Unique operation ID (using nanoid)
-  type: OperationType; // Operation type
-  status: OperationStatus; // Operation status
-
+  // === Control ===
+  abortController: AbortController; // Abort controller
+  childOperationIds?: string[]; // Child operation IDs
   // === Context (core: capture and fix business context) ===
   context: OperationContext; // Associated entities, captured at creation
 
-  // === Control ===
-  abortController: AbortController; // Abort controller
+  description?: string; // Operation description (for tooltip)
+
+  // === Basic information ===
+  id: string; // Unique operation ID (using nanoid)
+
+  // === UI display ===
+  label?: string; // Operation display label (for UI)
 
   // === Metadata ===
   metadata: OperationMetadata;
 
   // === Cancel handler ===
   onCancelHandler?: (context: OperationCancelContext) => void | Promise<void>; // Cancel callback
-
   // === Dependencies ===
   parentOperationId?: string; // Parent operation ID (for operation nesting)
-  childOperationIds?: string[]; // Child operation IDs
 
-  // === UI display ===
-  label?: string; // Operation display label (for UI)
-  description?: string; // Operation description (for tooltip)
+  status: OperationStatus; // Operation status
+  type: OperationType; // Operation type
 }
+
+/**
+ * Queued message waiting to be injected into agent runtime
+ */
+export interface QueuedMessage {
+  content: string;
+  createdAt: number;
+  /** Lexical editor JSON state for rich text rendering */
+  editorData?: Record<string, any>;
+  files?: string[];
+  id: string;
+  interruptMode: 'soft' | 'hard';
+}
+
+/**
+ * Merged message ready for injection
+ */
+export interface MergedQueuedMessage {
+  content: string;
+  /** Lexical editor JSON state for rich text rendering */
+  editorData?: Record<string, any>;
+  files: string[];
+}
+
+const createTextNode = (text: string) => ({
+  detail: 0,
+  format: 0,
+  mode: 'normal',
+  style: '',
+  text,
+  type: 'text',
+  version: 1,
+});
+
+const createParagraphNode = (text = '') => ({
+  children: text ? [createTextNode(text)] : [],
+  direction: 'ltr',
+  format: '',
+  indent: 0,
+  type: 'paragraph',
+  version: 1,
+});
+
+const createEditorDataFromContent = (content: string): Record<string, any> | undefined => {
+  if (!content) return undefined;
+
+  return {
+    root: {
+      children: content.split('\n').map((line) => createParagraphNode(line)),
+      direction: 'ltr',
+      format: '',
+      indent: 0,
+      type: 'root',
+      version: 1,
+    },
+  };
+};
+
+const normalizeQueuedEditorData = (message: QueuedMessage): Record<string, any> | undefined => {
+  if (message.editorData?.root) return message.editorData;
+
+  return createEditorDataFromContent(message.content);
+};
+
+const mergeQueuedEditorData = (messages: QueuedMessage[]): Record<string, any> | undefined => {
+  const mergedChildren: any[] = [];
+  let baseRoot: Record<string, any> | undefined;
+
+  for (const message of messages) {
+    const editorData = normalizeQueuedEditorData(message);
+    const root = editorData?.root;
+    const children = root?.children;
+
+    if (!Array.isArray(children) || children.length === 0) continue;
+
+    if (!baseRoot) {
+      baseRoot = structuredClone(root);
+    }
+
+    if (mergedChildren.length > 0) {
+      mergedChildren.push(createParagraphNode());
+    }
+
+    mergedChildren.push(...structuredClone(children));
+  }
+
+  if (mergedChildren.length === 0) return undefined;
+
+  return {
+    root: {
+      ...baseRoot,
+      children: mergedChildren,
+      type: 'root',
+      version: baseRoot?.version ?? 1,
+    },
+  };
+};
+
+/**
+ * Merge multiple queued messages into a single message.
+ * Sorted by creation time, content joined with double newlines.
+ */
+export const mergeQueuedMessages = (messages: QueuedMessage[]): MergedQueuedMessage => {
+  const sorted = [...messages].sort((a, b) => a.createdAt - b.createdAt);
+  return {
+    content: sorted.map((m) => m.content).join('\n\n'),
+    editorData: mergeQueuedEditorData(sorted),
+    files: sorted.flatMap((m) => m.files ?? []),
+  };
+};
 
 /**
  * Operation filter for querying operations
  */
 export interface OperationFilter {
-  type?: OperationType | OperationType[];
-  status?: OperationStatus | OperationStatus[];
   agentId?: string;
-  topicId?: string | null;
-  messageId?: string;
-  threadId?: string;
   groupId?: string;
+  messageId?: string;
+  status?: OperationStatus | OperationStatus[];
+  threadId?: string;
+  topicId?: string | null;
+  type?: OperationType | OperationType[];
 }
 
 // === Operation Type Constants ===
@@ -201,4 +320,14 @@ export interface OperationFilter {
 export const AI_RUNTIME_OPERATION_TYPES: OperationType[] = [
   'execAgentRuntime',
   'execServerAgentRuntime',
+];
+
+/**
+ * Operation types that should block input and show loading state
+ * Superset of AI_RUNTIME_OPERATION_TYPES, also includes sendMessage
+ * since the input should be in loading state from the moment user sends until AI finishes
+ */
+export const INPUT_LOADING_OPERATION_TYPES: OperationType[] = [
+  ...AI_RUNTIME_OPERATION_TYPES,
+  'sendMessage',
 ];

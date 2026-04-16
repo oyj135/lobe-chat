@@ -1,9 +1,10 @@
-import { consola } from 'consola';
-import { writeJSONSync } from 'fs-extra';
-import matter from 'gray-matter';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+
+import { consola } from 'consola';
+import { writeJSONSync } from 'fs-extra';
+import matter from 'gray-matter';
 import pMap from 'p-map';
 
 import { uploader } from './uploader';
@@ -17,7 +18,7 @@ import {
   root,
 } from './utils';
 
-// 定义常量
+// Define constants
 const GITHUB_CDN = 'https://github.com/lobehub/lobe-chat/assets/';
 const CHECK_CDN = [
   'https://cdn.nlark.com/yuque/0/',
@@ -27,6 +28,8 @@ const CHECK_CDN = [
   'https://miro.medium.com/v2/',
   'https://images.unsplash.com/',
   'https://github.com/user-attachments/assets',
+  'https://i.imgur.com/',
+  'https://file.rene.wang',
 ];
 
 const CACHE_FILE = resolve(root, 'docs', '.cdn.cache.json');
@@ -38,7 +41,7 @@ class ImageCDNUploader {
     this.loadCache();
   }
 
-  // 从文件加载缓存数据
+  // Load cache data from file
   private loadCache() {
     try {
       this.cache = JSON.parse(readFileSync(CACHE_FILE, 'utf8'));
@@ -47,7 +50,7 @@ class ImageCDNUploader {
     }
   }
 
-  // 将缓存数据写入文件
+  // Write cache data to file
   private writeCache() {
     try {
       writeFileSync(CACHE_FILE, JSON.stringify(this.cache, null, 2));
@@ -56,18 +59,18 @@ class ImageCDNUploader {
     }
   }
 
-  // 收集所有的图片链接
+  // Collect all image links
   private collectImageLinks(): string[] {
     const links: string[][] = posts.map((post) => {
       const mdx = readFileSync(post, 'utf8');
       const { content, data } = matter(mdx);
-      let inlineLinks: string[] = extractHttpsLinks(content);
+      const inlineLinks: string[] = extractHttpsLinks(content);
 
-      // 添加特定字段中的图片链接
+      // Add image links from specific fields
       if (data?.image) inlineLinks.push(data.image);
       if (data?.seo?.image) inlineLinks.push(data.seo.image);
 
-      // 过滤出有效的 CDN 链接
+      // Filter out valid CDN links
       return inlineLinks.filter(
         (link) =>
           (link.startsWith(GITHUB_CDN) || CHECK_CDN.some((cdn) => link.startsWith(cdn))) &&
@@ -93,11 +96,11 @@ class ImageCDNUploader {
           !this.cache[link],
       ) as string[];
 
-    // 合并和去重链接数组
+    // Merge and deduplicate link arrays
     return mergeAndDeduplicateArrays(links.flat().concat(communityLinks, cloudLinks));
   }
 
-  // 上传图片到 CDN
+  // Upload images to CDN
   private async uploadImagesToCDN(links: string[]) {
     const cdnLinks: { [link: string]: string } = {};
 
@@ -117,12 +120,12 @@ class ImageCDNUploader {
       }
     });
 
-    // 更新缓存
+    // Update cache
     this.cache = { ...this.cache, ...cdnLinks };
     this.writeCache();
   }
 
-  // 根据不同的 CDN 来处理文件上传
+  // Handle file upload based on CDN type
   private async uploadFileToCDN(file: File, link: string): Promise<string | undefined> {
     if (link.startsWith(GITHUB_CDN)) {
       const filename = link.replaceAll(GITHUB_CDN, '');
@@ -136,7 +139,7 @@ class ImageCDNUploader {
     return;
   }
 
-  // 替换文章中的图片链接
+  // Replace image links in posts
   private replaceLinksInPosts() {
     let count = 0;
 
@@ -152,7 +155,7 @@ class ImageCDNUploader {
         }
       }
 
-      // 更新特定字段的图片链接
+      // Update image links in specific fields
 
       if (data['image'] && this.cache[data['image']]) {
         data['image'] = this.cache[data['image']];
@@ -174,20 +177,26 @@ class ImageCDNUploader {
     let count = 0;
     changelogIndex.community = changelogIndex.community.map((post) => {
       if (!post.image) return post;
-      count++;
-      return {
-        ...post,
-        image: this.cache[post.image] || post.image,
-      };
+      if (this.cache[post.image]) {
+        count++;
+        return {
+          ...post,
+          image: this.cache[post.image],
+        };
+      }
+      return post;
     });
 
     changelogIndex.cloud = changelogIndex.cloud.map((post) => {
       if (!post.image) return post;
-      count++;
-      return {
-        ...post,
-        image: this.cache[post.image] || post.image,
-      };
+      if (this.cache[post.image]) {
+        count++;
+        return {
+          ...post,
+          image: this.cache[post.image],
+        };
+      }
+      return post;
     });
 
     writeJSONSync(changelogIndexPath, changelogIndex, { spaces: 2 });
@@ -197,7 +206,7 @@ class ImageCDNUploader {
     );
   }
 
-  // 运行上传过程
+  // Run upload process
   async run() {
     const links = this.collectImageLinks();
 
@@ -208,10 +217,14 @@ class ImageCDNUploader {
     } else {
       consola.info('No new images to upload.');
     }
+
+    // Replace image links in posts and changelog index
+    this.replaceLinksInPosts();
+    this.replaceLinksInChangelogIndex();
   }
 }
 
-// 实例化并运行
+// Instantiate and run
 const instance = new ImageCDNUploader();
 
 instance.run();

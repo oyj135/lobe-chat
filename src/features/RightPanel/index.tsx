@@ -1,20 +1,27 @@
-import { DraggablePanel, type DraggablePanelProps } from '@lobehub/ui';
+import { type DraggablePanelProps } from '@lobehub/ui';
+import { DraggablePanel } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
-import { Suspense, memo, useState } from 'react';
+import { memo, Suspense, useState } from 'react';
 
 import Loading from '@/components/Loading/BrandTextLoading';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
+
+export interface Size {
+  height?: string | number;
+  width?: string | number;
+}
 
 interface RightPanelProps extends Omit<
   DraggablePanelProps,
   'placement' | 'size' | 'onSizeChange' | 'onExpandChange'
 > {
   defaultWidth?: number | string;
+  onSizeChange?: (size?: Size) => void;
 }
 
 const RightPanel = memo<RightPanelProps>(
-  ({ maxWidth = 600, minWidth = 300, children, defaultWidth = 360, ...rest }) => {
+  ({ maxWidth = 600, minWidth = 300, children, defaultWidth = 360, onSizeChange, ...rest }) => {
     const [showRightPanel, toggleRightPanel] = useGlobalStore((s) => [
       systemStatusSelectors.showRightPanel(s),
       s.toggleRightPanel,
@@ -29,14 +36,17 @@ const RightPanel = memo<RightPanelProps>(
         expandable={false}
         maxWidth={maxWidth}
         minWidth={minWidth}
-        onExpandChange={(expand) => toggleRightPanel(expand)}
-        onSizeChange={(_, size) => {
-          if (size?.width) setWidth(size.width);
-        }}
         placement="right"
         size={{
           height: '100%',
           width,
+        }}
+        onExpandChange={(expand) => toggleRightPanel(expand)}
+        onSizeChange={(_, size) => {
+          if (size?.width) {
+            setWidth(size.width);
+          }
+          if (size) onSizeChange?.(size);
         }}
         {...rest}
       >

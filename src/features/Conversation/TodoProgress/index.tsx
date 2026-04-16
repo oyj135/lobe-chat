@@ -3,7 +3,7 @@
 import { type StepContextTodos } from '@lobechat/types';
 import { Checkbox, Flexbox, Icon, Tag } from '@lobehub/ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
-import { ChevronDown, ChevronUp, ListTodo } from 'lucide-react';
+import { ChevronDown, ChevronUp, CircleArrowRight, ListTodo } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -24,10 +24,12 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     user-select: none;
 
     margin-block-end: 8px;
+    margin-inline: 10px;
     padding-block: 8px;
     padding-inline: 12px;
     border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: 8px;
+    border-start-start-radius: 12px;
+    border-start-end-radius: 12px;
 
     background: ${cssVar.colorBgElevated};
 
@@ -73,6 +75,11 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
       opacity 0.2s ${cssVar.motionEaseInOut},
       padding 0.2s ${cssVar.motionEaseInOut};
   `,
+  processingRow: css`
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  `,
   progress: css`
     flex: 1;
     height: 4px;
@@ -85,9 +92,15 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     background: ${cssVar.colorSuccess};
     transition: width 0.3s ${cssVar.motionEaseInOut};
   `,
-  textChecked: css`
+  textCompleted: css`
     color: ${cssVar.colorTextQuaternary};
     text-decoration: line-through;
+  `,
+  textProcessing: css`
+    color: ${cssVar.colorText};
+  `,
+  textTodo: css`
+    color: ${cssVar.colorTextSecondary};
   `,
 }));
 
@@ -112,11 +125,13 @@ const TodoProgress = memo<TodoProgressProps>(({ className }) => {
   // Calculate progress
   const items = todos?.items || [];
   const total = items.length;
-  const completed = items.filter((item) => item.completed).length;
+  const completed = items.filter((item) => item.status === 'completed').length;
   const progressPercent = total > 0 ? (completed / total) * 100 : 0;
 
-  // Find current pending task (first incomplete item)
-  const currentPendingTask = items.find((item) => !item.completed);
+  // Find current pending task (first non-completed item, prioritize processing)
+  const currentPendingTask =
+    items.find((item) => item.status === 'processing') ||
+    items.find((item) => item.status === 'todo');
 
   // Don't render if no todos
   if (total === 0) return null;
@@ -127,8 +142,8 @@ const TodoProgress = memo<TodoProgressProps>(({ className }) => {
     <WideScreenContainer>
       <div className={cx(styles.container, className)} onClick={toggleExpanded}>
         {/* Header */}
-        <Flexbox align="center" gap={8} horizontal justify="space-between">
-          <Flexbox align="center" gap={8} horizontal style={{ flex: 1, minWidth: 0 }}>
+        <Flexbox horizontal align="center" gap={8} justify="space-between">
+          <Flexbox horizontal align="center" gap={8} style={{ flex: 1, minWidth: 0 }}>
             <Icon icon={ListTodo} size={16} style={{ color: cssVar.colorPrimary, flexShrink: 0 }} />
             <span className={cx(styles.header, isAIGenerating && shinyTextStyles.shinyText)}>
               {currentPendingTask?.text ||
@@ -148,7 +163,7 @@ const TodoProgress = memo<TodoProgressProps>(({ className }) => {
         </Flexbox>
 
         {/* Progress Bar */}
-        <Flexbox gap={8} horizontal style={{ marginTop: 8 }}>
+        <Flexbox horizontal gap={8} style={{ marginTop: 8 }}>
           <div className={styles.progress}>
             <div className={styles.progressFill} style={{ width: `${progressPercent}%` }} />
           </div>
@@ -156,24 +171,44 @@ const TodoProgress = memo<TodoProgressProps>(({ className }) => {
 
         {/* Expandable Todo List */}
         <div className={cx(styles.listContainer, expanded ? styles.expanded : styles.collapsed)}>
-          {items.map((item, index) => (
-            <Checkbox
-              backgroundColor={cssVar.colorSuccess}
-              checked={item.completed}
-              classNames={{
-                text: item.completed ? styles.textChecked : undefined,
-                wrapper: styles.itemRow,
-              }}
-              key={index}
-              shape="circle"
-              style={{ borderWidth: 1.5, cursor: 'default', pointerEvents: 'none' }}
-              textProps={{
-                type: item.completed ? 'secondary' : undefined,
-              }}
-            >
-              {item.text}
-            </Checkbox>
-          ))}
+          {items.map((item, index) => {
+            const isCompleted = item.status === 'completed';
+            const isProcessing = item.status === 'processing';
+
+            // Processing state uses CircleArrowRight icon
+            if (isProcessing) {
+              return (
+                <div className={cx(styles.itemRow, styles.processingRow)} key={index}>
+                  <Icon
+                    icon={CircleArrowRight}
+                    size={17}
+                    style={{ color: cssVar.colorTextSecondary }}
+                  />
+                  <span className={styles.textProcessing}>{item.text}</span>
+                </div>
+              );
+            }
+
+            // Todo and completed states use Checkbox
+            return (
+              <Checkbox
+                backgroundColor={cssVar.colorSuccess}
+                checked={isCompleted}
+                key={index}
+                shape="circle"
+                style={{ borderWidth: 1.5, cursor: 'default', pointerEvents: 'none' }}
+                classNames={{
+                  text: cx(styles.textTodo, isCompleted && styles.textCompleted),
+                  wrapper: styles.itemRow,
+                }}
+                textProps={{
+                  type: isCompleted ? 'secondary' : undefined,
+                }}
+              >
+                {item.text}
+              </Checkbox>
+            );
+          })}
         </div>
       </div>
     </WideScreenContainer>

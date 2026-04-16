@@ -1,3 +1,4 @@
+import type * as LobechatConstModule from '@lobechat/const';
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -8,17 +9,17 @@ import { useUserAvatar } from './useUserAvatar';
 
 vi.mock('zustand/traditional');
 
-// Mock @lobechat/const
-let mockIsDesktop = false;
+const mockConstEnv = vi.hoisted(() => ({ isDesktop: false }));
 
 vi.mock('@lobechat/const', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@lobechat/const')>();
+  const actual = await importOriginal<typeof LobechatConstModule>();
   return {
     ...actual,
     get isDesktop() {
-      return mockIsDesktop;
+      return mockConstEnv.isDesktop;
     },
     DEFAULT_USER_AVATAR: 'default-avatar.png',
+    OFFICIAL_URL: 'https://app.lobehub.com',
   };
 });
 
@@ -46,7 +47,7 @@ describe('useUserAvatar', () => {
   });
 
   it('should return original avatar in non-desktop environment', () => {
-    mockIsDesktop = false;
+    mockConstEnv.isDesktop = false;
     const mockAvatar = '/api/avatar.png';
 
     act(() => {
@@ -61,14 +62,14 @@ describe('useUserAvatar', () => {
     expect(result.current).toBe(mockAvatar);
   });
 
-  it('should return original avatar when no remote server URL in desktop environment', () => {
-    mockIsDesktop = true;
+  it('should return original avatar when no remote server URL in desktop environment (selfHost mode)', () => {
+    mockConstEnv.isDesktop = true;
     const mockAvatar = '/api/avatar.png';
 
     act(() => {
       useUserStore.setState({ user: { avatar: mockAvatar } as any });
       useElectronStore.setState({
-        dataSyncConfig: { remoteServerUrl: undefined, storageMode: 'local' },
+        dataSyncConfig: { remoteServerUrl: undefined, storageMode: 'selfHost' },
       });
     });
 
@@ -77,15 +78,15 @@ describe('useUserAvatar', () => {
     expect(result.current).toBe(mockAvatar);
   });
 
-  it('should prepend remote server URL when avatar starts with / in desktop environment', () => {
-    mockIsDesktop = true;
+  it('should prepend remote server URL when avatar starts with / in desktop environment (selfHost mode)', () => {
+    mockConstEnv.isDesktop = true;
     const mockAvatar = '/api/avatar.png';
     const mockServerUrl = 'https://server.com';
 
     act(() => {
       useUserStore.setState({ user: { avatar: mockAvatar } as any });
       useElectronStore.setState({
-        dataSyncConfig: { remoteServerUrl: mockServerUrl, storageMode: 'cloud' },
+        dataSyncConfig: { remoteServerUrl: mockServerUrl, storageMode: 'selfHost' },
       });
     });
 
@@ -95,14 +96,14 @@ describe('useUserAvatar', () => {
   });
 
   it('should not prepend remote server URL when avatar does not start with / in desktop environment', () => {
-    mockIsDesktop = true;
+    mockConstEnv.isDesktop = true;
     const mockAvatar = 'https://example.com/avatar.png';
     const mockServerUrl = 'https://server.com';
 
     act(() => {
       useUserStore.setState({ user: { avatar: mockAvatar } as any });
       useElectronStore.setState({
-        dataSyncConfig: { remoteServerUrl: mockServerUrl, storageMode: 'cloud' },
+        dataSyncConfig: { remoteServerUrl: mockServerUrl, storageMode: 'selfHost' },
       });
     });
 
@@ -111,8 +112,8 @@ describe('useUserAvatar', () => {
     expect(result.current).toBe(mockAvatar);
   });
 
-  it('should handle empty remote server URL in desktop environment', () => {
-    mockIsDesktop = true;
+  it('should use OFFICIAL_URL when storageMode is cloud in desktop environment', () => {
+    mockConstEnv.isDesktop = true;
     const mockAvatar = '/api/avatar.png';
 
     act(() => {
@@ -124,6 +125,24 @@ describe('useUserAvatar', () => {
 
     const { result } = renderHook(() => useUserAvatar());
 
+    // In cloud mode, selector returns OFFICIAL_URL regardless of remoteServerUrl config
+    expect(result.current).toBe('https://app.lobehub.com/api/avatar.png');
+  });
+
+  it('should return original avatar when storageMode is selfHost but no URL configured', () => {
+    mockConstEnv.isDesktop = true;
+    const mockAvatar = '/api/avatar.png';
+
+    act(() => {
+      useUserStore.setState({ user: { avatar: mockAvatar } as any });
+      useElectronStore.setState({
+        dataSyncConfig: { remoteServerUrl: '', storageMode: 'selfHost' },
+      });
+    });
+
+    const { result } = renderHook(() => useUserAvatar());
+
+    // In selfHost mode with empty URL, avatar is not prepended
     expect(result.current).toBe(mockAvatar);
   });
 });

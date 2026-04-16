@@ -1,5 +1,5 @@
-import { type AgentItem, type LobeAgentConfig, type MetaData } from '@lobechat/types';
-import type { PartialDeep } from 'type-fest';
+import { type AgentItem, type LobeAgentConfig } from '@lobechat/types';
+import { type PartialDeep } from 'type-fest';
 
 import { lambdaClient } from '@/libs/trpc/client';
 
@@ -13,6 +13,13 @@ type MarketAgentModel =
       parameters?: Partial<LobeAgentConfig['params']>;
       provider?: LobeAgentConfig['provider'];
     };
+
+type AgentMetaUpdate = Partial<
+  Pick<
+    AgentItem,
+    'avatar' | 'backgroundColor' | 'description' | 'marketIdentifier' | 'tags' | 'title'
+  >
+>;
 
 /**
  * Normalize market agent config to standard agent config.
@@ -47,8 +54,16 @@ export interface CreateAgentParams {
 }
 
 export interface CreateAgentResult {
-  agentId?: string;
-  sessionId: string;
+  agentId: string;
+}
+
+export interface CreateAgentOnlyParams {
+  config?: PartialDeep<AgentItem>;
+  groupId: string;
+}
+
+export interface CreateAgentOnlyResult {
+  agentId: string;
 }
 
 class AgentService {
@@ -68,6 +83,14 @@ class AgentService {
   };
 
   /**
+   * Get an agent by forkedFromIdentifier stored in params
+   * @returns agent id if exists, null otherwise
+   */
+  getAgentByForkedFromIdentifier = async (forkedFromIdentifier: string): Promise<string | null> => {
+    return lambdaClient.agent.getAgentByForkedFromIdentifier.query({ forkedFromIdentifier });
+  };
+
+  /**
    * Create a new agent with session.
    * Automatically normalizes market agent config (handles model as object).
    */
@@ -75,6 +98,19 @@ class AgentService {
     const normalizedConfig = normalizeMarketAgentModel(params.config);
 
     return lambdaClient.agent.createAgent.mutate({
+      config: normalizedConfig as any,
+      groupId: params.groupId,
+    });
+  };
+
+  /**
+   * Create a virtual agent without session.
+   * Used for Group Agent Builder to create virtual agents for groups.
+   */
+  createAgentOnly = async (params: CreateAgentOnlyParams): Promise<CreateAgentOnlyResult> => {
+    const normalizedConfig = normalizeMarketAgentModel(params.config);
+
+    return lambdaClient.agent.createAgentOnly.mutate({
       config: normalizedConfig as any,
       groupId: params.groupId,
     });
@@ -152,7 +188,7 @@ class AgentService {
   /**
    * Update agent meta and return the updated agent data
    */
-  updateAgentMeta = async (agentId: string, meta: Partial<MetaData>, signal?: AbortSignal) => {
+  updateAgentMeta = async (agentId: string, meta: AgentMetaUpdate, signal?: AbortSignal) => {
     return lambdaClient.agent.updateAgentConfig.mutate({ agentId, value: meta }, { signal });
   };
 
@@ -184,6 +220,17 @@ class AgentService {
    */
   updateAgentPinned = async (agentId: string, pinned: boolean) => {
     return lambdaClient.agent.updateAgentPinned.mutate({ id: agentId, pinned });
+  };
+
+  /**
+   * Duplicate an agent.
+   * Returns the new agent ID.
+   */
+  duplicateAgent = async (
+    agentId: string,
+    newTitle?: string,
+  ): Promise<{ agentId: string } | null> => {
+    return lambdaClient.agent.duplicateAgent.mutate({ agentId, newTitle });
   };
 }
 

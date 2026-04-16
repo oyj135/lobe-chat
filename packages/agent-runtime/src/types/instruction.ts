@@ -1,4 +1,4 @@
-import {
+import type {
   ChatToolPayload,
   ModelUsage,
   RuntimeInitialContext,
@@ -6,7 +6,7 @@ import {
 } from '@lobechat/types';
 
 import type { FinishReason } from './event';
-import { AgentState, ToolRegistry } from './state';
+import type { AgentState, ToolRegistry } from './state';
 import type { Cost, CostCalculationContext, Usage } from './usage';
 
 /**
@@ -72,7 +72,7 @@ export interface Agent {
    * @param context - Cost calculation context with usage and limits
    * @returns Updated cost information
    */
-  calculateCost?(context: CostCalculationContext): Cost;
+  calculateCost?: (context: CostCalculationContext) => Cost;
 
   /**
    * Calculate usage statistics from operation results
@@ -81,11 +81,11 @@ export interface Agent {
    * @param previousUsage - Previous usage statistics
    * @returns Updated usage statistics
    */
-  calculateUsage?(
+  calculateUsage?: (
     operationType: 'llm' | 'tool' | 'human_interaction',
     operationResult: any,
     previousUsage: Usage,
-  ): Usage;
+  ) => Usage;
 
   /** Optional custom executors mapping to extend runtime behaviors */
   executors?: Partial<Record<AgentInstruction['type'], any>>;
@@ -103,14 +103,16 @@ export interface Agent {
    * @param context - Current runtime context with phase and payload
    * @param state - Complete agent state for reference
    */
-  runner(
+  runner: (
     context: AgentRuntimeContext,
     state: AgentState,
-  ): Promise<AgentInstruction | AgentInstruction[]>;
+  ) => Promise<AgentInstruction | AgentInstruction[]>;
 
   /** Optional tools registry held by the agent */
   tools?: ToolRegistry;
 }
+
+// ── Payloads ──────────────────────────────────────────────
 
 export interface CallLLMPayload {
   isFirstMessage?: boolean;
@@ -145,87 +147,6 @@ export interface HumanAbortPayload {
   toolsCalling?: ChatToolPayload[];
 }
 
-export interface AgentInstructionCallLlm {
-  payload: any;
-  type: 'call_llm';
-}
-
-export interface AgentInstructionCallTool {
-  payload: {
-    parentMessageId: string;
-    toolCalling: ChatToolPayload;
-  };
-  type: 'call_tool';
-}
-
-export interface AgentInstructionCallToolsBatch {
-  payload: {
-    parentMessageId: string;
-    toolsCalling: ChatToolPayload[];
-  } & any;
-  type: 'call_tools_batch';
-}
-
-export interface AgentInstructionRequestHumanPrompt {
-  metadata?: Record<string, unknown>;
-  prompt: string;
-  reason?: string;
-  type: 'request_human_prompt';
-}
-
-export interface AgentInstructionRequestHumanSelect {
-  metadata?: Record<string, unknown>;
-  multi?: boolean;
-  options: Array<{ label: string; value: string }>;
-  prompt?: string;
-  reason?: string;
-  type: 'request_human_select';
-}
-
-export interface AgentInstructionRequestHumanApprove {
-  pendingToolsCalling: ChatToolPayload[];
-  reason?: string;
-  skipCreateToolMessage?: boolean;
-  type: 'request_human_approve';
-}
-
-export interface AgentInstructionFinish {
-  reason: FinishReason;
-  reasonDetail?: string;
-  type: 'finish';
-}
-
-export interface AgentInstructionResolveAbortedTools {
-  payload: {
-    /** Parent message ID (assistant message) */
-    parentMessageId: string;
-    /** Reason for the abort */
-    reason?: string;
-    /** Tool calls that need to be resolved/cancelled */
-    toolsCalling: ChatToolPayload[];
-  };
-  type: 'resolve_aborted_tools';
-}
-
-/**
- * Instruction to execute context compression
- */
-export interface AgentInstructionCompressContext {
-  payload: {
-    /** Current token count before compression */
-    currentTokenCount: number;
-    /** Existing summary to incorporate (for incremental compression) */
-    existingSummary?: string;
-    /** Number of recent messages to keep uncompressed */
-    keepRecentCount: number;
-    /** Messages to compress */
-    messages: any[];
-    /** Topic ID for the conversation */
-    topicId: string;
-  };
-  type: 'compress_context';
-}
-
 /**
  * Task definition for exec_tasks instruction
  */
@@ -236,34 +157,22 @@ export interface ExecTaskItem {
   inheritMessages?: boolean;
   /** Detailed instruction/prompt for the task execution */
   instruction: string;
+  /**
+   * Whether to execute the task on the client side (desktop only).
+   * When true and running on desktop, the task will be executed locally
+   * with access to local tools (file system, shell commands, etc.).
+   *
+   * IMPORTANT: This MUST be set to true when the task requires:
+   * - Reading/writing local files via `local-system` tool
+   * - Executing shell commands
+   * - Any other desktop-only local tool operations
+   *
+   * If not specified or false, the task runs on the server (default behavior).
+   * On non-desktop platforms (web), this flag is ignored and tasks always run on server.
+   */
+  runInClient?: boolean;
   /** Timeout in milliseconds (optional, default 30 minutes) */
   timeout?: number;
-}
-
-/**
- * Instruction to execute a single async task
- */
-export interface AgentInstructionExecTask {
-  payload: {
-    /** Parent message ID (tool message that triggered the task) */
-    parentMessageId: string;
-    /** Task to execute */
-    task: ExecTaskItem;
-  };
-  type: 'exec_task';
-}
-
-/**
- * Instruction to execute multiple async tasks in parallel
- */
-export interface AgentInstructionExecTasks {
-  payload: {
-    /** Parent message ID (tool message that triggered the tasks) */
-    parentMessageId: string;
-    /** Array of tasks to execute */
-    tasks: ExecTaskItem[];
-  };
-  type: 'exec_tasks';
 }
 
 /**
@@ -308,19 +217,170 @@ export interface TasksBatchResultPayload {
   }>;
 }
 
+// ── Instructions ──────────────────────────────────────────
+
+/**
+ * Common fields shared across all instruction types.
+ * Agents can set `stepLabel` to label the current step for display in streaming events and hooks.
+ */
+export interface AgentInstructionBase {
+  /** Human-readable label for this step (e.g. graph node name). Propagated to stream events and hooks. */
+  stepLabel?: string;
+}
+
+// ─ LLM ───────────────────────────────────────────────────
+
+export interface AgentInstructionCallLlm extends AgentInstructionBase {
+  payload: any;
+  type: 'call_llm';
+}
+
+// ─ Tool ──────────────────────────────────────────────────
+
+export interface AgentInstructionCallTool extends AgentInstructionBase {
+  payload: {
+    parentMessageId: string;
+    /**
+     * When true, the runtime is resuming execution for a previously pending
+     * tool call (e.g. after human approval). The executor must NOT insert a
+     * new tool message; instead it updates the existing one referenced by
+     * `parentMessageId` with the tool result.
+     */
+    skipCreateToolMessage?: boolean;
+    toolCalling: ChatToolPayload;
+  };
+  type: 'call_tool';
+}
+
+export interface AgentInstructionCallToolsBatch extends AgentInstructionBase {
+  payload: {
+    parentMessageId: string;
+    toolsCalling: ChatToolPayload[];
+  } & any;
+  type: 'call_tools_batch';
+}
+
+export interface AgentInstructionResolveAbortedTools extends AgentInstructionBase {
+  payload: {
+    /** Parent message ID (assistant message) */
+    parentMessageId: string;
+    /** Reason for the abort */
+    reason?: string;
+    /** Tool calls that need to be resolved/cancelled */
+    toolsCalling: ChatToolPayload[];
+  };
+  type: 'resolve_aborted_tools';
+}
+
+// ─ Task ──────────────────────────────────────────────────
+
+export interface AgentInstructionExecTask extends AgentInstructionBase {
+  payload: {
+    /** Parent message ID (tool message that triggered the task) */
+    parentMessageId: string;
+    /** Task to execute */
+    task: ExecTaskItem;
+  };
+  type: 'exec_task';
+}
+
+export interface AgentInstructionExecTasks extends AgentInstructionBase {
+  payload: {
+    /** Parent message ID (tool message that triggered the tasks) */
+    parentMessageId: string;
+    /** Array of tasks to execute */
+    tasks: ExecTaskItem[];
+  };
+  type: 'exec_tasks';
+}
+
+export interface AgentInstructionExecClientTask extends AgentInstructionBase {
+  payload: {
+    /** Parent message ID (tool message that triggered the task) */
+    parentMessageId: string;
+    /** Task to execute */
+    task: ExecTaskItem;
+  };
+  type: 'exec_client_task';
+}
+
+export interface AgentInstructionExecClientTasks extends AgentInstructionBase {
+  payload: {
+    /** Parent message ID (tool message that triggered the tasks) */
+    parentMessageId: string;
+    /** Array of tasks to execute */
+    tasks: ExecTaskItem[];
+  };
+  type: 'exec_client_tasks';
+}
+
+// ─ Human Interaction ─────────────────────────────────────
+
+export interface AgentInstructionRequestHumanPrompt extends AgentInstructionBase {
+  metadata?: Record<string, unknown>;
+  prompt: string;
+  reason?: string;
+  type: 'request_human_prompt';
+}
+
+export interface AgentInstructionRequestHumanSelect extends AgentInstructionBase {
+  metadata?: Record<string, unknown>;
+  multi?: boolean;
+  options: Array<{ label: string; value: string }>;
+  prompt?: string;
+  reason?: string;
+  type: 'request_human_select';
+}
+
+export interface AgentInstructionRequestHumanApprove extends AgentInstructionBase {
+  pendingToolsCalling: ChatToolPayload[];
+  reason?: string;
+  skipCreateToolMessage?: boolean;
+  type: 'request_human_approve';
+}
+
+// ─ Control ───────────────────────────────────────────────
+
+export interface AgentInstructionCompressContext extends AgentInstructionBase {
+  payload: {
+    /** Current token count before compression */
+    currentTokenCount: number;
+    /** Existing summary to incorporate (for incremental compression) */
+    existingSummary?: string;
+    /** Messages to compress */
+    messages: any[];
+  };
+  type: 'compress_context';
+}
+
+export interface AgentInstructionFinish extends AgentInstructionBase {
+  reason: FinishReason;
+  reasonDetail?: string;
+  type: 'finish';
+}
+
+// ── Union Type ────────────────────────────────────────────
+
 /**
  * A serializable instruction object that the "Agent" (Brain) returns
  * to the "AgentRuntime" (Engine) to execute.
  */
 export type AgentInstruction =
+  // LLM
   | AgentInstructionCallLlm
+  // Tool
   | AgentInstructionCallTool
   | AgentInstructionCallToolsBatch
+  | AgentInstructionResolveAbortedTools
+  // Task
   | AgentInstructionExecTask
   | AgentInstructionExecTasks
+  | AgentInstructionExecClientTask
+  | AgentInstructionExecClientTasks
+  // Human Interaction
   | AgentInstructionRequestHumanPrompt
   | AgentInstructionRequestHumanSelect
   | AgentInstructionRequestHumanApprove
-  | AgentInstructionResolveAbortedTools
+  // Control
   | AgentInstructionCompressContext
   | AgentInstructionFinish;

@@ -1,11 +1,15 @@
-import { DataSyncConfig } from '@lobechat/electron-client-ipc';
-import retry from 'async-retry';
-import { safeStorage } from 'electron';
 import querystring from 'node:querystring';
 import { URL } from 'node:url';
 
+import type { DataSyncConfig } from '@lobechat/electron-client-ipc';
+import retry from 'async-retry';
+import { safeStorage, session as electronSession } from 'electron';
+
 import { OFFICIAL_CLOUD_SERVER } from '@/const/env';
+import GatewayConnectionService from '@/services/gatewayConnectionSrv';
+import { appendVercelCookie } from '@/utils/http-headers';
 import { createLogger } from '@/utils/logger';
+import { netFetch } from '@/utils/net-fetch';
 
 import { ControllerModule, IpcMethod } from './index';
 
@@ -50,7 +54,8 @@ export default class RemoteServerConfigCtr extends ControllerModule {
    * Local mode has been removed; fall back to cloud.
    */
   private normalizeConfig = (config: DataSyncConfig): DataSyncConfig => {
-    if (config.storageMode !== 'local') return config;
+    // Use type assertion to handle legacy 'local' value from stored data
+    if ((config.storageMode as string) !== 'local') return config;
 
     const nextConfig: DataSyncConfig = {
       ...config,
@@ -79,6 +84,37 @@ export default class RemoteServerConfigCtr extends ControllerModule {
     );
 
     return normalized;
+  }
+
+  /**
+   * Check if remote server is properly configured and ready for use
+   * For 'cloud' mode, only checks if active (remoteServerUrl is undefined, uses OFFICIAL_CLOUD_SERVER)
+   * For 'selfHost' mode, checks if active AND remoteServerUrl is configured
+   * @param config Optional config object, if not provided will fetch current config
+   * @returns true if remote server is properly configured
+   */
+  async isRemoteServerConfigured(config?: DataSyncConfig): Promise<boolean> {
+    const effectiveConfig = config ?? (await this.getRemoteServerConfig());
+    const isActive = Boolean(effectiveConfig.active);
+    const isSelfHostConfigured =
+      effectiveConfig.storageMode !== 'selfHost' ||
+      this.isValidSelfHostRemoteUrl(effectiveConfig.remoteServerUrl);
+
+    return isActive && isSelfHostConfigured;
+  }
+
+  private isValidSelfHostRemoteUrl(remoteServerUrl?: string): boolean {
+    if (!remoteServerUrl) return false;
+    const normalizedUrl = remoteServerUrl.trim();
+
+    if (!normalizedUrl) return false;
+
+    try {
+      const parsedUrl = new URL(normalizedUrl);
+      return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -139,6 +175,12 @@ export default class RemoteServerConfigCtr extends ControllerModule {
   private tokenExpiresAt?: number;
 
   /**
+   * Last token refresh time (timestamp in milliseconds)
+   * Used to control refresh frequency on app startup/activate
+   */
+  private lastRefreshAt?: number;
+
+  /**
    * Promise representing the ongoing token refresh operation.
    * Used to prevent concurrent refreshes and allow callers to wait.
    */
@@ -161,6 +203,10 @@ export default class RemoteServerConfigCtr extends ControllerModule {
       this.tokenExpiresAt = undefined;
     }
 
+    // Update last refresh time
+    this.lastRefreshAt = Date.now();
+    logger.debug(`Token last refreshed at: ${new Date(this.lastRefreshAt).toISOString()}`);
+
     // If platform doesn't support secure storage, store raw tokens
     if (!safeStorage.isEncryptionAvailable()) {
       logger.warn('Safe storage not available, storing tokens unencrypted');
@@ -170,6 +216,7 @@ export default class RemoteServerConfigCtr extends ControllerModule {
       this.app.storeManager.set(this.encryptedTokensKey, {
         accessToken: this.encryptedAccessToken,
         expiresAt: this.tokenExpiresAt,
+        lastRefreshAt: this.lastRefreshAt,
         refreshToken: this.encryptedRefreshToken,
       });
       return;
@@ -190,6 +237,7 @@ export default class RemoteServerConfigCtr extends ControllerModule {
     this.app.storeManager.set(this.encryptedTokensKey, {
       accessToken: this.encryptedAccessToken,
       expiresAt: this.tokenExpiresAt,
+      lastRefreshAt: this.lastRefreshAt,
       refreshToken: this.encryptedRefreshToken,
     });
   }
@@ -273,6 +321,13 @@ export default class RemoteServerConfigCtr extends ControllerModule {
     // Also clear from persistent storage
     logger.debug(`Deleting tokens from store key: ${this.encryptedTokensKey}`);
     this.app.storeManager.delete(this.encryptedTokensKey);
+
+    // Disconnect gateway when tokens are cleared (logout / token refresh failure)
+    const gatewaySrv = this.app.getService(GatewayConnectionService);
+    if (gatewaySrv) {
+      logger.debug('Disconnecting gateway due to token clear');
+      await gatewaySrv.disconnect();
+    }
   }
 
   /**
@@ -284,10 +339,10 @@ export default class RemoteServerConfigCtr extends ControllerModule {
 
   /**
    * Check if token is expired or will expire soon
-   * @param bufferTimeMs Buffer time in milliseconds (default 5 minutes)
+   * @param bufferTimeMs Buffer time in milliseconds (default 1 day)
    * @returns true if token is expired or will expire soon
    */
-  isTokenExpiringSoon(bufferTimeMs: number = 5 * 60 * 1000): boolean {
+  isTokenExpiringSoon(bufferTimeMs: number = 24 * 60 * 60 * 1000): boolean {
     if (!this.tokenExpiresAt) {
       return false; // No expiration time available
     }
@@ -400,7 +455,7 @@ export default class RemoteServerConfigCtr extends ControllerModule {
       // Get configuration information
       const config = await this.getRemoteServerConfig();
 
-      if (!config.remoteServerUrl || !config.active) {
+      if (!(await this.isRemoteServerConfigured(config))) {
         logger.warn('Remote server not active or configured, skipping refresh.');
         return { error: 'Remote server is not active or configured', success: false };
       }
@@ -427,13 +482,11 @@ export default class RemoteServerConfigCtr extends ControllerModule {
       logger.debug(`Sending token refresh request to ${tokenUrl.toString()}`);
 
       // Send request
-      const response = await fetch(tokenUrl.toString(), {
-        body,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        method: 'POST',
-      });
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      };
+      appendVercelCookie(headers);
+      const response = await netFetch(tokenUrl.toString(), { body, headers, method: 'POST' });
 
       if (!response.ok) {
         // Try to parse error response
@@ -479,15 +532,27 @@ export default class RemoteServerConfigCtr extends ControllerModule {
       this.encryptedAccessToken = storedTokens.accessToken;
       this.encryptedRefreshToken = storedTokens.refreshToken;
       this.tokenExpiresAt = storedTokens.expiresAt;
+      this.lastRefreshAt = storedTokens.lastRefreshAt;
 
       if (this.tokenExpiresAt) {
         logger.debug(
           `Loaded token expiration time: ${new Date(this.tokenExpiresAt).toISOString()}`,
         );
       }
+      if (this.lastRefreshAt) {
+        logger.debug(`Loaded last refresh time: ${new Date(this.lastRefreshAt).toISOString()}`);
+      }
     } else {
       logger.debug('No valid tokens found in store.');
     }
+  }
+
+  /**
+   * Get the last token refresh time
+   * @returns The timestamp (in milliseconds) of the last token refresh, or undefined if never refreshed
+   */
+  getLastTokenRefreshAt(): number | undefined {
+    return this.lastRefreshAt;
   }
 
   // Initialize by loading tokens from store when the controller is ready
@@ -497,8 +562,43 @@ export default class RemoteServerConfigCtr extends ControllerModule {
   }
 
   async getRemoteServerUrl(config?: DataSyncConfig) {
-    const dataConfig = this.normalizeConfig(config ? config : await this.getRemoteServerConfig());
+    const dataConfig = this.normalizeConfig(config ?? (await this.getRemoteServerConfig()));
 
     return dataConfig.storageMode === 'cloud' ? OFFICIAL_CLOUD_SERVER : dataConfig.remoteServerUrl;
+  }
+
+  /**
+   * Setup subscription webview session with OIDC token injection
+   * This configures a webRequest interceptor on the given partition session
+   * to automatically inject the Oidc-Auth token header for official domain requests.
+   * @param params.partition The partition name for the webview session
+   */
+  @IpcMethod()
+  async setupSubscriptionWebviewSession(params: { partition: string }) {
+    const { partition } = params;
+
+    logger.info(`Setting up subscription webview session for partition: ${partition}`);
+
+    const session = electronSession.fromPartition(partition);
+
+    session.webRequest.onBeforeSendHeaders(
+      { urls: [`https://*.lobehub.com/*`] },
+      async (details, callback) => {
+        const requestHeaders = { ...details.requestHeaders };
+
+        const token = await this.getAccessToken();
+
+        if (token) {
+          requestHeaders['Oidc-Auth'] = token;
+          logger.debug(`Injected Oidc-Auth token for: ${details.url}`);
+        }
+
+        callback({ requestHeaders });
+      },
+    );
+
+    logger.debug(`Subscription webview session setup completed for partition: ${partition}`);
+
+    return { success: true };
   }
 }

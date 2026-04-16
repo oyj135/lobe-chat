@@ -1,54 +1,46 @@
 import isEqual from 'fast-deep-equal';
-import type { SWRResponse } from 'swr';
+import { produce } from 'immer';
+import { type SWRResponse } from 'swr';
 import useSWR from 'swr';
-import { type StateCreator } from 'zustand/vanilla';
 
 import { mutate, useClientDataSWR, useClientDataSWRWithSync } from '@/libs/swr';
-import { userMemoryService } from '@/services/userMemory';
+import { memoryCRUDService, userMemoryService } from '@/services/userMemory';
+import { type StoreSetter } from '@/store/types';
+import { type RetrieveMemoryParams, type RetrieveMemoryResult } from '@/types/userMemory';
 import { LayersEnum } from '@/types/userMemory';
-import type { RetrieveMemoryParams, RetrieveMemoryResult } from '@/types/userMemory';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type UserMemoryStore } from '../../store';
-import type { IdentityForInjection } from '../../types';
+import { type IdentityForInjection } from '../../types';
 import { userMemoryCacheKey } from '../../utils/cacheKey';
 import { createMemorySearchParams } from '../../utils/searchParams';
+import { activityInitialState } from '../activity/initialState';
+import { contextInitialState } from '../context/initialState';
+import { experienceInitialState } from '../experience/initialState';
+import { identityInitialState } from '../identity/initialState';
+import { preferenceInitialState } from '../preference/initialState';
 
 const SWR_FETCH_USER_MEMORY = 'SWR_FETCH_USER_MEMORY';
 const n = setNamespace('userMemory');
 
 type MemoryContext = Parameters<typeof createMemorySearchParams>[0];
 
-export interface BaseAction {
-  clearEditingMemory: () => void;
-  refreshUserMemory: (params: RetrieveMemoryParams) => Promise<void>;
-  setActiveMemoryContext: (context?: MemoryContext) => void;
-  setEditingMemory: (
-    id: string,
-    content: string,
-    layer: 'context' | 'experience' | 'identity' | 'preference',
-  ) => void;
-  updateMemory: (id: string, content: string, layer: LayersEnum) => Promise<void>;
-  useFetchMemoryDetail: (id: string | null, layer: LayersEnum) => SWRResponse<any>;
-  useFetchUserMemory: (
-    enable: boolean,
-    params?: RetrieveMemoryParams,
-  ) => SWRResponse<RetrieveMemoryResult>;
-  /**
-   * Initialize global identities at app startup
-   * Fetches up to 50 most recent identities for chat context injection
-   */
-  useInitIdentities: (isLogin: boolean) => SWRResponse<any>;
-}
+type Setter = StoreSetter<UserMemoryStore>;
+export const createBaseSlice = (set: Setter, get: () => UserMemoryStore, _api?: unknown) =>
+  new BaseActionImpl(set, get, _api);
 
-export const createBaseSlice: StateCreator<
-  UserMemoryStore,
-  [['zustand/devtools', never]],
-  [],
-  BaseAction
-> = (set, get) => ({
-  clearEditingMemory: () => {
-    set(
+export class BaseActionImpl {
+  readonly #get: () => UserMemoryStore;
+  readonly #set: Setter;
+
+  constructor(set: Setter, get: () => UserMemoryStore, _api?: unknown) {
+    void _api;
+    this.#set = set;
+    this.#get = get;
+  }
+
+  clearEditingMemory = (): void => {
+    this.#set(
       {
         editingMemoryContent: undefined,
         editingMemoryId: undefined,
@@ -57,27 +49,95 @@ export const createBaseSlice: StateCreator<
       false,
       n('clearEditingMemory'),
     );
-  },
+  };
 
-  refreshUserMemory: async (params) => {
+  purgeAllMemories = async (): Promise<void> => {
+    const { memoryCRUDService } = await import('@/services/userMemory');
+
+    await memoryCRUDService.deleteAll();
+
+    this.#set(
+      produce((draft) => {
+        Object.assign(draft, activityInitialState);
+        Object.assign(draft, contextInitialState);
+        Object.assign(draft, experienceInitialState);
+        Object.assign(draft, identityInitialState);
+        Object.assign(draft, preferenceInitialState);
+
+        draft.activeParams = undefined;
+        draft.activeParamsKey = undefined;
+        draft.editingMemoryContent = undefined;
+        draft.editingMemoryId = undefined;
+        draft.editingMemoryLayer = undefined;
+        draft.memoryFetchedAtMap = {};
+        draft.memoryMap = {};
+        draft.persona = undefined;
+        draft.personaInit = true;
+        draft.roles = [];
+        draft.tags = [];
+        draft.tagsInit = true;
+      }),
+      false,
+      n('purgeAllMemories'),
+    );
+
+    await Promise.all([
+      mutate((key) => typeof key === 'string' && key.startsWith('memoryDetail-'), undefined, {
+        revalidate: true,
+      }),
+      mutate((key) => typeof key === 'string' && key.startsWith('useFetchActivities'), undefined, {
+        revalidate: true,
+      }),
+      mutate((key) => typeof key === 'string' && key.startsWith('useFetchContexts'), undefined, {
+        revalidate: true,
+      }),
+      mutate((key) => typeof key === 'string' && key.startsWith('useFetchExperiences'), undefined, {
+        revalidate: true,
+      }),
+      mutate((key) => typeof key === 'string' && key.startsWith('useFetchIdentities'), undefined, {
+        revalidate: true,
+      }),
+      mutate((key) => typeof key === 'string' && key.startsWith('useFetchPreferences'), undefined, {
+        revalidate: true,
+      }),
+      mutate((key) => Array.isArray(key) && key[0] === SWR_FETCH_USER_MEMORY, undefined, {
+        revalidate: true,
+      }),
+      mutate('useFetchPersona', null, { revalidate: false }),
+      mutate(
+        'useFetchTags',
+        {
+          roles: [],
+          tags: [],
+        },
+        { revalidate: false },
+      ),
+    ]);
+  };
+
+  refreshUserMemory = async (params: RetrieveMemoryParams): Promise<void> => {
     const key = userMemoryCacheKey(params);
 
     await mutate([SWR_FETCH_USER_MEMORY, key]);
-  },
+  };
 
-  setActiveMemoryContext: (context) => {
+  setActiveMemoryContext = (context?: MemoryContext): void => {
     const params = context ? createMemorySearchParams(context) : undefined;
     const key = params ? userMemoryCacheKey(params) : undefined;
 
-    set(
+    this.#set(
       { activeParams: params, activeParamsKey: key },
       false,
       n('setActiveMemoryContext', { key }),
     );
-  },
+  };
 
-  setEditingMemory: (id, content, layer) => {
-    set(
+  setEditingMemory = (
+    id: string,
+    content: string,
+    layer: 'activity' | 'context' | 'experience' | 'identity' | 'preference',
+  ): void => {
+    this.#set(
       {
         editingMemoryContent: content,
         editingMemoryId: id,
@@ -86,42 +146,57 @@ export const createBaseSlice: StateCreator<
       false,
       n('setEditingMemory', { id, layer }),
     );
-  },
+  };
 
-  updateMemory: async (id, content, layer) => {
-    const { memoryCRUDService } = await import('@/services/userMemory');
-    const { resetContextsList, resetExperiencesList, resetIdentitiesList, resetPreferencesList } =
-      get();
+  updateMemory = async (id: string, content: string, layer: LayersEnum): Promise<void> => {
+    const {
+      resetActivitiesList,
+      resetContextsList,
+      resetExperiencesList,
+      resetIdentitiesList,
+      resetPreferencesList,
+    } = this.#get();
 
     // Update the memory content based on layer
     switch (layer) {
+      case LayersEnum.Activity: {
+        await memoryCRUDService.updateActivity(id, { narrative: content });
+        resetActivitiesList({ q: this.#get().activitiesQuery, sort: this.#get().activitiesSort });
+        break;
+      }
       case LayersEnum.Context: {
         await memoryCRUDService.updateContext(id, { description: content });
-        resetContextsList({ q: get().contextsQuery, sort: get().contextsSort });
+        resetContextsList({ q: this.#get().contextsQuery, sort: this.#get().contextsSort });
         break;
       }
       case LayersEnum.Experience: {
         await memoryCRUDService.updateExperience(id, { keyLearning: content });
-        resetExperiencesList({ q: get().experiencesQuery, sort: get().experiencesSort });
+        resetExperiencesList({
+          q: this.#get().experiencesQuery,
+          sort: this.#get().experiencesSort,
+        });
         break;
       }
       case LayersEnum.Identity: {
         await memoryCRUDService.updateIdentity(id, { description: content });
-        resetIdentitiesList({ q: get().identitiesQuery, types: get().identitiesTypes });
+        resetIdentitiesList({ q: this.#get().identitiesQuery, types: this.#get().identitiesTypes });
         break;
       }
       case LayersEnum.Preference: {
         await memoryCRUDService.updatePreference(id, { conclusionDirectives: content });
-        resetPreferencesList({ q: get().preferencesQuery, sort: get().preferencesSort });
+        resetPreferencesList({
+          q: this.#get().preferencesQuery,
+          sort: this.#get().preferencesSort,
+        });
         break;
       }
     }
 
     // Clear editing state
-    get().clearEditingMemory();
-  },
+    this.#get().clearEditingMemory();
+  };
 
-  useFetchMemoryDetail: (id, layer) => {
+  useFetchMemoryDetail = (id: string | null, layer: LayersEnum): SWRResponse<any> => {
     const swrKey = id ? `memoryDetail-${layer}-${id}` : null;
 
     return useSWR(
@@ -135,6 +210,17 @@ export const createBaseSlice: StateCreator<
 
         // Transform nested structure to flat structure
         switch (layer) {
+          case LayersEnum.Activity: {
+            if (detail.layer === LayersEnum.Activity) {
+              return {
+                ...detail.memory,
+                ...detail.activity,
+                source: detail.source,
+                sourceType: detail.sourceType,
+              };
+            }
+            break;
+          }
           case LayersEnum.Context: {
             if (detail.layer === LayersEnum.Context) {
               return {
@@ -187,10 +273,13 @@ export const createBaseSlice: StateCreator<
         revalidateOnFocus: false,
       },
     );
-  },
+  };
 
-  useFetchUserMemory: (enable, params) => {
-    const resolvedParams = params ?? get().activeParams;
+  useFetchUserMemory = (
+    enable: boolean,
+    params?: RetrieveMemoryParams,
+  ): SWRResponse<RetrieveMemoryResult> => {
+    const resolvedParams = params ?? this.#get().activeParams;
     const key = resolvedParams ? userMemoryCacheKey(resolvedParams) : undefined;
 
     return useClientDataSWR<RetrieveMemoryResult>(
@@ -200,13 +289,13 @@ export const createBaseSlice: StateCreator<
         onSuccess: (result) => {
           if (!resolvedParams || !key) return;
 
-          const state = get();
+          const state = this.#get();
           const previous = state.memoryMap[key];
-          const next = result ?? { contexts: [], experiences: [], preferences: [] };
+          const next = result ?? { activities: [], contexts: [], experiences: [], preferences: [] };
           const fetchedAt = Date.now();
 
           if (previous && isEqual(previous, next)) {
-            set(
+            this.#set(
               {
                 memoryFetchedAtMap: {
                   ...state.memoryFetchedAtMap,
@@ -217,6 +306,7 @@ export const createBaseSlice: StateCreator<
               n('useFetchUserMemory/refresh', {
                 key,
                 totals: {
+                  activities: next.activities.length,
                   contexts: next.contexts.length,
                   experiences: next.experiences.length,
                   preferences: next.preferences.length,
@@ -227,7 +317,7 @@ export const createBaseSlice: StateCreator<
             return;
           }
 
-          set(
+          this.#set(
             {
               memoryFetchedAtMap: {
                 ...state.memoryFetchedAtMap,
@@ -242,6 +332,7 @@ export const createBaseSlice: StateCreator<
             n('useFetchUserMemory/success', {
               key,
               totals: {
+                activities: next.activities.length,
                 contexts: next.contexts.length,
                 experiences: next.experiences.length,
                 preferences: next.preferences.length,
@@ -251,9 +342,9 @@ export const createBaseSlice: StateCreator<
         },
       },
     );
-  },
+  };
 
-  useInitIdentities: (isLogin) => {
+  useInitIdentities = (isLogin: boolean): SWRResponse<any> => {
     return useClientDataSWRWithSync<IdentityForInjection[]>(
       isLogin ? 'useInitIdentities' : null,
       // Use dedicated API that filters for self identities only
@@ -264,7 +355,7 @@ export const createBaseSlice: StateCreator<
 
           const fetchedAt = Date.now();
 
-          set(
+          this.#set(
             {
               globalIdentities: data,
               globalIdentitiesFetchedAt: fetchedAt,
@@ -276,5 +367,7 @@ export const createBaseSlice: StateCreator<
         },
       },
     );
-  },
-});
+  };
+}
+
+export type BaseAction = Pick<BaseActionImpl, keyof BaseActionImpl>;

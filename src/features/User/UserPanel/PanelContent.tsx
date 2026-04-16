@@ -1,27 +1,23 @@
 import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
-import { enableBetterAuth, enableNextAuth } from '@lobechat/const';
 import { Flexbox } from '@lobehub/ui';
-import { useRouter } from 'next/navigation';
-import { memo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { type FC } from 'react';
+import { Link } from 'react-router-dom';
 
-import { clearDesktopOnboardingCompleted } from '@/app/[variants]/(desktop)/desktop-onboarding/storage';
 import BusinessPanelContent from '@/business/client/features/User/BusinessPanelContent';
-import BrandWatermark from '@/components/BrandWatermark';
 import Menu from '@/components/Menu';
 import { isDesktop } from '@/const/version';
+import UserInfo from '@/features/User/UserInfo';
+import { navigateToDesktopOnboarding } from '@/routes/(desktop)/desktop-onboarding/navigation';
+import { DesktopOnboardingScreen } from '@/routes/(desktop)/desktop-onboarding/types';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
 
 import DataStatistics from '../DataStatistics';
-import UserInfo from '../UserInfo';
 import UserLoginOrSignup from '../UserLoginOrSignup';
 import LangButton from './LangButton';
 import { useMenu } from './useMenu';
 
-const PanelContent = memo<{ closePopover: () => void }>(({ closePopover }) => {
-  const router = useRouter();
-  const navigate = useNavigate();
+const PanelContent: FC<{ closePopover: () => void }> = ({ closePopover }) => {
   const isLoginWithAuth = useUserStore(authSelectors.isLoginWithAuth);
   const [openSignIn, signOut] = useUserStore((s) => [s.openLogin, s.logout]);
   const { mainItems, logoutItems } = useMenu();
@@ -35,26 +31,20 @@ const PanelContent = memo<{ closePopover: () => void }>(({ closePopover }) => {
     if (isDesktop) {
       closePopover();
 
-      // Desktop: clear OIDC tokens (electron main) + re-enter desktop onboarding at Screen5.
       try {
         const { remoteServerService } = await import('@/services/electron/remoteServer');
         await remoteServerService.clearRemoteServerConfig();
-      } catch {
-        // Ignore: even if IPC is unavailable, still proceed to onboarding.
+      } catch (error) {
+        console.error(error);
+      } finally {
+        signOut();
+        navigateToDesktopOnboarding(DesktopOnboardingScreen.Login);
       }
-
-      clearDesktopOnboardingCompleted();
-      signOut();
-      navigate('/desktop-onboarding#5', { replace: true });
       return;
     }
 
     signOut();
     closePopover();
-    // NextAuth and Better Auth handle redirect in their own signOut methods
-    if (enableNextAuth || enableBetterAuth) return;
-    // Clerk uses /login page
-    router.push('/login');
   };
 
   return (
@@ -72,13 +62,10 @@ const PanelContent = memo<{ closePopover: () => void }>(({ closePopover }) => {
       )}
 
       <Menu items={mainItems} onClick={closePopover} />
+      <LangButton placement={'right' as any} />
       <Menu items={logoutItems} onClick={handleSignOut} />
-      <Flexbox gap={4} horizontal justify={'space-between'} style={{ padding: '6px 8px 6px 16px' }}>
-        <BrandWatermark />
-        <LangButton placement={'right' as any} />
-      </Flexbox>
     </Flexbox>
   );
-});
+};
 
 export default PanelContent;

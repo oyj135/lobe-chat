@@ -1,16 +1,15 @@
 import { Flexbox, ScrollShadow, TooltipGroup } from '@lobehub/ui';
-import { type ReactNode, Suspense, memo } from 'react';
+import { type ReactNode } from 'react';
+import { memo, Suspense } from 'react';
 
-import Footer from '@/app/[variants]/(main)/home/_layout/Footer';
 import SkeletonList, { SkeletonItem } from '@/features/NavPanel/components/SkeletonList';
 
 interface SidebarLayoutProps {
   body?: ReactNode;
-  footer?: ReactNode;
   header?: ReactNode;
 }
 
-const SideBarLayout = memo<SidebarLayoutProps>(({ header, body, footer }) => {
+const SideBarLayout = memo<SidebarLayoutProps>(({ header, body }) => {
   return (
     <Flexbox gap={4} style={{ height: '100%', overflow: 'hidden' }}>
       <Suspense fallback={<SkeletonItem height={44} style={{ marginTop: 8 }} />}>{header}</Suspense>
@@ -19,7 +18,6 @@ const SideBarLayout = memo<SidebarLayoutProps>(({ header, body, footer }) => {
           <Suspense fallback={<SkeletonList paddingBlock={8} />}>{body}</Suspense>
         </TooltipGroup>
       </ScrollShadow>
-      <Suspense>{footer || <Footer />}</Suspense>
     </Flexbox>
   );
 });

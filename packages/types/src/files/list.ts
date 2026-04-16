@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import type { AsyncTaskStatus } from '../asyncTask';
+import type { AsyncTaskStatus, FileParsingTask } from '../asyncTask';
+
+export interface KnowledgeItemStatus extends FileParsingTask {
+  id: string;
+}
 
 export interface FileListItem {
   chunkCount: number | null;
@@ -60,8 +64,8 @@ export interface QueryFileListParams {
   parentId?: string | null;
   q?: string | null;
   showFilesInKnowledgeBase?: boolean;
-  sortType?: string;
   sorter?: string;
+  sortType?: string;
 }
 
 export interface PaginatedFileList {

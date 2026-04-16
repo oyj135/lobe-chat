@@ -1,10 +1,9 @@
-import { ChatResponse } from 'ollama/browser';
+import type { ChatResponse } from 'ollama/browser';
 
-import { ChatStreamCallbacks } from '../../types';
+import type { ChatStreamCallbacks } from '../../types';
 import { nanoid } from '../../utils/uuid';
+import type { StreamContext, StreamProtocolChunk } from './protocol';
 import {
-  StreamContext,
-  StreamProtocolChunk,
   createCallbacksTransformer,
   createSSEProtocolTransformer,
   generateToolCallId,
@@ -23,7 +22,7 @@ const transformOllamaStream = (chunk: ChatResponse, stack: StreamContext): Strea
           name: value.function?.name ?? null,
         },
         id: generateToolCallId(index, value.function?.name),
-        index: index,
+        index,
         type: 'function',
       })),
       id: stack.id,
@@ -36,14 +35,14 @@ const transformOllamaStream = (chunk: ChatResponse, stack: StreamContext): Strea
     return { data: 'finished', id: stack.id, type: 'stop' };
   }
 
-  // 判断是否有 <think> 或 </think> 标签，更新 thinkingInContent 状态
+  // Check for <think> or </think> tags and update thinkingInContent state
   if (chunk.message.content.includes('<think>')) {
     stack.thinkingInContent = true;
   } else if (chunk.message.content.includes('</think>')) {
     stack.thinkingInContent = false;
   }
 
-  // 清除 <think> 及 </think> 标签，并根据当前思考模式确定返回类型
+  // Remove <think> and </think> tags, and determine return type based on current thinking mode
   return {
     data: chunk.message.content.replaceAll(/<\/?think>/g, ''),
     id: stack.id,
@@ -54,7 +53,7 @@ const transformOllamaStream = (chunk: ChatResponse, stack: StreamContext): Strea
 export const OllamaStream = (
   res: ReadableStream<ChatResponse>,
   cb?: ChatStreamCallbacks,
-): ReadableStream<string> => {
+): ReadableStream<Uint8Array> => {
   const streamStack: StreamContext = { id: 'chat_' + nanoid() };
 
   return res

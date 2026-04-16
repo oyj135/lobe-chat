@@ -45,7 +45,20 @@ export const searchRouter = router({
         offset: z.number().optional(),
         query: z.string(),
         type: z
-          .enum(['agent', 'topic', 'file', 'message', 'page', 'mcp', 'plugin', 'communityAgent'])
+          .enum([
+            'agent',
+            'chatGroup',
+            'topic',
+            'file',
+            'folder',
+            'message',
+            'page',
+            'memory',
+            'mcp',
+            'plugin',
+            'communityAgent',
+            'knowledgeBase',
+          ])
           .optional(),
       }),
     )
@@ -58,8 +71,21 @@ export const searchRouter = router({
       // Build search promises based on type filter
       const searchPromises: Promise<any>[] = [];
 
-      // Database searches (agent, topic, file, message, page)
-      if (!type || ['agent', 'topic', 'file', 'message', 'page'].includes(type)) {
+      // Database searches (agent, topic, file, folder, message, page, memory)
+      if (
+        !type ||
+        [
+          'agent',
+          'chatGroup',
+          'topic',
+          'file',
+          'folder',
+          'message',
+          'page',
+          'memory',
+          'knowledgeBase',
+        ].includes(type)
+      ) {
         searchPromises.push(ctx.searchRepo.search(input));
       }
 
@@ -136,6 +162,7 @@ export const searchRouter = router({
         searchPromises.push(
           ctx.discoverService
             .getAssistantList({
+              includeAgentGroup: true,
               locale,
               pageSize: limitPerType,
               q: query,
@@ -156,7 +183,7 @@ export const searchRouter = router({
                 ),
                 tags: item.tags || null,
                 title: (item.title || item.identifier) as string,
-                type: 'assistant' as const,
+                type: 'communityAgent' as const,
                 updatedAt: new Date(item.updatedAt || Date.now()),
               })),
             )

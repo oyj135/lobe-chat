@@ -1,8 +1,9 @@
-import { UIChatMessage } from '@lobechat/types';
+import { type UIChatMessage } from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
 
-import type { ChatStoreState } from '@/store/chat';
+import { type ChatStoreState } from '@/store/chat';
 
+import { PortalViewType } from './initialState';
 import { chatPortalSelectors } from './selectors';
 
 describe('chatDockSelectors', () => {
@@ -10,6 +11,7 @@ describe('chatDockSelectors', () => {
     const state = {
       showPortal: false,
       portalToolMessage: undefined,
+      portalStack: [],
       dbMessagesMap: {},
       activeAgentId: 'test-id',
       activeTopicId: undefined,
@@ -19,6 +21,82 @@ describe('chatDockSelectors', () => {
     return state;
   };
 
+  describe('currentView', () => {
+    it('should return null when stack is empty', () => {
+      expect(chatPortalSelectors.currentView(createState())).toBeNull();
+    });
+
+    it('should return the top view from stack', () => {
+      const state = createState({
+        portalStack: [
+          { type: PortalViewType.Notebook },
+          { type: PortalViewType.Document, documentId: 'doc-1' },
+        ],
+      });
+      expect(chatPortalSelectors.currentView(state)).toEqual({
+        type: PortalViewType.Document,
+        documentId: 'doc-1',
+      });
+    });
+  });
+
+  describe('currentViewType', () => {
+    it('should return null when stack is empty', () => {
+      expect(chatPortalSelectors.currentViewType(createState())).toBeNull();
+    });
+
+    it('should return the type of top view', () => {
+      const state = createState({
+        portalStack: [{ type: PortalViewType.Notebook }],
+      });
+      expect(chatPortalSelectors.currentViewType(state)).toBe(PortalViewType.Notebook);
+    });
+  });
+
+  describe('canGoBack', () => {
+    it('should return false when stack has 0 or 1 views', () => {
+      expect(chatPortalSelectors.canGoBack(createState())).toBe(false);
+      expect(
+        chatPortalSelectors.canGoBack(
+          createState({ portalStack: [{ type: PortalViewType.Notebook }] }),
+        ),
+      ).toBe(false);
+    });
+
+    it('should return true when stack has more than 1 view', () => {
+      const state = createState({
+        portalStack: [
+          { type: PortalViewType.Notebook },
+          { type: PortalViewType.Document, documentId: 'doc-1' },
+        ],
+      });
+      expect(chatPortalSelectors.canGoBack(state)).toBe(true);
+    });
+  });
+
+  describe('showArtifactUI', () => {
+    it('should return false when current view is not Artifact', () => {
+      expect(chatPortalSelectors.showArtifactUI(createState())).toBe(false);
+      expect(
+        chatPortalSelectors.showArtifactUI(
+          createState({ portalStack: [{ type: PortalViewType.Notebook }] }),
+        ),
+      ).toBe(false);
+    });
+
+    it('should return true when current view is Artifact', () => {
+      const state = createState({
+        portalStack: [
+          {
+            type: PortalViewType.Artifact,
+            artifact: { id: 'test', title: 'Test', type: 'text' },
+          },
+        ],
+      });
+      expect(chatPortalSelectors.showArtifactUI(state)).toBe(true);
+    });
+  });
+
   describe('showDock', () => {
     it('should return the showDock state', () => {
       expect(chatPortalSelectors.showPortal(createState({ showPortal: true }))).toBe(true);
@@ -27,12 +105,14 @@ describe('chatDockSelectors', () => {
   });
 
   describe('toolUIMessageId', () => {
-    it('should return undefined when dockToolMessage is not set', () => {
+    it('should return undefined when no ToolUI view on stack', () => {
       expect(chatPortalSelectors.toolMessageId(createState())).toBeUndefined();
     });
 
-    it('should return the id when dockToolMessage is set', () => {
-      const state = createState({ portalToolMessage: { id: 'test-id', identifier: 'test' } });
+    it('should return the messageId when ToolUI view is on stack', () => {
+      const state = createState({
+        portalStack: [{ type: PortalViewType.ToolUI, messageId: 'test-id', identifier: 'test' }],
+      });
       expect(chatPortalSelectors.toolMessageId(state)).toBe('test-id');
     });
   });
@@ -40,7 +120,7 @@ describe('chatDockSelectors', () => {
   describe('isMessageToolUIOpen', () => {
     it('should return false when id does not match or showDock is false', () => {
       const state = createState({
-        portalToolMessage: { id: 'test-id', identifier: 'test' },
+        portalStack: [{ type: PortalViewType.ToolUI, messageId: 'test-id', identifier: 'test' }],
         showPortal: false,
       });
       expect(chatPortalSelectors.isPluginUIOpen('test-id')(state)).toBe(false);
@@ -49,7 +129,7 @@ describe('chatDockSelectors', () => {
 
     it('should return true when id matches and showDock is true', () => {
       const state = createState({
-        portalToolMessage: { id: 'test-id', identifier: 'test' },
+        portalStack: [{ type: PortalViewType.ToolUI, messageId: 'test-id', identifier: 'test' }],
         showPortal: true,
       });
       expect(chatPortalSelectors.isPluginUIOpen('test-id')(state)).toBe(true);
@@ -57,45 +137,57 @@ describe('chatDockSelectors', () => {
   });
 
   describe('showToolUI', () => {
-    it('should return false when dockToolMessage is not set', () => {
+    it('should return false when no ToolUI view on stack', () => {
       expect(chatPortalSelectors.showPluginUI(createState())).toBe(false);
     });
 
-    it('should return true when dockToolMessage is set', () => {
-      const state = createState({ portalToolMessage: { id: 'test-id', identifier: 'test' } });
+    it('should return true when ToolUI view is on stack', () => {
+      const state = createState({
+        portalStack: [{ type: PortalViewType.ToolUI, messageId: 'test-id', identifier: 'test' }],
+      });
       expect(chatPortalSelectors.showPluginUI(state)).toBe(true);
     });
   });
 
   describe('toolUIIdentifier', () => {
-    it('should return undefined when dockToolMessage is not set', () => {
+    it('should return undefined when no ToolUI view on stack', () => {
       expect(chatPortalSelectors.toolUIIdentifier(createState())).toBeUndefined();
     });
 
-    it('should return the identifier when dockToolMessage is set', () => {
-      const state = createState({ portalToolMessage: { id: 'test-id', identifier: 'test' } });
+    it('should return the identifier when ToolUI view is on stack', () => {
+      const state = createState({
+        portalStack: [{ type: PortalViewType.ToolUI, messageId: 'test-id', identifier: 'test' }],
+      });
       expect(chatPortalSelectors.toolUIIdentifier(state)).toBe('test');
     });
   });
 
   describe('showFilePreview', () => {
-    it('should return false when portalFile is not set', () => {
+    it('should return false when no FilePreview view on stack', () => {
       expect(chatPortalSelectors.showFilePreview(createState())).toBe(false);
     });
 
-    it('should return true when portalFile is set', () => {
-      const state = createState({ portalFile: { fileId: 'file-id', chunkText: 'chunk' } });
+    it('should return true when FilePreview view is on stack', () => {
+      const state = createState({
+        portalStack: [
+          { type: PortalViewType.FilePreview, file: { fileId: 'file-id', chunkText: 'chunk' } },
+        ],
+      });
       expect(chatPortalSelectors.showFilePreview(state)).toBe(true);
     });
   });
 
   describe('previewFileId', () => {
-    it('should return undefined when portalFile is not set', () => {
+    it('should return undefined when no FilePreview view on stack', () => {
       expect(chatPortalSelectors.previewFileId(createState())).toBeUndefined();
     });
 
-    it('should return the fileId when portalFile is set', () => {
-      const state = createState({ portalFile: { fileId: 'file-id', chunkText: 'chunk' } });
+    it('should return the fileId when FilePreview view is on stack', () => {
+      const state = createState({
+        portalStack: [
+          { type: PortalViewType.FilePreview, file: { fileId: 'file-id', chunkText: 'chunk' } },
+        ],
+      });
       expect(chatPortalSelectors.previewFileId(state)).toBe('file-id');
     });
   });
@@ -194,6 +286,104 @@ ${htmlContent}
       });
       expect(chatPortalSelectors.artifactCode('test-id')(state)).toBe(htmlContent);
     });
+
+    it('should extract specific artifact content by identifier', () => {
+      const content1 = 'First artifact content';
+      const content2 = 'Second artifact content';
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content: `<lobeArtifact identifier="first" type="text">${content1}</lobeArtifact>\n\n<lobeArtifact identifier="second" type="text">${content2}</lobeArtifact>`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.artifactCode('test-id', 'first')(state)).toBe(content1);
+      expect(chatPortalSelectors.artifactCode('test-id', 'second')(state)).toBe(content2);
+    });
+
+    it('should return empty string for non-existent identifier', () => {
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content: `<lobeArtifact identifier="real" type="text">Real content</lobeArtifact>`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.artifactCode('test-id', 'nonexistent')(state)).toBe('');
+    });
+
+    it('should extract content from unclosed artifact by identifier', () => {
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content: `<lobeArtifact identifier="done" type="text">Done</lobeArtifact>\n\n<lobeArtifact identifier="wip" type="text">Still generating...`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.artifactCode('test-id', 'done')(state)).toBe('Done');
+      expect(chatPortalSelectors.artifactCode('test-id', 'wip')(state)).toBe('Still generating...');
+    });
+
+    it('should handle identifiers with regex special characters', () => {
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content: `<lobeArtifact identifier="test+id(1)[2]" type="text">Special content</lobeArtifact>`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.artifactCode('test-id', 'test+id(1)[2]')(state)).toBe(
+        'Special content',
+      );
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id', 'test+id(1)[2]')(state)).toBe(true);
+    });
+
+    it('should return first artifact content when no identifier provided (backward compat)', () => {
+      const content1 = 'First';
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content: `<lobeArtifact identifier="a" type="text">${content1}</lobeArtifact>\n\n<lobeArtifact identifier="b" type="text">Second</lobeArtifact>`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.artifactCode('test-id')(state)).toBe(content1);
+    });
   });
 
   describe('isArtifactTagClosed', () => {
@@ -249,6 +439,67 @@ ${htmlContent}
         },
       });
       expect(chatPortalSelectors.isArtifactTagClosed('test-id')(state)).toBe(false);
+    });
+
+    it('should check specific artifact by identifier when both artifacts are closed', () => {
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content:
+                '<lobeArtifact identifier="a" type="text">A</lobeArtifact>\n\n<lobeArtifact identifier="b" type="text">B</lobeArtifact>',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id', 'a')(state)).toBe(true);
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id', 'b')(state)).toBe(true);
+    });
+
+    it('should return false for non-existent identifier', () => {
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content: '<lobeArtifact identifier="exists" type="text">Content</lobeArtifact>',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id', 'nonexistent')(state)).toBe(false);
+    });
+
+    it('should check specific artifact by identifier when first is closed but second is not', () => {
+      const state = createState({
+        dbMessagesMap: {
+          'test-id_null': [
+            {
+              id: 'test-id',
+              content:
+                '<lobeArtifact identifier="done" type="text">Content 1</lobeArtifact>\n\n<lobeArtifact identifier="generating" type="text">Content 2 still going',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              role: 'user',
+              sessionId: 'test-id',
+            } as UIChatMessage,
+          ],
+        },
+      });
+      // Without identifier, returns true because first artifact is closed
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id')(state)).toBe(true);
+      // With identifier, correctly distinguishes between closed and unclosed
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id', 'done')(state)).toBe(true);
+      expect(chatPortalSelectors.isArtifactTagClosed('test-id', 'generating')(state)).toBe(false);
     });
   });
 });

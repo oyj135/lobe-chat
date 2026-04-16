@@ -2,102 +2,117 @@ import type { ChatModelCard } from '@lobechat/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  detectModelProvider,
   MODEL_LIST_CONFIGS,
   MODEL_OWNER_DETECTION_CONFIG,
-  detectModelProvider,
   processModelList,
   processMultiProviderModelList,
 } from './modelParse';
 
 // Mock the imported LOBE_DEFAULT_MODEL_LIST
-const mockDefaultModelList: (Partial<ChatModelCard> & { id: string })[] = [
-  {
-    contextWindowTokens: 8192,
-    displayName: 'GPT-4',
-    enabled: true,
-    functionCall: true,
-    id: 'gpt-4',
-    maxOutput: 4096,
-    reasoning: false,
-    vision: true,
-  },
-  {
-    displayName: 'Claude 3 Opus',
-    enabled: true,
-    functionCall: true,
-    id: 'claude-3-opus',
-    reasoning: true,
-    vision: true,
-  },
-  {
-    displayName: 'Qwen Turbo',
-    enabled: true,
-    functionCall: true,
-    id: 'qwen-turbo',
-    reasoning: false,
-    vision: false,
-  },
-  // Added for more detailed tests:
-  {
-    displayName: 'Custom Known FC True',
-    enabled: true,
-    functionCall: true,
-    id: 'custom-model-known-fc-true', // For testing: knownModel.abilities.fc=true, no keyword match for openai fc
-    reasoning: false,
-    vision: false,
-  },
-  {
-    displayName: 'GPT-4o Known FC False',
-    enabled: true,
-    functionCall: false,
-    id: 'gpt-4o-known-fc-false', // For testing: '4o' keyword match, knownModel.abilities.fc=false
-    reasoning: true,
-    vision: true,
-  },
-  {
-    displayName: 'GPT-4o Known Vision False',
-    enabled: true,
-    functionCall: true,
-    id: 'gpt-4o-known-vision-false', // For testing: '4o' keyword match, knownModel.abilities.vision=false
-    reasoning: true,
-    vision: false,
-  },
-  {
-    displayName: 'GPT-4o Audio Known Abilities True',
-    enabled: true,
-    functionCall: true,
-    id: 'gpt-4o-audio-known-abilities-true', // For testing: '4o' keyword, 'audio' excluded, but knownModel.abilities.fc/vision=true
-    reasoning: true,
-    vision: true,
-  },
-  {
-    displayName: 'GPT-4o Audio Known Abilities False',
-    enabled: true,
-    functionCall: false,
-    id: 'gpt-4o-audio-known-abilities-false', // For testing: '4o' keyword, 'audio' excluded, and knownModel.abilities.fc/vision=false
-    reasoning: false,
-    vision: false,
-  },
-  {
-    displayName: 'Known Model DisplayName',
-    enabled: true,
-    id: 'model-known-displayname',
-  },
-  {
-    contextWindowTokens: 1000,
-    enabled: true,
-    id: 'model-known-context',
-    maxOutput: 100,
-  },
-  {
-    displayName: 'Known Disabled Model',
-    enabled: false,
-    id: 'model-known-disabled',
-  },
-];
+const { mockDefaultModelList } = vi.hoisted(() => ({
+  mockDefaultModelList: [
+    {
+      contextWindowTokens: 8192,
+      displayName: 'GPT-4',
+      enabled: true,
+      functionCall: true,
+      id: 'gpt-4',
+      maxOutput: 4096,
+      reasoning: false,
+      vision: true,
+    },
+    {
+      displayName: 'Claude 3 Opus',
+      enabled: true,
+      functionCall: true,
+      id: 'claude-3-opus',
+      reasoning: true,
+      vision: true,
+    },
+    {
+      displayName: 'Qwen Turbo',
+      enabled: true,
+      functionCall: true,
+      id: 'qwen-turbo',
+      reasoning: false,
+      vision: false,
+    },
+    // Added for more detailed tests:
+    {
+      displayName: 'Custom Known FC True',
+      enabled: true,
+      functionCall: true,
+      id: 'custom-model-known-fc-true', // For testing: knownModel.abilities.fc=true, no keyword match for openai fc
+      reasoning: false,
+      vision: false,
+    },
+    {
+      displayName: 'GPT-4o Known FC False',
+      enabled: true,
+      functionCall: false,
+      id: 'gpt-4o-known-fc-false', // For testing: '4o' keyword match, knownModel.abilities.fc=false
+      reasoning: true,
+      vision: true,
+    },
+    {
+      displayName: 'GPT-4o Known Vision False',
+      enabled: true,
+      functionCall: true,
+      id: 'gpt-4o-known-vision-false', // For testing: '4o' keyword match, knownModel.abilities.vision=false
+      reasoning: true,
+      vision: false,
+    },
+    {
+      displayName: 'GPT-4o Audio Known Abilities True',
+      enabled: true,
+      functionCall: true,
+      id: 'gpt-4o-audio-known-abilities-true', // For testing: '4o' keyword, 'audio' excluded, but knownModel.abilities.fc/vision=true
+      reasoning: true,
+      vision: true,
+    },
+    {
+      displayName: 'GPT-4o Audio Known Abilities False',
+      enabled: true,
+      functionCall: false,
+      id: 'gpt-4o-audio-known-abilities-false', // For testing: '4o' keyword, 'audio' excluded, and knownModel.abilities.fc/vision=false
+      reasoning: false,
+      vision: false,
+    },
+    {
+      displayName: 'Known Model DisplayName',
+      enabled: true,
+      id: 'model-known-displayname',
+    },
+    {
+      contextWindowTokens: 1000,
+      enabled: true,
+      id: 'model-known-context',
+      maxOutput: 100,
+    },
+    {
+      displayName: 'Known Disabled Model',
+      enabled: false,
+      id: 'model-known-disabled',
+    },
+    {
+      displayName: 'Known Model With Settings',
+      enabled: true,
+      id: 'model-known-settings',
+      settings: {
+        extendParams: ['enableReasoning'],
+        searchImpl: 'params',
+        searchProvider: 'builtin',
+      },
+    },
+  ] as (Partial<ChatModelCard> & { id: string })[],
+}));
 
 // Mock the import
 vi.mock('model-bank', () => ({
+  AiModelTypeSchema: {
+    options: ['chat', 'embedding', 'tts', 'stt', 'image', 'video', 'text2music', 'realtime'],
+  },
   LOBE_DEFAULT_MODEL_LIST: mockDefaultModelList,
   // 新增 provider 专用清单，供 findKnownModelByProvider 使用
   google: [
@@ -238,11 +253,28 @@ describe('modelParse', () => {
       expect(Array.isArray(result)).toBe(true);
     });
 
+    it('should ignore invalid model type values and fallback to inferred types', async () => {
+      const modelList = [
+        { id: 'custom-chat-model', type: 'model' },
+        { id: 'text-embedding-3-large', type: 'model' },
+      ];
+
+      const result = await processModelList(modelList, MODEL_LIST_CONFIGS.openai);
+
+      expect(result).toHaveLength(2);
+      expect(result.find((m) => m.id === 'custom-chat-model')?.type).toBe('chat');
+      expect(result.find((m) => m.id === 'text-embedding-3-large')?.type).toBe('embedding');
+    });
+
     // New search & imageOutput focused tests for single provider path
     describe('search and imageOutput (processModelList)', () => {
       it('openai: default search keywords should make "*-search" models support search', async () => {
         // openai config does not define searchKeywords, so DEFAULT_SEARCH_KEYWORDS ['-search'] applies
-        const out = await processModelList([{ id: 'gpt-4o-search' }], MODEL_LIST_CONFIGS.openai, 'openai');
+        const out = await processModelList(
+          [{ id: 'gpt-4o-search' }],
+          MODEL_LIST_CONFIGS.openai,
+          'openai',
+        );
         expect(out).toHaveLength(1);
         expect(out[0].search).toBe(true);
       });
@@ -276,12 +308,54 @@ describe('modelParse', () => {
       });
 
       it('google: gemini-* without "-image-" should not infer imageOutput and get search=true via known google model', async () => {
-        const out = await processModelList([{ id: 'gemini-2.5-pro' }], MODEL_LIST_CONFIGS.google, 'google');
+        const out = await processModelList(
+          [{ id: 'gemini-2.5-pro' }],
+          MODEL_LIST_CONFIGS.google,
+          'google',
+        );
         expect(out).toHaveLength(1);
         expect(out[0].displayName).toBe('Gemini 2.5 Pro');
         expect(out[0].search).toBe(true);
         expect(out[0].imageOutput).toBe(false);
       });
+    });
+
+    it('xiaomimimo: should infer multimodal abilities for omni', async () => {
+      const out = await processModelList(
+        [{ id: 'mimo-v2-flash' }, { id: 'mimo-v2-pro' }, { id: 'mimo-v2-omni' }],
+        MODEL_LIST_CONFIGS.xiaomimimo,
+        'xiaomimimo',
+      );
+
+      expect(out).toHaveLength(3);
+
+      const flash = out.find((m) => m.id === 'mimo-v2-flash')!;
+      const pro = out.find((m) => m.id === 'mimo-v2-pro')!;
+      const omni = out.find((m) => m.id === 'mimo-v2-omni')!;
+
+      expect(flash.functionCall).toBe(true);
+      expect(flash.reasoning).toBe(true);
+      expect(flash.vision).toBe(false);
+
+      expect(pro.functionCall).toBe(true);
+      expect(pro.reasoning).toBe(true);
+      expect(pro.vision).toBe(false);
+
+      expect(omni.functionCall).toBe(true);
+      expect(omni.reasoning).toBe(true);
+      expect(omni.vision).toBe(true);
+
+      const tts = await processModelList(
+        [{ id: 'mimo-v2-tts' }],
+        MODEL_LIST_CONFIGS.xiaomimimo,
+        'xiaomimimo',
+      );
+
+      expect(tts).toHaveLength(1);
+      expect(tts[0].functionCall).toBe(false);
+      expect(tts[0].reasoning).toBe(false);
+      expect(tts[0].search).toBe(false);
+      expect(tts[0].vision).toBe(false);
     });
 
     describe('Detailed capability and property processing in processModelList', () => {
@@ -353,6 +427,36 @@ describe('modelParse', () => {
         expect(result.find((m) => m.id === 'gpt-4')!.enabled).toBe(false);
         expect(result.find((m) => m.id === 'model-known-disabled')!.enabled).toBe(false);
         expect(result.find((m) => m.id === 'unknown-model-for-enabled-test')!.enabled).toBe(false);
+      });
+
+      it('should include settings from known model when remote data does not provide them', async () => {
+        const modelList = [{ id: 'model-known-settings' }];
+        const result = await processModelList(modelList, config);
+
+        const settings = result[0].settings;
+        expect(settings).toBeDefined();
+        expect(settings?.extendParams).toEqual(['enableReasoning']);
+        expect(settings?.searchImpl).toBe('params');
+        expect(settings?.searchProvider).toBe('builtin');
+      });
+
+      it('should merge extendParams from known and remote models while preserving uniqueness', async () => {
+        const modelList = [
+          {
+            id: 'model-known-settings',
+            settings: {
+              extendParams: ['reasoningBudgetToken', 'enableReasoning'],
+              searchImpl: 'tool',
+            },
+          },
+        ];
+
+        const result = await processModelList(modelList, config);
+        const settings = result[0].settings;
+
+        expect(settings?.extendParams).toEqual(['enableReasoning', 'reasoningBudgetToken']);
+        expect(settings?.searchImpl).toBe('tool');
+        expect(settings?.searchProvider).toBe('builtin');
       });
     });
   });
@@ -432,6 +536,17 @@ describe('modelParse', () => {
       expect(unknown.reasoning).toBe(false);
       expect(unknown.vision).toBe(false);
     });
+
+    it('should ignore invalid remote type values in mixed provider processing', async () => {
+      const modelList = [{ id: 'newapi-custom-model', type: 'model' }];
+
+      const result = await processMultiProviderModelList(modelList, 'newapi');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('newapi-custom-model');
+      expect(result[0].type).toBe('chat');
+    });
+
     it('should correctly process a model from a non-OpenAI provider not in default list, relying on keywords', async () => {
       // This model ('claude-3-haiku-unlisted') is NOT in mockDefaultModelList.
       // It should be detected as 'anthropic'.
@@ -497,7 +612,7 @@ describe('modelParse', () => {
       });
 
       it('default search keywords should make "*-search" models support search', async () => {
-        const out = await processMultiProviderModelList([{ id: 'gpt-4o-search'}]);
+        const out = await processMultiProviderModelList([{ id: 'gpt-4o-search' }]);
         expect(out).toHaveLength(1);
         expect(out[0].search).toBe(true);
       });
@@ -672,6 +787,140 @@ describe('modelParse', () => {
 
         // Zhipu: 'glm-4v' 是 vision 关键词
         expect(glm.vision).toBe(true);
+      });
+
+      it('should include known extendParams for OpenAI and Google providers regardless of providerid', async () => {
+        const mockModule = await import('model-bank');
+        mockModule.LOBE_DEFAULT_MODEL_LIST.push(
+          {
+            id: 'gpt-openai-extend-restricted',
+            displayName: 'OpenAI Extend Restricted',
+            settings: {
+              extendParams: ['openaiParam'],
+            },
+          } as any,
+          {
+            id: 'gemini-extend-restricted',
+            displayName: 'Gemini Extend Restricted',
+            settings: {
+              extendParams: ['thinkingBudget', 'urlContext'],
+            },
+          } as any,
+        );
+
+        const modelList = [
+          { id: 'gpt-openai-extend-restricted' },
+          { id: 'gemini-extend-restricted' },
+        ];
+
+        const result = await processMultiProviderModelList(modelList, 'vercelaigateway');
+
+        const openaiModel = result.find((m) => m.id === 'gpt-openai-extend-restricted');
+        const googleModel = result.find((m) => m.id === 'gemini-extend-restricted');
+
+        // Both OpenAI and Google providers always include known extendParams
+        expect(openaiModel?.settings?.extendParams).toEqual(['openaiParam']);
+        expect(googleModel?.settings?.extendParams).toEqual(['thinkingBudget', 'urlContext']);
+      });
+
+      it('should allow known extendParams for non-OpenAI providers when provider is aihubmix', async () => {
+        const mockModule = await import('model-bank');
+        mockModule.LOBE_DEFAULT_MODEL_LIST.push({
+          id: 'gemini-extend-aihubmix',
+          displayName: 'Gemini Extend Aihubmix',
+          settings: {
+            extendParams: ['thinkingBudget', 'urlContext'],
+          },
+        } as any);
+
+        const modelList = [{ id: 'gemini-extend-aihubmix' }];
+
+        const result = await processMultiProviderModelList(modelList, 'aihubmix');
+
+        const googleModel = result.find((m) => m.id === 'gemini-extend-aihubmix');
+
+        expect(googleModel?.settings?.extendParams).toEqual(['thinkingBudget', 'urlContext']);
+      });
+
+      it('should omit search settings when provider is neither aihubmix nor newapi', async () => {
+        const mockModule = await import('model-bank');
+        const initialLength = mockModule.LOBE_DEFAULT_MODEL_LIST.length;
+        mockModule.LOBE_DEFAULT_MODEL_LIST.push({
+          id: 'search-settings-model',
+          displayName: 'Search Settings Model',
+          settings: {
+            searchImpl: 'params',
+            searchProvider: 'builtin',
+          },
+        } as any);
+
+        try {
+          const result = await processMultiProviderModelList(
+            [{ id: 'search-settings-model' }],
+            'vercelaigateway',
+          );
+
+          const model = result.find((m) => m.id === 'search-settings-model');
+
+          expect(model?.settings?.searchImpl).toBeUndefined();
+          expect(model?.settings?.searchProvider).toBeUndefined();
+        } finally {
+          mockModule.LOBE_DEFAULT_MODEL_LIST.splice(initialLength);
+        }
+      });
+
+      it('should include search settings when provider is aihubmix', async () => {
+        const mockModule = await import('model-bank');
+        const initialLength = mockModule.LOBE_DEFAULT_MODEL_LIST.length;
+        mockModule.LOBE_DEFAULT_MODEL_LIST.push({
+          id: 'search-settings-aihubmix',
+          displayName: 'Search Settings Aihubmix',
+          settings: {
+            searchImpl: 'params',
+            searchProvider: 'builtin',
+          },
+        } as any);
+
+        try {
+          const result = await processMultiProviderModelList(
+            [{ id: 'search-settings-aihubmix' }],
+            'aihubmix',
+          );
+
+          const model = result.find((m) => m.id === 'search-settings-aihubmix');
+
+          expect(model?.settings?.searchImpl).toBe('params');
+          expect(model?.settings?.searchProvider).toBe('builtin');
+        } finally {
+          mockModule.LOBE_DEFAULT_MODEL_LIST.splice(initialLength);
+        }
+      });
+
+      it('should include search settings when provider is newapi', async () => {
+        const mockModule = await import('model-bank');
+        const initialLength = mockModule.LOBE_DEFAULT_MODEL_LIST.length;
+        mockModule.LOBE_DEFAULT_MODEL_LIST.push({
+          id: 'search-settings-newapi',
+          displayName: 'Search Settings NewAPI',
+          settings: {
+            searchImpl: 'params',
+            searchProvider: 'builtin',
+          },
+        } as any);
+
+        try {
+          const result = await processMultiProviderModelList(
+            [{ id: 'search-settings-newapi' }],
+            'newapi',
+          );
+
+          const model = result.find((m) => m.id === 'search-settings-newapi');
+
+          expect(model?.settings?.searchImpl).toBe('params');
+          expect(model?.settings?.searchProvider).toBe('builtin');
+        } finally {
+          mockModule.LOBE_DEFAULT_MODEL_LIST.splice(initialLength);
+        }
       });
 
       it('should correctly handle models with excluded keywords in different providers', async () => {

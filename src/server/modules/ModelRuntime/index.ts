@@ -1,5 +1,5 @@
 import { type GoogleGenAIOptions } from '@google/genai';
-import { ModelRuntime } from '@lobechat/model-runtime';
+import { ModelRuntime, type ModelRuntimeHooks } from '@lobechat/model-runtime';
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import {
   type AWSBedrockKeyVault,
@@ -7,12 +7,14 @@ import {
   type ClientSecretPayload,
   type CloudflareKeyVault,
   type ComfyUIKeyVault,
+  type GithubCopilotKeyVault,
   type OpenAICompatibleKeyVault,
   type VertexAIKeyVault,
 } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import { ModelProvider } from 'model-bank';
 
+import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
@@ -30,7 +32,26 @@ type ProviderKeyVaults = OpenAICompatibleKeyVault &
   AWSBedrockKeyVault &
   CloudflareKeyVault &
   ComfyUIKeyVault &
+  GithubCopilotKeyVault &
   VertexAIKeyVault;
+
+/**
+ * Resolve the runtime provider for a given provider.
+ *
+ * This is the server-side equivalent of the frontend's resolveRuntimeProvider function.
+ * For builtin providers, returns the provider as-is.
+ * For custom providers, returns the sdkType from settings (defaults to 'openai').
+ *
+ * @param provider - The provider id
+ * @param sdkType - The sdkType from provider settings
+ * @returns The resolved runtime provider
+ */
+const resolveRuntimeProvider = (provider: string, sdkType?: string): string => {
+  const isBuiltin = Object.values(ModelProvider).includes(provider as ModelProvider);
+  if (isBuiltin) return provider;
+
+  return sdkType || 'openai';
+};
 
 /**
  * Build ClientSecretPayload from keyVaults stored in database
@@ -39,15 +60,21 @@ type ProviderKeyVaults = OpenAICompatibleKeyVault &
  * It converts the keyVaults object from database to the ClientSecretPayload format
  * expected by initModelRuntimeWithUserPayload.
  *
- * @param provider - The model provider
+ * For custom providers, we use runtimeProvider (sdkType) to determine which fields
+ * to include in the payload. This ensures that provider-specific fields like
+ * cloudflareBaseURLOrAccountID or azureApiVersion are correctly forwarded.
+ *
  * @param keyVaults - The keyVaults object from database (already decrypted)
+ * @param runtimeProvider - The runtime provider (sdkType) to use for building payload
  * @returns ClientSecretPayload for the provider
  */
 export const buildPayloadFromKeyVaults = (
-  provider: string,
   keyVaults: ProviderKeyVaults,
+  runtimeProvider: string,
 ): ClientSecretPayload => {
-  switch (provider) {
+  // Use runtimeProvider to determine which fields to include
+  // This handles both builtin providers and custom providers with sdkType
+  switch (runtimeProvider) {
     case ModelProvider.Bedrock: {
       const { accessKeyId, region, secretAccessKey, sessionToken } = keyVaults;
       const apiKey = (secretAccessKey || '') + (accessKeyId || '');
@@ -58,6 +85,7 @@ export const buildPayloadFromKeyVaults = (
         awsRegion: region,
         awsSecretAccessKey: secretAccessKey,
         awsSessionToken: sessionToken,
+        runtimeProvider,
       };
     }
 
@@ -66,17 +94,19 @@ export const buildPayloadFromKeyVaults = (
         apiKey: keyVaults.apiKey,
         azureApiVersion: keyVaults.apiVersion,
         baseURL: keyVaults.baseURL || keyVaults.endpoint,
+        runtimeProvider,
       };
     }
 
     case ModelProvider.Ollama: {
-      return { baseURL: keyVaults.baseURL };
+      return { baseURL: keyVaults.baseURL, runtimeProvider };
     }
 
     case ModelProvider.Cloudflare: {
       return {
         apiKey: keyVaults.apiKey,
         cloudflareBaseURLOrAccountID: keyVaults.baseURLOrAccountID,
+        runtimeProvider,
       };
     }
 
@@ -87,6 +117,7 @@ export const buildPayloadFromKeyVaults = (
         baseURL: keyVaults.baseURL,
         customHeaders: keyVaults.customHeaders,
         password: keyVaults.password,
+        runtimeProvider,
         username: keyVaults.username,
       };
     }
@@ -95,7 +126,21 @@ export const buildPayloadFromKeyVaults = (
       return {
         apiKey: keyVaults.apiKey,
         baseURL: keyVaults.baseURL,
+        runtimeProvider,
         vertexAIRegion: keyVaults.region,
+      };
+    }
+
+    case ModelProvider.GithubCopilot: {
+      // Support both traditional PAT (apiKey) and OAuth tokens
+      return {
+        apiKey: keyVaults.apiKey,
+        bearerToken: keyVaults.bearerToken,
+        bearerTokenExpiresAt: keyVaults.bearerTokenExpiresAt
+          ? Number(keyVaults.bearerTokenExpiresAt)
+          : undefined,
+        oauthAccessToken: keyVaults.oauthAccessToken,
+        runtimeProvider,
       };
     }
 
@@ -103,6 +148,7 @@ export const buildPayloadFromKeyVaults = (
       return {
         apiKey: keyVaults.apiKey,
         baseURL: keyVaults.baseURL,
+        runtimeProvider,
       };
     }
   }
@@ -188,6 +234,16 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
           : CLOUDFLARE_BASE_URL_OR_ACCOUNT_ID;
 
       return { apiKey, baseURLOrAccountID };
+    }
+
+    case ModelProvider.GithubCopilot: {
+      // Support both traditional PAT (apiKey) and OAuth tokens
+      return {
+        apiKey: payload.apiKey,
+        bearerToken: payload.bearerToken,
+        bearerTokenExpiresAt: payload.bearerTokenExpiresAt,
+        oauthAccessToken: payload.oauthAccessToken,
+      };
     }
 
     case ModelProvider.ComfyUI: {
@@ -302,6 +358,7 @@ export const initModelRuntimeWithUserPayload = (
   provider: string,
   payload: ClientSecretPayload,
   params: any = {},
+  hooks?: ModelRuntimeHooks,
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
 
@@ -309,13 +366,17 @@ export const initModelRuntimeWithUserPayload = (
     const vertexOptions = buildVertexOptions(payload, params);
     const runtime = LobeVertexAI.initFromVertexAI(vertexOptions);
 
-    return new ModelRuntime(runtime);
+    return new ModelRuntime(runtime, hooks);
   }
 
-  return ModelRuntime.initializeWithProvider(runtimeProvider, {
-    ...getParamsFromPayload(runtimeProvider, payload),
-    ...params,
-  });
+  return ModelRuntime.initializeWithProvider(
+    runtimeProvider,
+    {
+      ...getParamsFromPayload(runtimeProvider, payload),
+      ...params,
+    },
+    hooks,
+  );
 };
 
 /**
@@ -350,10 +411,19 @@ export const initModelRuntimeFromDB = async (
     KeyVaultsGateKeeper.getUserKeyVaults,
   );
 
-  // 2. Build ClientSecretPayload from keyVaults
-  const keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
-  const payload = buildPayloadFromKeyVaults(provider, keyVaults);
+  // 2. Resolve the runtime provider for custom providers
+  // For custom providers, use sdkType from settings (defaults to 'openai')
+  const sdkType = providerConfig?.settings?.sdkType;
+  const runtimeProvider = resolveRuntimeProvider(provider, sdkType);
 
-  // 3. Initialize ModelRuntime with the payload
-  return initModelRuntimeWithUserPayload(provider, payload);
+  // 3. Build ClientSecretPayload from keyVaults based on runtimeProvider
+  // This ensures provider-specific fields (e.g., cloudflareBaseURLOrAccountID) are included
+  const keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
+  const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
+
+  // 4. Get business hooks (billing in cloud, undefined in OSS)
+  const hooks = getBusinessModelRuntimeHooks(userId, provider);
+
+  // 5. Initialize ModelRuntime with the payload and hooks
+  return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
 };

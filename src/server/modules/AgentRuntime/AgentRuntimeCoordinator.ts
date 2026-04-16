@@ -3,33 +3,58 @@ import debug from 'debug';
 
 import { type AgentOperationMetadata, type StepResult } from './AgentStateManager';
 import { createAgentStateManager, createStreamEventManager } from './factory';
-import type { IAgentStateManager, IStreamEventManager } from './types';
+import { type IAgentStateManager, type IStreamEventManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:coordinator');
 
+/**
+ * Statuses that end the event stream for the current operationId.
+ *
+ * `done` / `error` / `interrupted` are genuinely terminal — the op cannot
+ * resume. `waiting_for_human` is *stream-terminal but state-resumable*:
+ * the paused state lives on until a resume op (carrying the user's
+ * decision) starts, but that resume runs under a **new** operationId with
+ * its own event stream. For the paused operationId no further events will
+ * arrive, so clients should stop waiting the same way they do on done.
+ */
+const STREAM_END_STATUSES = new Set<AgentState['status']>([
+  'done',
+  'error',
+  'interrupted',
+  'waiting_for_human',
+]);
+
+const hasEnteredStreamEndState = (
+  previousStatus?: AgentState['status'],
+  nextStatus?: AgentState['status'],
+): nextStatus is 'done' | 'error' | 'interrupted' | 'waiting_for_human' => {
+  const wasStreamEnd = previousStatus ? STREAM_END_STATUSES.has(previousStatus) : false;
+  return Boolean(nextStatus && STREAM_END_STATUSES.has(nextStatus) && !wasStreamEnd);
+};
+
 export interface AgentRuntimeCoordinatorOptions {
   /**
-   * 自定义状态管理器实现
-   * 默认根据 Redis 可用性自动选择实现
+   * Custom state manager implementation
+   * Defaults to automatic selection based on Redis availability
    */
   stateManager?: IAgentStateManager;
   /**
-   * 自定义流式事件管理器实现
-   * 默认根据 Redis 可用性自动选择实现
+   * Custom stream event manager implementation
+   * Defaults to automatic selection based on Redis availability
    */
   streamEventManager?: IStreamEventManager;
 }
 
 /**
  * Agent Runtime Coordinator
- * 协调 AgentStateManager 和 StreamEventManager 的操作
- * 负责在状态变更时发送相应的事件
+ * Coordinates operations between AgentStateManager and StreamEventManager
+ * Responsible for sending corresponding events when state changes occur
  *
- * 默认行为：
- * - Redis 可用时使用 Redis 实现
- * - Redis 不可用时自动回退到内存实现（本地开发模式）
+ * Default behavior:
+ * - Uses Redis implementation when Redis is available
+ * - Automatically falls back to in-memory implementation when Redis is unavailable (local development mode)
  *
- * 支持依赖注入，可以传入自定义实现
+ * Supports dependency injection, allowing custom implementations to be passed in
  */
 export class AgentRuntimeCoordinator {
   private stateManager: IAgentStateManager;
@@ -41,7 +66,7 @@ export class AgentRuntimeCoordinator {
   }
 
   /**
-   * 创建新的 Agent 操作并发送初始化事件
+   * Create a new Agent operation and send initialization event
    */
   async createAgentOperation(
     operationId: string,
@@ -52,14 +77,14 @@ export class AgentRuntimeCoordinator {
     },
   ): Promise<void> {
     try {
-      // 创建操作元数据
+      // Create operation metadata
       await this.stateManager.createOperationMetadata(operationId, data);
 
-      // 获取创建的元数据
+      // Get the created metadata
       const metadata = await this.stateManager.getOperationMetadata(operationId);
 
       if (metadata) {
-        // 发送 agent runtime init 事件
+        // Send agent runtime init event
         await this.streamEventManager.publishAgentRuntimeInit(operationId, metadata);
         log('[%s] Agent operation created and initialized', operationId);
       }
@@ -70,19 +95,24 @@ export class AgentRuntimeCoordinator {
   }
 
   /**
-   * 保存 Agent 状态并处理相应事件
+   * Save Agent state and handle corresponding events
    */
   async saveAgentState(operationId: string, state: AgentState): Promise<void> {
     try {
       const previousState = await this.stateManager.loadAgentState(operationId);
 
-      // 保存状态
+      // Save state
       await this.stateManager.saveAgentState(operationId, state);
 
-      // 如果状态变为 done，发送 agent runtime end 事件
-      if (state.status === 'done' && previousState?.status !== 'done') {
-        await this.streamEventManager.publishAgentRuntimeEnd(operationId, state.stepCount, state);
-        log('[%s] Agent runtime completed', operationId);
+      // Send a terminal event once the operation first enters a terminal state.
+      if (hasEnteredStreamEndState(previousState?.status, state.status)) {
+        await this.streamEventManager.publishAgentRuntimeEnd(
+          operationId,
+          state.stepCount ?? previousState?.stepCount ?? 0,
+          state,
+          state.status,
+        );
+        log('[%s] Agent runtime reached terminal state: %s', operationId, state.status);
       }
     } catch (error) {
       console.error('Failed to save agent state and handle events:', error);
@@ -91,25 +121,29 @@ export class AgentRuntimeCoordinator {
   }
 
   /**
-   * 保存步骤结果并处理相应事件
+   * Save step result and handle corresponding events
    */
   async saveStepResult(operationId: string, stepResult: StepResult): Promise<void> {
     try {
-      // 获取之前的状态用于检测状态变化
+      // Get previous state for detecting state changes
       const previousState = await this.stateManager.loadAgentState(operationId);
 
-      // 保存步骤结果
+      // Save step result
       await this.stateManager.saveStepResult(operationId, stepResult);
 
-      // 如果状态变为 done，发送 agent_runtime_end 事件
-      // 这确保 agent_runtime_end 在所有步骤事件之后发送
-      if (stepResult.newState.status === 'done' && previousState?.status !== 'done') {
+      // This ensures agent_runtime_end is sent after all step events.
+      if (hasEnteredStreamEndState(previousState?.status, stepResult.newState.status)) {
         await this.streamEventManager.publishAgentRuntimeEnd(
           operationId,
-          stepResult.newState.stepCount,
+          stepResult.newState.stepCount ?? stepResult.stepIndex ?? previousState?.stepCount ?? 0,
           stepResult.newState,
+          stepResult.newState.status,
         );
-        log('[%s] Agent runtime completed', operationId);
+        log(
+          '[%s] Agent runtime reached terminal state after step result: %s',
+          operationId,
+          stepResult.newState.status,
+        );
       }
     } catch (error) {
       console.error('Failed to save step result and handle events:', error);
@@ -118,28 +152,28 @@ export class AgentRuntimeCoordinator {
   }
 
   /**
-   * 获取 Agent 状态
+   * Get Agent state
    */
   async loadAgentState(operationId: string): Promise<AgentState | null> {
     return this.stateManager.loadAgentState(operationId);
   }
 
   /**
-   * 获取操作元数据
+   * Get operation metadata
    */
   async getOperationMetadata(operationId: string): Promise<AgentOperationMetadata | null> {
     return this.stateManager.getOperationMetadata(operationId);
   }
 
   /**
-   * 获取执行历史
+   * Get execution history
    */
   async getExecutionHistory(operationId: string, limit?: number): Promise<any[]> {
     return this.stateManager.getExecutionHistory(operationId, limit);
   }
 
   /**
-   * 删除 Agent 操作
+   * Delete Agent operation
    */
   async deleteAgentOperation(operationId: string): Promise<void> {
     try {
@@ -155,14 +189,14 @@ export class AgentRuntimeCoordinator {
   }
 
   /**
-   * 获取活跃操作
+   * Get active operations
    */
   async getActiveOperations(): Promise<string[]> {
     return this.stateManager.getActiveOperations();
   }
 
   /**
-   * 获取统计信息
+   * Get statistics
    */
   async getStats(): Promise<{
     activeOperations: number;
@@ -174,14 +208,32 @@ export class AgentRuntimeCoordinator {
   }
 
   /**
-   * 清理过期操作
+   * Clean up expired operations
    */
   async cleanupExpiredOperations(): Promise<number> {
     return this.stateManager.cleanupExpiredOperations();
   }
 
   /**
-   * 关闭连接
+   * Atomically try to claim a step for execution (distributed lock).
+   */
+  async tryClaimStep(
+    operationId: string,
+    stepIndex: number,
+    ttlSeconds?: number,
+  ): Promise<boolean> {
+    return this.stateManager.tryClaimStep(operationId, stepIndex, ttlSeconds);
+  }
+
+  /**
+   * Release the step execution lock.
+   */
+  async releaseStepLock(operationId: string, stepIndex: number): Promise<void> {
+    return this.stateManager.releaseStepLock(operationId, stepIndex);
+  }
+
+  /**
+   * Close connections
    */
   async disconnect(): Promise<void> {
     await Promise.all([this.stateManager.disconnect(), this.streamEventManager.disconnect()]);

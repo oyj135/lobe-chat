@@ -1,16 +1,38 @@
-import { BUILTIN_AGENTS, type BuiltinAgentSlug } from '@lobechat/builtin-agents';
+import { type BuiltinAgentSlug } from '@lobechat/builtin-agents';
+import { BUILTIN_AGENTS } from '@lobechat/builtin-agents';
 import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
 import { type LobeChatDatabase } from '@lobechat/database';
 import { type AgentItem, type LobeAgentConfig } from '@lobechat/types';
 import { cleanObject, merge } from '@lobechat/utils';
-import type { PartialDeep } from 'type-fest';
+import debug from 'debug';
+import { type PartialDeep } from 'type-fest';
 
 import { AgentModel } from '@/database/models/agent';
 import { SessionModel } from '@/database/models/session';
 import { UserModel } from '@/database/models/user';
+import { getRedisConfig } from '@/envs/redis';
+import {
+  initializeRedisWithPrefix,
+  isRedisEnabled,
+  RedisKeyNamespace,
+  RedisKeys,
+} from '@/libs/redis';
 import { getServerDefaultAgentConfig } from '@/server/globalConfig';
 
 import { type UpdateAgentResult } from './type';
+
+const log = debug('lobe-agent:service');
+
+/**
+ * Agent config with required id field.
+ * Used when returning agent config from database (id is always present).
+ */
+export type AgentConfigWithId = LobeAgentConfig & { id: string; slug?: string | null };
+
+interface AgentWelcomeData {
+  openQuestions: string[];
+  welcomeMessage: string;
+}
 
 /**
  * Agent Service
@@ -59,13 +81,32 @@ export class AgentService {
     const mergedConfig = this.mergeDefaultConfig(agent, defaultAgentConfig);
     if (!mergedConfig) return null;
 
-    // Merge avatar from builtin-agents package definition
+    // Use builtin avatar as fallback only when DB has no custom avatar
     const builtinAgent = BUILTIN_AGENTS[slug as BuiltinAgentSlug];
-    if (builtinAgent?.avatar) {
+    if (builtinAgent?.avatar && !mergedConfig.avatar) {
       return { ...mergedConfig, avatar: builtinAgent.avatar };
     }
 
     return mergedConfig;
+  }
+
+  /**
+   * Get agent config by ID or slug with default config merged.
+   * Supports both agentId and slug lookup.
+   *
+   * The returned agent config is merged with:
+   * 1. DEFAULT_AGENT_CONFIG (hardcoded defaults)
+   * 2. Server's globalDefaultAgentConfig (from environment variable DEFAULT_AGENT_CONFIG)
+   * 3. User's defaultAgentConfig (from user settings)
+   * 4. The actual agent config from database
+   */
+  async getAgentConfig(idOrSlug: string): Promise<AgentConfigWithId | null> {
+    const [agent, defaultAgentConfig] = await Promise.all([
+      this.agentModel.getAgentConfig(idOrSlug),
+      this.userModel.getUserSettingsDefaultAgentConfig(),
+    ]);
+
+    return this.mergeDefaultConfig(agent, defaultAgentConfig) as AgentConfigWithId | null;
   }
 
   /**
@@ -76,13 +117,52 @@ export class AgentService {
    * 2. Server's globalDefaultAgentConfig (from environment variable DEFAULT_AGENT_CONFIG)
    * 3. User's defaultAgentConfig (from user settings)
    * 4. The actual agent config from database
+   * 5. AI-generated welcome data from Redis (if available)
    */
   async getAgentConfigById(agentId: string) {
-    const [agent, defaultAgentConfig] = await Promise.all([
+    const [agent, defaultAgentConfig, welcomeData] = await Promise.all([
       this.agentModel.getAgentConfigById(agentId),
       this.userModel.getUserSettingsDefaultAgentConfig(),
+      this.getAgentWelcomeFromRedis(agentId),
     ]);
-    return this.mergeDefaultConfig(agent, defaultAgentConfig);
+
+    const config = this.mergeDefaultConfig(agent, defaultAgentConfig);
+    if (!config) return null;
+
+    // Merge AI-generated welcome data if available
+    if (welcomeData) {
+      return {
+        ...config,
+        openingMessage: welcomeData.welcomeMessage,
+        openingQuestions: welcomeData.openQuestions,
+      };
+    }
+
+    return config;
+  }
+
+  /**
+   * Get AI-generated welcome data from Redis
+   * Returns null if Redis is disabled or data doesn't exist
+   */
+  private async getAgentWelcomeFromRedis(agentId: string): Promise<AgentWelcomeData | null> {
+    try {
+      const redisConfig = getRedisConfig();
+      if (!isRedisEnabled(redisConfig)) return null;
+
+      const redis = await initializeRedisWithPrefix(redisConfig, RedisKeyNamespace.AI_GENERATION);
+      if (!redis) return null;
+
+      const key = RedisKeys.aiGeneration.agentWelcome(agentId);
+      const value = await redis.get(key);
+      if (!value) return null;
+
+      return JSON.parse(value) as AgentWelcomeData;
+    } catch (error) {
+      // Log error for observability but don't break agent retrieval
+      log('Failed to get agent welcome from Redis for agent %s: %O', agentId, error);
+      return null;
+    }
   }
 
   /**

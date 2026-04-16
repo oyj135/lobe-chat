@@ -2,7 +2,7 @@
 import { fal } from '@fal-ai/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CreateImagePayload } from '../../types';
+import type { CreateImagePayload } from '../../types';
 import { LobeFalAI } from './index';
 
 // Mock the fal client
@@ -423,7 +423,7 @@ describe('LobeFalAI', () => {
             prompt: 'Test with undefined values',
             imageUrl: undefined,
             steps: undefined,
-            cfg: 5.0,
+            cfg: 5,
           } as any,
         };
 
@@ -436,7 +436,7 @@ describe('LobeFalAI', () => {
             enable_safety_checker: false,
             num_images: 1,
             prompt: 'Test with undefined values',
-            guidance_scale: 5.0,
+            guidance_scale: 5,
           },
         });
       });
@@ -479,7 +479,7 @@ describe('LobeFalAI', () => {
       });
     });
 
-    describe('Seedream v4 special endpoints', () => {
+    describe('Seedream and Hunyuan special endpoints', () => {
       it('should use text-to-image endpoint when no imageUrls provided', async () => {
         // Arrange
         const mockImageResponse = {
@@ -679,7 +679,7 @@ describe('LobeFalAI', () => {
             prompt: 'Edit with custom settings',
             imageUrls: ['https://example.com/input.jpg'],
             steps: 30,
-            cfg: 8.0,
+            cfg: 8,
           },
         };
 
@@ -694,7 +694,182 @@ describe('LobeFalAI', () => {
             prompt: 'Edit with custom settings',
             image_urls: ['https://example.com/input.jpg'],
             num_inference_steps: 30,
-            guidance_scale: 8.0,
+            guidance_scale: 8,
+          },
+        });
+      });
+
+      it('should use text-to-image endpoint for seedream v4.5 when no imageUrls provided', async () => {
+        // Arrange
+        const mockImageResponse = {
+          requestId: 'test-request-id',
+          data: {
+            images: [
+              {
+                url: 'https://example.com/generated.jpg',
+                width: 2048,
+                height: 2048,
+              },
+            ],
+          },
+        };
+        mockFal.subscribe.mockResolvedValue(mockImageResponse as any);
+
+        const payload: CreateImagePayload = {
+          model: 'bytedance/seedream/v4.5',
+          params: {
+            prompt: 'A beautiful landscape',
+            width: 2048,
+            height: 2048,
+          },
+        };
+
+        // Act
+        await instance.createImage(payload);
+
+        // Assert
+        expect(mockFal.subscribe).toHaveBeenCalledWith(
+          'fal-ai/bytedance/seedream/v4.5/text-to-image',
+          {
+            input: {
+              enable_safety_checker: false,
+              num_images: 1,
+              prompt: 'A beautiful landscape',
+              image_size: {
+                width: 2048,
+                height: 2048,
+              },
+            },
+          },
+        );
+      });
+
+      it('should use edit endpoint for seedream v4.5 when imageUrls is provided', async () => {
+        // Arrange
+        const mockImageResponse = {
+          requestId: 'test-request-id',
+          data: {
+            images: [
+              {
+                url: 'https://example.com/edited.jpg',
+                width: 2048,
+                height: 2048,
+              },
+            ],
+          },
+        };
+        mockFal.subscribe.mockResolvedValue(mockImageResponse as any);
+
+        const payload: CreateImagePayload = {
+          model: 'bytedance/seedream/v4.5',
+          params: {
+            prompt: 'Edit this image',
+            imageUrls: ['https://example.com/input.jpg'],
+            width: 2048,
+            height: 2048,
+          },
+        };
+
+        // Act
+        await instance.createImage(payload);
+
+        // Assert
+        expect(mockFal.subscribe).toHaveBeenCalledWith('fal-ai/bytedance/seedream/v4.5/edit', {
+          input: {
+            enable_safety_checker: false,
+            num_images: 1,
+            prompt: 'Edit this image',
+            image_urls: ['https://example.com/input.jpg'],
+            image_size: {
+              width: 2048,
+              height: 2048,
+            },
+          },
+        });
+      });
+
+      it('should use text-to-image endpoint for hunyuan-image v3 when no imageUrls provided', async () => {
+        // Arrange
+        const mockImageResponse = {
+          requestId: 'test-request-id',
+          data: {
+            images: [
+              {
+                url: 'https://example.com/generated.jpg',
+                width: 1024,
+                height: 1024,
+              },
+            ],
+          },
+        };
+        mockFal.subscribe.mockResolvedValue(mockImageResponse as any);
+
+        const payload: CreateImagePayload = {
+          model: 'hunyuan-image/v3',
+          params: {
+            prompt: 'A scenic mountain view',
+            width: 1024,
+            height: 1024,
+          },
+        };
+
+        // Act
+        await instance.createImage(payload);
+
+        // Assert
+        expect(mockFal.subscribe).toHaveBeenCalledWith('fal-ai/hunyuan-image/v3/text-to-image', {
+          input: {
+            enable_safety_checker: false,
+            num_images: 1,
+            prompt: 'A scenic mountain view',
+            image_size: {
+              width: 1024,
+              height: 1024,
+            },
+          },
+        });
+      });
+
+      it('should use edit endpoint for hunyuan-image v3 when imageUrls is provided', async () => {
+        // Arrange
+        const mockImageResponse = {
+          requestId: 'test-request-id',
+          data: {
+            images: [
+              {
+                url: 'https://example.com/edited.jpg',
+                width: 1024,
+                height: 1024,
+              },
+            ],
+          },
+        };
+        mockFal.subscribe.mockResolvedValue(mockImageResponse as any);
+
+        const payload: CreateImagePayload = {
+          model: 'hunyuan-image/v3',
+          params: {
+            prompt: 'Edit this image',
+            imageUrls: ['https://example.com/input.jpg'],
+            width: 1024,
+            height: 1024,
+          },
+        };
+
+        // Act
+        await instance.createImage(payload);
+
+        // Assert
+        expect(mockFal.subscribe).toHaveBeenCalledWith('fal-ai/hunyuan-image/v3/edit', {
+          input: {
+            enable_safety_checker: false,
+            num_images: 1,
+            prompt: 'Edit this image',
+            image_urls: ['https://example.com/input.jpg'],
+            image_size: {
+              width: 1024,
+              height: 1024,
+            },
           },
         });
       });

@@ -1,10 +1,22 @@
-import type { RuntimeStepContext, StepContextTodos } from '@lobechat/types';
+import type { RuntimeStepContext, StepActivatedSkill, StepContextTodos } from '@lobechat/types';
 
 /**
  * Input parameters for computeStepContext
  * Using object parameter for future extensibility
  */
 export interface ComputeStepContextParams {
+  /**
+   * Activated skills accumulated from activateSkill messages
+   */
+  activatedSkills?: StepActivatedSkill[];
+  /**
+   * Activated tool identifiers accumulated from lobe-activator messages
+   */
+  activatedToolIds?: string[];
+  /**
+   * Whether there are queued user messages waiting to be processed
+   */
+  hasQueuedMessages?: boolean;
   /**
    * Pre-computed todos state from message selector
    * Should be computed using selectTodosFromMessages in chat store selectors
@@ -25,8 +37,16 @@ export interface ComputeStepContextParams {
  * @param params - Object containing pre-computed state values
  * @returns RuntimeStepContext assembled from the provided values
  */
-export const computeStepContext = ({ todos }: ComputeStepContextParams): RuntimeStepContext => {
+export const computeStepContext = ({
+  activatedSkills,
+  activatedToolIds,
+  hasQueuedMessages,
+  todos,
+}: ComputeStepContextParams): RuntimeStepContext => {
   return {
+    ...(activatedSkills?.length && { activatedSkills }),
+    ...(activatedToolIds?.length && { activatedToolIds }),
+    ...(hasQueuedMessages && { hasQueuedMessages }),
     ...(todos && { todos }),
   };
 };

@@ -1,22 +1,32 @@
 /**
- * Agent 执行模式
- * - auto: 自动决定执行策略
- * - plan: 先规划后执行，适合复杂任务
- * - ask: 执行前询问用户确认
- * - implement: 直接执行，不询问
+ * Agent execution mode
+ * - auto: automatically decide execution strategy
+ * - plan: plan first then execute, suitable for complex tasks
+ * - ask: ask for user confirmation before execution
+ * - implement: execute directly without asking
  */
 export type AgentMode = 'auto' | 'plan' | 'ask' | 'implement';
 
 /**
- * Local System 配置（桌面端专用）
+ * Runtime environment mode
+ * - local: Access local files and commands (desktop only)
+ * - cloud: Run in cloud sandbox
+ * - none: No runtime environment
  */
-export interface LocalSystemConfig {
+export type RuntimeEnvMode = 'cloud' | 'local' | 'none';
+
+export type RuntimePlatform = 'desktop' | 'web';
+
+/**
+ * Runtime environment configuration
+ */
+export interface RuntimeEnvConfig {
   /**
-   * Local System 工作目录（桌面端专用）
+   * Runtime environment mode per platform
+   */
+  runtimeMode?: Partial<Record<RuntimePlatform, RuntimeEnvMode>>;
+  /**
+   * Working directory (desktop only)
    */
   workingDirectory?: string;
-
-  // 未来可扩展：
-  // allowedPaths?: string[];
-  // deniedCommands?: string[];
 }

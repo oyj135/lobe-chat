@@ -1,24 +1,32 @@
-import type { LucideIcon } from 'lucide-react';
+import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
+import { isDesktop } from '@lobechat/const';
+import { type LucideIcon } from 'lucide-react';
 import {
   Brain,
   ChartColumnBigIcon,
+  Coins,
+  CreditCard,
   EthernetPort,
+  Gift,
   Image as ImageIcon,
   Info,
-  KeyIcon,
   KeyboardIcon,
+  KeyIcon,
+  Map,
   Palette as PaletteIcon,
+  PieChart,
   UserCircle,
 } from 'lucide-react';
 
-import type { ContextType, MenuContext } from '../types';
+import { type ContextType, type MenuContext } from '../types';
 
 export interface ContextCommand {
   icon: LucideIcon;
   keywords: string[];
+  keywordsKey?: string;
   label: string;
-  labelKey?: string; // i18n key for the label
-  labelNamespace?: 'setting' | 'auth'; // i18n namespace for the label
+  labelKey?: string;
+  labelNamespace?: 'setting' | 'auth' | 'subscription';
   path: string;
   subPath: string;
 }
@@ -31,11 +39,13 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
   group: [],
   page: [],
   painting: [],
+  video: [],
   resource: [],
   settings: [
     {
       icon: UserCircle,
       keywords: ['profile', 'user', 'account', 'personal'],
+      keywordsKey: 'cmdk.keywords.profile',
       label: 'Profile',
       labelKey: 'tab.profile',
       labelNamespace: 'auth',
@@ -45,6 +55,7 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
     {
       icon: PaletteIcon,
       keywords: ['common', 'appearance', 'theme', 'display'],
+      keywordsKey: 'cmdk.keywords.appearance',
       label: 'Appearance',
       labelKey: 'tab.common',
       labelNamespace: 'setting',
@@ -54,6 +65,7 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
     {
       icon: Brain,
       keywords: ['provider', 'llm', 'model', 'ai'],
+      keywordsKey: 'cmdk.keywords.provider',
       label: 'Model Provider',
       labelKey: 'tab.provider',
       labelNamespace: 'setting',
@@ -63,6 +75,7 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
     {
       icon: KeyboardIcon,
       keywords: ['hotkey', 'shortcut', 'keyboard'],
+      keywordsKey: 'cmdk.keywords.hotkey',
       label: 'Hotkeys',
       labelKey: 'tab.hotkey',
       labelNamespace: 'setting',
@@ -72,24 +85,31 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
     {
       icon: ImageIcon,
       keywords: ['image', 'picture', 'photo'],
+      keywordsKey: 'cmdk.keywords.image',
       label: 'Image Settings',
       labelKey: 'tab.image',
       labelNamespace: 'setting',
       path: '/settings/image',
       subPath: 'image',
     },
-    {
-      icon: EthernetPort,
-      keywords: ['proxy', 'network', 'connection'],
-      label: 'Proxy',
-      labelKey: 'tab.proxy',
-      labelNamespace: 'setting',
-      path: '/settings/proxy',
-      subPath: 'proxy',
-    },
+    ...(isDesktop
+      ? [
+          {
+            icon: EthernetPort,
+            keywords: ['proxy', 'network', 'connection'],
+            keywordsKey: 'cmdk.keywords.proxy',
+            label: 'Proxy',
+            labelKey: 'tab.proxy',
+            labelNamespace: 'setting' as const,
+            path: '/settings/proxy',
+            subPath: 'proxy',
+          },
+        ]
+      : []),
     {
       icon: ChartColumnBigIcon,
       keywords: ['stats', 'statistics', 'analytics'],
+      keywordsKey: 'cmdk.keywords.stats',
       label: 'Statistics',
       labelKey: 'tab.stats',
       labelNamespace: 'auth',
@@ -99,6 +119,7 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
     {
       icon: KeyIcon,
       keywords: ['apikey', 'api', 'key', 'token'],
+      keywordsKey: 'cmdk.keywords.apikey',
       label: 'API Keys',
       labelKey: 'tab.apikey',
       labelNamespace: 'auth',
@@ -108,12 +129,67 @@ export const CONTEXT_COMMANDS: Record<ContextType, ContextCommand[]> = {
     {
       icon: Info,
       keywords: ['about', 'version', 'info'],
+      keywordsKey: 'cmdk.keywords.about',
       label: 'About',
       labelKey: 'tab.about',
       labelNamespace: 'setting',
       path: '/settings/about',
       subPath: 'about',
     },
+    ...(ENABLE_BUSINESS_FEATURES
+      ? [
+          {
+            icon: Map,
+            keywords: ['subscription', 'plan', 'upgrade', 'pricing'],
+            keywordsKey: 'cmdk.keywords.plans',
+            label: 'Subscription Plans',
+            labelKey: 'tab.plans',
+            labelNamespace: 'subscription' as const,
+            path: '/settings/plans',
+            subPath: 'plans',
+          },
+          {
+            icon: Coins,
+            keywords: ['credits', 'balance', 'credit', 'money'],
+            keywordsKey: 'cmdk.keywords.credits',
+            label: 'Credits',
+            labelKey: 'tab.credits',
+            labelNamespace: 'subscription' as const,
+            path: '/settings/credits',
+            subPath: 'credits',
+          },
+          {
+            icon: PieChart,
+            keywords: ['usage', 'statistics', 'consumption', 'quota'],
+            keywordsKey: 'cmdk.keywords.usage',
+            label: 'Usage',
+            labelKey: 'tab.usage',
+            labelNamespace: 'subscription' as const,
+            path: '/settings/usage',
+            subPath: 'usage',
+          },
+          {
+            icon: CreditCard,
+            keywords: ['billing', 'payment', 'invoice', 'transaction'],
+            keywordsKey: 'cmdk.keywords.billing',
+            label: 'Billing',
+            labelKey: 'tab.billing',
+            labelNamespace: 'subscription' as const,
+            path: '/settings/billing',
+            subPath: 'billing',
+          },
+          {
+            icon: Gift,
+            keywords: ['referral', 'rewards', 'invite', 'bonus'],
+            keywordsKey: 'cmdk.keywords.referral',
+            label: 'Referral Rewards',
+            labelKey: 'tab.referral',
+            labelNamespace: 'subscription' as const,
+            path: '/settings/referral',
+            subPath: 'referral',
+          },
+        ]
+      : []),
   ],
 };
 

@@ -1,14 +1,14 @@
-import type { AgentState } from '@lobechat/agent-runtime';
+import { type AgentState } from '@lobechat/agent-runtime';
 import debug from 'debug';
 
-import type { AgentOperationMetadata, StepResult } from './AgentStateManager';
-import type { IAgentStateManager } from './types';
+import { type AgentOperationMetadata, type StepResult } from './AgentStateManager';
+import { type IAgentStateManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:in-memory-state-manager');
 
 /**
  * In-Memory Agent State Manager
- * 内存实现，用于测试和本地开发环境
+ * In-memory implementation for testing and local development environments
  */
 export class InMemoryAgentStateManager implements IAgentStateManager {
   private states: Map<string, AgentState> = new Map();
@@ -17,10 +17,10 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
   private events: Map<string, any[][]> = new Map();
 
   async saveAgentState(operationId: string, state: AgentState): Promise<void> {
-    // 深拷贝以避免引用问题
+    // Deep clone to avoid reference issues
     this.states.set(operationId, structuredClone(state));
 
-    // 更新元数据
+    // Update metadata
     const existingMeta = this.metadata.get(operationId);
     if (existingMeta) {
       existingMeta.lastActiveAt = new Date().toISOString();
@@ -39,15 +39,17 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     }
 
     log('[%s] Loaded state (step %d)', operationId, state.stepCount);
-    // 返回深拷贝以避免外部修改影响内部状态
+    // Return deep clone to prevent external modifications from affecting internal state
     return structuredClone(state);
   }
 
   async saveStepResult(operationId: string, stepResult: StepResult): Promise<void> {
-    // 保存最新状态
-    this.states.set(operationId, structuredClone(stepResult.newState));
+    // Save latest state
+    // Use JSON round-trip instead of structuredClone to safely handle
+    // non-cloneable objects (e.g. DOM ErrorEvent from Neon DB errors)
+    this.states.set(operationId, JSON.parse(JSON.stringify(stepResult.newState)));
 
-    // 保存步骤历史
+    // Save step history
     let stepHistory = this.steps.get(operationId);
     if (!stepHistory) {
       stepHistory = [];
@@ -63,14 +65,14 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
       timestamp: Date.now(),
     };
 
-    // 在开头插入（最新的在前面）
+    // Insert at beginning (newest first)
     stepHistory.unshift(stepData);
-    // 保留最近 200 步
+    // Keep most recent 200 steps
     if (stepHistory.length > 200) {
       stepHistory.length = 200;
     }
 
-    // 保存步骤的事件序列
+    // Save step event sequence
     if (stepResult.events && stepResult.events.length > 0) {
       let eventHistory = this.events.get(operationId);
       if (!eventHistory) {
@@ -83,7 +85,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
       }
     }
 
-    // 更新操作元数据
+    // Update operation metadata
     const existingMeta = this.metadata.get(operationId);
     if (existingMeta) {
       existingMeta.lastActiveAt = new Date().toISOString();
@@ -106,7 +108,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
       return [];
     }
 
-    // 返回反转后的数组（最早的在前面）
+    // Return reversed array (earliest first)
     return history.slice(0, limit).reverse();
   }
 
@@ -161,7 +163,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
         const now = Date.now();
         const hoursSinceActive = (now - lastActiveTime) / (1000 * 60 * 60);
 
-        // 清理超过 1 小时未活跃的操作
+        // Clean up operations inactive for more than 1 hour
         if (hoursSinceActive > 1) {
           await this.deleteAgentOperation(operationId);
           cleanedCount++;
@@ -213,13 +215,25 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     return stats;
   }
 
+  async tryClaimStep(
+    _operationId: string,
+    _stepIndex: number,
+    _ttlSeconds?: number,
+  ): Promise<boolean> {
+    return true;
+  }
+
+  async releaseStepLock(_operationId: string, _stepIndex: number): Promise<void> {
+    // noop
+  }
+
   async disconnect(): Promise<void> {
-    // 内存实现无需断开连接
+    // In-memory implementation doesn't need to disconnect
     log('InMemoryAgentStateManager disconnected');
   }
 
   /**
-   * 清空所有数据（用于测试）
+   * Clear all data (for testing)
    */
   clear(): void {
     this.states.clear();
@@ -230,7 +244,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
   }
 
   /**
-   * 获取事件历史（用于测试验证）
+   * Get event history (for test verification)
    */
   getEventHistory(operationId: string): any[][] {
     return this.events.get(operationId) ?? [];
@@ -238,6 +252,6 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
 }
 
 /**
- * 单例实例，用于测试和本地开发环境
+ * Singleton instance for testing and local development environments
  */
 export const inMemoryAgentStateManager = new InMemoryAgentStateManager();

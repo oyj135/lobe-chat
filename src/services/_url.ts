@@ -1,14 +1,9 @@
 import { withElectronProtocolIfElectron } from '@/const/protocol';
 
-/* eslint-disable sort-keys-fix/sort-keys-fix */
-
 export const API_ENDPOINTS = {
   oauth: withElectronProtocolIfElectron('/api/auth'),
 
   proxy: withElectronProtocolIfElectron('/webapi/proxy'),
-
-  // plugins
-  gateway: withElectronProtocolIfElectron('/webapi/plugin/gateway'),
 
   // trace
   trace: withElectronProtocolIfElectron('/webapi/trace'),

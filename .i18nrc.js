@@ -1,4 +1,6 @@
 const { defineConfig } = require('@lobehub/i18n-cli');
+const fs = require('node:fs');
+const path = require('node:path');
 
 module.exports = defineConfig({
   entry: 'locales/en-US',
@@ -25,24 +27,19 @@ module.exports = defineConfig({
   ],
   temperature: 0,
   saveImmediately: true,
-  modelName: 'chatgpt-4o-latest',
+  modelName: 'gpt-5.1-chat-latest',
   experimental: {
     jsonMode: true,
   },
   markdown: {
     reference:
-      '你需要保持 mdx 的组件格式，输出文本不需要在最外层包裹任何代码块语法。以下是一些词汇的固定翻译：\n' +
-      JSON.stringify(require('./glossary.json'), null, 2),
-    entry: ['./README.zh-CN.md', './contributing/**/*.zh-CN.md', './docs/**/*.zh-CN.mdx'],
-    entryLocale: 'zh-CN',
-    outputLocales: ['en-US'],
+      'You need to maintain the component format of the mdx file; the output text does not need to be wrapped in any code block syntax on the outermost layer.\n' +
+      fs.readFileSync(path.join(__dirname, 'docs/glossary.md'), 'utf8'),
+    entry: ['./README.md', './docs/**/*.md', './docs/**/*.mdx'],
+    entryLocale: 'en-US',
+    outputLocales: ['zh-CN'],
     includeMatter: true,
-    exclude: [
-      './src/**/*',
-      './contributing/_Sidebar.md',
-      './contributing/_Footer.md',
-      './contributing/Home.md',
-    ],
+    exclude: ['./README.zh-CN.md', './docs/**/*.zh-CN.md', './docs/**/*.zh-CN.mdx'],
     outputExtensions: (locale, { filePath }) => {
       if (filePath.includes('.mdx')) {
         if (locale === 'en-US') return '.mdx';

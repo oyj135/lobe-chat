@@ -1,35 +1,39 @@
-import {
-  DEFAULT_VARIANTS,
-  LOBE_LOCALE_COOKIE,
-  LOBE_THEME_APPEARANCE,
-  Locales,
-  RouteVariants,
-} from '@lobechat/desktop-bridge';
-import { ElectronIPCEventHandler, ElectronIPCServer } from '@lobechat/electron-server-ipc';
-import { app, nativeTheme, protocol, session } from 'electron';
+import os from 'node:os';
+import { join } from 'node:path';
+
+import type { ElectronIPCEventHandler } from '@lobechat/electron-server-ipc';
+import { ElectronIPCServer } from '@lobechat/electron-server-ipc';
+import { app, nativeTheme, protocol } from 'electron';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
 import { macOS, windows } from 'electron-is';
-import { pathExistsSync } from 'fs-extra';
-import os from 'node:os';
-import { extname, join } from 'node:path';
 
 import { name } from '@/../../package.json';
-import { buildDir, nextExportDir } from '@/const/dir';
+import { binDir, buildDir } from '@/const/dir';
 import { isDev } from '@/const/env';
 import { ELECTRON_BE_PROTOCOL_SCHEME } from '@/const/protocol';
-import { IControlModule } from '@/controllers';
-import { getDesktopEnv } from '@/env';
-import { IServiceModule } from '@/services';
-import { getServerMethodMetadata } from '@/utils/ipc';
+import type { IControlModule } from '@/controllers';
+import AuthCtr from '@/controllers/AuthCtr';
+import { generateCliWrapper, getCliWrapperDir } from '@/modules/cliEmbedding';
+import {
+  astSearchDetectors,
+  browserAutomationDetectors,
+  contentSearchDetectors,
+  fileSearchDetectors,
+  type IToolDetector,
+  runtimeEnvironmentDetectors,
+  type ToolCategory,
+} from '@/modules/toolDetectors';
+import type { IServiceModule } from '@/services';
 import { createLogger } from '@/utils/logger';
 
 import { BrowserManager } from './browser/BrowserManager';
 import { I18nManager } from './infrastructure/I18nManager';
 import { IoCContainer } from './infrastructure/IoCContainer';
 import { ProtocolManager } from './infrastructure/ProtocolManager';
-import { RendererProtocolManager } from './infrastructure/RendererProtocolManager';
+import { RendererUrlManager } from './infrastructure/RendererUrlManager';
 import { StaticFileServerManager } from './infrastructure/StaticFileServerManager';
 import { StoreManager } from './infrastructure/StoreManager';
+import { ToolDetectorManager } from './infrastructure/ToolDetectorManager';
 import { UpdaterManager } from './infrastructure/UpdaterManager';
 import { MenuManager } from './ui/MenuManager';
 import { ShortcutManager } from './ui/ShortcutManager';
@@ -45,11 +49,7 @@ type Class<T> = new (...args: any[]) => T;
 
 const importAll = (r: any) => Object.values(r).map((v: any) => v.default);
 
-const devDefaultRendererUrl = 'http://localhost:3015';
-
 export class App {
-  rendererLoadedUrl: string;
-
   browserManager: BrowserManager;
   menuManager: MenuManager;
   i18n: I18nManager;
@@ -59,12 +59,9 @@ export class App {
   trayManager: TrayManager;
   staticFileServerManager: StaticFileServerManager;
   protocolManager: ProtocolManager;
-  rendererProtocolManager: RendererProtocolManager;
+  rendererUrlManager: RendererUrlManager;
+  toolDetectorManager: ToolDetectorManager;
   chromeFlags: string[] = ['OverlayScrollbar', 'FluentOverlayScrollbar', 'FluentScrollbar'];
-  /**
-   * Escape hatch: allow testing static renderer in dev via env
-   */
-  private readonly rendererStaticOverride = getDesktopEnv().DESKTOP_RENDERER_STATIC;
 
   /**
    * whether app is in quiting
@@ -89,17 +86,19 @@ export class App {
     logger.info(` RAM: ${Math.round(os.totalmem() / 1024 / 1024 / 1024)} GB`);
     logger.info(`PATH: ${app.getAppPath()}`);
     logger.info(` lng: ${app.getLocale()}`);
+    logger.info(` bin: ${binDir}`);
     logger.info('----------------------------------------------');
     logger.info('Starting LobeHub...');
+
+    // Append bundled binaries and CLI wrapper directories to PATH for tool resolution
+    const pathSep = process.platform === 'win32' ? ';' : ':';
+    process.env.PATH = `${process.env.PATH}${pathSep}${binDir}${pathSep}${getCliWrapperDir()}`;
 
     logger.debug('Initializing App');
     // Initialize store manager
     this.storeManager = new StoreManager(this);
 
-    this.rendererProtocolManager = new RendererProtocolManager({
-      nextExportDir,
-      resolveRendererFilePath: this.resolveRendererFilePath.bind(this),
-    });
+    this.rendererUrlManager = new RendererUrlManager();
     protocol.registerSchemesAsPrivileged([
       {
         privileges: {
@@ -111,11 +110,8 @@ export class App {
         },
         scheme: ELECTRON_BE_PROTOCOL_SCHEME,
       },
-      this.rendererProtocolManager.protocolScheme,
+      this.rendererUrlManager.protocolScheme,
     ]);
-
-    // Initialize rendererLoadedUrl from RendererProtocolManager
-    this.rendererLoadedUrl = this.rendererProtocolManager.getRendererUrl();
 
     // load controllers
     const controllers: IControlModule[] = importAll(
@@ -143,15 +139,19 @@ export class App {
     this.trayManager = new TrayManager(this);
     this.staticFileServerManager = new StaticFileServerManager(this);
     this.protocolManager = new ProtocolManager(this);
+    this.toolDetectorManager = new ToolDetectorManager(this);
+
+    // Register built-in tool detectors
+    this.registerBuiltinToolDetectors();
 
     // Configure renderer loading strategy (dev server vs static export)
     // should register before app ready
-    this.configureRendererLoader();
+    this.rendererUrlManager.configureRendererLoader();
 
     // initialize protocol handlers
     this.protocolManager.initialize();
 
-    // 统一处理 before-quit 事件
+    // Unified handling of before-quit event
     app.on('before-quit', this.handleBeforeQuit);
 
     // Initialize theme mode from store
@@ -165,14 +165,48 @@ export class App {
    * This allows nativeTheme.shouldUseDarkColors to be used consistently everywhere
    */
   private initializeThemeMode() {
-    const themeMode = this.storeManager.get('themeMode');
+    let themeMode = this.storeManager.get('themeMode');
+
+    // Migrate legacy 'auto' value to 'system' (nativeTheme.themeSource doesn't accept 'auto')
+    if (Object.is(themeMode, 'auto')) {
+      themeMode = 'system';
+      this.storeManager.set('themeMode', themeMode);
+      logger.info(`Migrated legacy theme mode 'auto' to 'system'`);
+    }
 
     if (themeMode) {
-      nativeTheme.themeSource = themeMode === 'auto' ? 'system' : themeMode;
+      nativeTheme.themeSource = themeMode;
       logger.debug(
         `Theme mode initialized to: ${themeMode} (themeSource: ${nativeTheme.themeSource})`,
       );
     }
+  }
+
+  /**
+   * Register built-in tool detectors for content search and file search
+   */
+  private registerBuiltinToolDetectors() {
+    logger.debug('Registering built-in tool detectors');
+
+    const detectorCategories: Partial<Record<ToolCategory, IToolDetector[]>> = {
+      'runtime-environment': runtimeEnvironmentDetectors,
+      'ast-search': astSearchDetectors,
+      'browser-automation': browserAutomationDetectors,
+      'content-search': contentSearchDetectors,
+      'file-search': fileSearchDetectors,
+    };
+
+    for (const [category, detectors] of Object.entries(detectorCategories)) {
+      if (detectors) {
+        for (const detector of detectors) {
+          this.toolDetectorManager.register(detector, category as ToolCategory);
+        }
+      }
+    }
+
+    logger.info(
+      `Registered ${this.toolDetectorManager.getRegisteredTools().length} tool detectors`,
+    );
   }
 
   bootstrap = async () => {
@@ -193,6 +227,11 @@ export class App {
     // Initialize app
     await this.makeAppReady();
 
+    // Generate CLI wrapper for terminal usage
+    generateCliWrapper().catch((error) => {
+      logger.warn('Failed to generate CLI wrapper:', error);
+    });
+
     // Initialize i18n. Note: app.getLocale() must be called after app.whenReady() to get the correct value
     await this.i18n.init();
     this.menuManager.initialize();
@@ -203,7 +242,7 @@ export class App {
     // Initialize global shortcuts: globalShortcut must be called after app.whenReady()
     this.shortcutManager.initialize();
 
-    this.browserManager.initializeBrowsers();
+    await this.browserManager.initializeBrowsers();
 
     // Initialize tray manager
     if (process.platform === 'win32') {
@@ -217,8 +256,8 @@ export class App {
     this.isQuiting = false;
 
     app.on('window-all-closed', () => {
-      if (windows()) {
-        logger.info('All windows closed, quitting application (Windows)');
+      if (windows() || process.platform === 'linux') {
+        logger.info(`All windows closed, quitting application (${process.platform})`);
         app.quit();
       }
     });
@@ -241,10 +280,10 @@ export class App {
 
   /**
    * Handle protocol request by dispatching to registered handlers
-   * @param urlType 协议URL类型 (如: 'plugin')
-   * @param action 操作类型 (如: 'install')
-   * @param data 解析后的协议数据
-   * @returns 是否成功处理
+   * @param urlType Protocol URL type (e.g., 'plugin')
+   * @param action Action type (e.g., 'install')
+   * @param data Parsed protocol data
+   * @returns Whether successfully handled
    */
   async handleProtocolRequest(urlType: string, action: string, data: any): Promise<boolean> {
     const key = `${urlType}:${action}`;
@@ -258,7 +297,7 @@ export class App {
     try {
       logger.debug(`Dispatching protocol request ${key} to controller`);
       const result = await handler.controller[handler.methodName](data);
-      return result !== false; // 假设控制器返回 false 表示处理失败
+      return result !== false; // Assume controller returning false indicates handling failure
     } catch (error) {
       logger.error(`Error handling protocol request ${key}:`, error);
       return false;
@@ -268,6 +307,14 @@ export class App {
   private onActivate = () => {
     logger.debug('Application activated');
     this.browserManager.showMainWindow();
+
+    // Trigger proactive token refresh on app activation (respects 6-hour interval)
+    const authCtr = this.getController(AuthCtr);
+    if (authCtr) {
+      authCtr.onAppActivate().catch((error) => {
+        logger.error('Error during app activation token refresh:', error);
+      });
+    }
   };
 
   /**
@@ -346,15 +393,6 @@ export class App {
     const controller = new ControllerClass(this);
     this.controllers.set(ControllerClass, controller);
 
-    const serverMethods = getServerMethodMetadata(ControllerClass);
-    serverMethods?.forEach((methodName, propertyKey) => {
-      const channel = `${ControllerClass.groupName}.${methodName}`;
-      this.ipcServerEventMap.set(channel, {
-        controller,
-        methodName: propertyKey,
-      });
-    });
-
     IoCContainer.shortcuts.get(ControllerClass)?.forEach((shortcut) => {
       this.shortcutMethodMap.set(shortcut.name, async () => {
         controller[shortcut.methodName]();
@@ -385,166 +423,11 @@ export class App {
     }
   };
 
-  private resolveExportFilePath(pathname: string) {
-    // Normalize by removing leading/trailing slashes so extname works as expected
-    const normalizedPath = decodeURIComponent(pathname).replace(/^\/+/, '').replace(/\/$/, '');
-
-    if (!normalizedPath) return join(nextExportDir, 'index.html');
-
-    const basePath = join(nextExportDir, normalizedPath);
-    const ext = extname(normalizedPath);
-
-    // If the request explicitly includes an extension (e.g. html, ico, txt),
-    // treat it as a direct asset without variant injection.
-    if (ext) {
-      return pathExistsSync(basePath) ? basePath : null;
-    }
-
-    const candidates = [`${basePath}.html`, join(basePath, 'index.html'), basePath];
-
-    for (const candidate of candidates) {
-      if (pathExistsSync(candidate)) return candidate;
-    }
-
-    const fallback404 = join(nextExportDir, '404.html');
-    if (pathExistsSync(fallback404)) return fallback404;
-
-    return null;
-  }
-
   /**
-   * Configure renderer loading strategy for dev/prod
-   */
-  private configureRendererLoader() {
-    if (isDev && !this.rendererStaticOverride) {
-      this.rendererLoadedUrl = devDefaultRendererUrl;
-      this.setupDevRenderer();
-      return;
-    }
-
-    if (isDev && this.rendererStaticOverride) {
-      logger.warn('Dev mode: DESKTOP_RENDERER_STATIC enabled, using static renderer handler');
-    }
-
-    this.setupProdRenderer();
-  }
-
-  /**
-   * Development: use Next dev server directly
-   */
-  private setupDevRenderer() {
-    logger.info('Development mode: renderer served from Next dev server, no protocol hook');
-  }
-
-  /**
-   * Production: serve static Next export assets
-   */
-  private setupProdRenderer() {
-    // Use the URL from RendererProtocolManager
-    this.rendererLoadedUrl = this.rendererProtocolManager.getRendererUrl();
-    this.rendererProtocolManager.registerHandler();
-  }
-
-  /**
-   * Resolve renderer file path in production by combining variant prefix and pathname.
-   * Falls back to default variant when cookies are missing or invalid.
-   */
-  private async resolveRendererFilePath(url: URL) {
-    const pathname = url.pathname;
-    const normalizedPathname = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-
-    // Static assets should be resolved from root (no variant prefix)
-    if (
-      pathname.startsWith('/_next/') ||
-      pathname.startsWith('/static/') ||
-      pathname === '/favicon.ico' ||
-      pathname === '/manifest.json'
-    ) {
-      return this.resolveExportFilePath(pathname);
-    }
-
-    // If the incoming path already contains an extension (like .html or .ico),
-    // treat it as a direct asset lookup to avoid double variant prefixes.
-    const extension = extname(normalizedPathname);
-    if (extension) {
-      const directPath = this.resolveExportFilePath(pathname);
-      if (directPath) return directPath;
-
-      // Next.js RSC payloads are emitted under variant folders (e.g. /en-US__0__light/__next._tree.txt),
-      // but the runtime may request them without the variant prefix. For missing .txt requests,
-      // retry resolution with variant injection.
-      if (extension === '.txt' && normalizedPathname.includes('__next.')) {
-        const variant = await this.getRouteVariantFromCookies();
-
-        return (
-          this.resolveExportFilePath(`/${variant}${pathname}`) ||
-          this.resolveExportFilePath(`/${this.defaultRouteVariant}${pathname}`) ||
-          null
-        );
-      }
-
-      return null;
-    }
-
-    const variant = await this.getRouteVariantFromCookies();
-    const variantPrefixedPath = `/${variant}${pathname}`;
-
-    // Try variant-specific path first, then default variant as fallback
-    return (
-      this.resolveExportFilePath(variantPrefixedPath) ||
-      this.resolveExportFilePath(`/${this.defaultRouteVariant}${pathname}`) ||
-      null
-    );
-  }
-
-  private readonly defaultRouteVariant = RouteVariants.serializeVariants(DEFAULT_VARIANTS);
-  private readonly localeCookieName = LOBE_LOCALE_COOKIE;
-  private readonly themeCookieName = LOBE_THEME_APPEARANCE;
-
-  /**
-   * Build variant string from Electron session cookies to match Next export structure.
-   * Desktop is always treated as non-mobile (0).
-   */
-  private async getRouteVariantFromCookies(): Promise<string> {
-    try {
-      const cookies = await session.defaultSession.cookies.get({
-        url: `${this.rendererLoadedUrl}/`,
-      });
-      const locale = cookies.find((c) => c.name === this.localeCookieName)?.value;
-      const themeCookie = cookies.find((c) => c.name === this.themeCookieName)?.value;
-
-      const serialized = RouteVariants.serializeVariants(
-        RouteVariants.createVariants({
-          isMobile: false,
-          locale: locale as Locales | undefined,
-          theme: themeCookie === 'dark' || themeCookie === 'light' ? themeCookie : undefined,
-        }),
-      );
-
-      return RouteVariants.serializeVariants(RouteVariants.deserializeVariants(serialized));
-    } catch (error) {
-      logger.warn('Failed to read route variant cookies, using default', error);
-      return this.defaultRouteVariant;
-    }
-  }
-
-  /**
-   * Build renderer URL with variant prefix injected into the path.
-   * In dev mode (without static override), Next.js dev server handles routing automatically.
-   * In prod or dev with static override, we need to inject variant to match export structure: /[variants]/path
+   * Build renderer URL for dev/prod.
    */
   async buildRendererUrl(path: string): Promise<string> {
-    // Ensure path starts with /
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
-
-    // In dev mode without static override, use dev server directly (no variant needed)
-    if (isDev && !this.rendererStaticOverride) {
-      return `${this.rendererLoadedUrl}${cleanPath}`;
-    }
-
-    // In prod or dev with static override, inject variant for static export structure
-    const variant = await this.getRouteVariantFromCookies();
-    return `${this.rendererLoadedUrl}/${variant}.html${cleanPath}`;
+    return this.rendererUrlManager.buildRendererUrl(path);
   }
 
   private initializeServerIpcEvents() {
@@ -566,17 +449,17 @@ export class App {
     this.ipcServer = new ElectronIPCServer(name, ipcServerEvents);
   }
 
-  // 新增 before-quit 处理函数
+  // Add before-quit handler function
   private handleBeforeQuit = () => {
     logger.info('Application is preparing to quit');
     this.isQuiting = true;
 
-    // 销毁托盘
+    // Destroy tray
     if (process.platform === 'win32') {
       this.trayManager.destroyAll();
     }
 
-    // 执行清理操作
+    // Execute cleanup operations
     this.staticFileServerManager.destroy();
   };
 }

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { DiscoverService } from '@/server/services/discover';
+import { MarketService } from '@/server/services/market';
 import {
   AssistantSorts,
   McpConnectionType,
@@ -15,6 +16,15 @@ import {
   PluginSorts,
   ProviderSorts,
 } from '@/types/discover';
+
+import { agentRouter } from './agent';
+import { agentGroupRouter } from './agentGroup';
+import { credsRouter } from './creds';
+import { oidcRouter } from './oidc';
+import { skillRouter } from './skill';
+import { socialRouter } from './social';
+import { socialProfileRouter } from './socialProfile';
+import { userRouter } from './user';
 
 const log = debug('lambda-router:market');
 
@@ -31,11 +41,50 @@ const marketProcedure = publicProcedure
           accessToken: ctx.marketAccessToken,
           userInfo: ctx.marketUserInfo,
         }),
+        marketService: new MarketService({
+          accessToken: ctx.marketAccessToken,
+          userInfo: ctx.marketUserInfo,
+        }),
       },
     });
   });
 
 export const marketRouter = router({
+  // ============================== Agent Management (authenticated) ==============================
+  agent: agentRouter,
+
+  // ============================== Agent Group Management (authenticated) ==============================
+  agentGroup: agentGroupRouter,
+
+  // ============================== Credential Management ==============================
+  creds: credsRouter,
+
+  // ============================== Skill Management ==============================
+  skill: skillRouter,
+
+  getAgentsByPlugin: marketProcedure
+    .input(
+      z.object({
+        locale: z.string().optional(),
+        page: z.number().optional(),
+        pageSize: z.number().optional(),
+        pluginId: z.string(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      log('getAgentsByPlugin input: %O', input);
+
+      try {
+        return await ctx.discoverService.getAgentsByPlugin(input);
+      } catch (error) {
+        log('Error fetching agents by plugin: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch agents by plugin',
+        });
+      }
+    }),
+
   // ============================== Assistant Market ==============================
   getAssistantCategories: marketProcedure
     .input(
@@ -112,6 +161,7 @@ export const marketRouter = router({
         .object({
           category: z.string().optional(),
           connectionType: z.nativeEnum(McpConnectionType).optional(),
+          includeAgentGroup: z.boolean().optional(),
           locale: z.string().optional(),
           order: z.enum(['asc', 'desc']).optional(),
           ownerId: z.string().optional(),
@@ -133,6 +183,95 @@ export const marketRouter = router({
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to fetch assistant list',
+        });
+      }
+    }),
+
+  // ============================== Group Agent Market (Discovery) ==============================
+  getGroupAgentCategories: marketProcedure
+    .input(
+      z
+        .object({
+          locale: z.string().optional(),
+          q: z.string().optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      log('getGroupAgentCategories input: %O', input);
+
+      try {
+        return await ctx.discoverService.getGroupAgentCategories(input);
+      } catch (error) {
+        log('Error fetching group agent categories: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch group agent categories',
+        });
+      }
+    }),
+
+  getGroupAgentDetail: marketProcedure
+    .input(
+      z.object({
+        identifier: z.string(),
+        locale: z.string().optional(),
+        version: z.string().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      log('getGroupAgentDetail input: %O', input);
+
+      try {
+        return await ctx.discoverService.getGroupAgentDetail(input);
+      } catch (error) {
+        log('Error fetching group agent detail: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch group agent detail',
+        });
+      }
+    }),
+
+  getGroupAgentIdentifiers: marketProcedure.query(async ({ ctx }) => {
+    log('getGroupAgentIdentifiers called');
+
+    try {
+      return await ctx.discoverService.getGroupAgentIdentifiers();
+    } catch (error) {
+      log('Error fetching group agent identifiers: %O', error);
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to fetch group agent identifiers',
+      });
+    }
+  }),
+
+  getGroupAgentList: marketProcedure
+    .input(
+      z
+        .object({
+          category: z.string().optional(),
+          locale: z.string().optional(),
+          order: z.enum(['asc', 'desc']).optional(),
+          ownerId: z.string().optional(),
+          page: z.number().optional(),
+          pageSize: z.number().optional(),
+          q: z.string().optional(),
+          sort: z.enum(['createdAt', 'updatedAt', 'name', 'recommended']).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      log('getGroupAgentList input: %O', input);
+
+      try {
+        return await ctx.discoverService.getGroupAgentList(input);
+      } catch (error) {
+        log('Error fetching group agent list: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch group agent list',
         });
       }
     }),
@@ -516,6 +655,9 @@ export const marketRouter = router({
       }
     }),
 
+  // ============================== OIDC Authentication ==============================
+  oidc: oidcRouter,
+
   registerClientInMarketplace: marketProcedure.input(z.object({})).mutation(async ({ ctx }) => {
     return ctx.discoverService.registerClient({
       userAgent: ctx.userAgent,
@@ -548,11 +690,11 @@ export const marketRouter = router({
         log('get access token, expiresIn value:', expiresIn);
         log('expiresIn type:', typeof expiresIn);
 
-        const expirationTime = new Date(Date.now() + (expiresIn - 60) * 1000); // 提前 60 秒过期
+        const expirationTime = new Date(Date.now() + (expiresIn - 60) * 1000); // Expire 60 seconds early
 
         log('expirationTime:', expirationTime.toISOString());
 
-        // 设置 HTTP-Only Cookie 存储实际的 access token
+        // Set HTTP-Only Cookie to store the actual access token
         const tokenCookie = serialize('mp_token', accessToken, {
           expires: expirationTime,
           httpOnly: true,
@@ -561,7 +703,7 @@ export const marketRouter = router({
           secure: process.env.NODE_ENV === 'production',
         });
 
-        // 设置客户端可读的状态标记 cookie（不包含实际 token）
+        // Set client-readable status marker cookie (without actual token)
         const statusCookie = serialize('mp_token_status', 'active', {
           expires: expirationTime,
           httpOnly: false,
@@ -570,7 +712,7 @@ export const marketRouter = router({
           secure: process.env.NODE_ENV === 'production',
         });
 
-        // 通过 context 的 resHeaders 设置 Set-Cookie 头
+        // Set Set-Cookie header via context's resHeaders
         ctx.resHeaders?.append('Set-Cookie', tokenCookie);
         ctx.resHeaders?.append('Set-Cookie', statusCookie);
 
@@ -584,6 +726,26 @@ export const marketRouter = router({
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to fetch M2M token',
         });
+      }
+    }),
+
+  reportAgentEvent: marketProcedure
+    .input(
+      z.object({
+        event: z.enum(['add', 'chat', 'click']),
+        identifier: z.string(),
+        source: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      log('createAgentEvent input: %O', input);
+
+      try {
+        await ctx.discoverService.createAgentEvent(input);
+        return { success: true };
+      } catch (error) {
+        console.error('Error reporting Agent event: %O', error);
+        return { success: false };
       }
     }),
 
@@ -639,7 +801,64 @@ export const marketRouter = router({
         return { success: true };
       } catch (error) {
         console.error('Error reporting call: %O', error);
-        // 不抛出错误，因为上报失败不应影响主流程
+        // Don't throw error, as reporting failure should not affect main flow
+        return { success: false };
+      }
+    }),
+
+  reportGroupAgentEvent: marketProcedure
+    .input(
+      z.object({
+        event: z.enum(['add', 'chat', 'click']),
+        identifier: z.string(),
+        source: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      log('reportGroupAgentEvent input: %O', input);
+
+      try {
+        await ctx.discoverService.createGroupAgentEvent(input);
+        return { success: true };
+      } catch (error) {
+        console.error('Error reporting Group Agent event: %O', error);
+        return { success: false };
+      }
+    }),
+
+  reportGroupAgentInstall: marketProcedure
+    .input(
+      z.object({
+        identifier: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      log('reportGroupAgentInstall input: %O', input);
+      try {
+        await ctx.discoverService.increaseGroupAgentInstallCount(input.identifier);
+        return { success: true };
+      } catch (error) {
+        log('Error reporting group agent installation: %O', error);
+        return { success: false };
+      }
+    }),
+
+  reportMcpEvent: marketProcedure
+    .input(
+      z.object({
+        event: z.enum(['click', 'install', 'activate', 'uninstall']),
+        identifier: z.string(),
+        source: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      log('createMcpEvent input: %O', input);
+
+      try {
+        await ctx.discoverService.createPluginEvent(input);
+        return { success: true };
+      } catch (error) {
+        console.error('Error reporting MCP event: %O', error);
         return { success: false };
       }
     }),
@@ -667,8 +886,49 @@ export const marketRouter = router({
         return { success: true };
       } catch (error) {
         log('Error reporting MCP installation result: %O', error);
-        // 不抛出错误，因为上报失败不应影响主流程
+        // Don't throw error, as reporting failure should not affect main flow
         return { success: false };
       }
     }),
+
+  // ============================== Social Features ==============================
+  social: socialRouter,
+
+  // ============================== Social Profile OAuth ==============================
+  socialProfile: socialProfileRouter,
+
+  submitFeedback: marketProcedure
+    .input(
+      z.object({
+        clientInfo: z
+          .object({
+            language: z.string().optional(),
+            timezone: z.string().optional(),
+            url: z.string().optional(),
+            userAgent: z.string().optional(),
+          })
+          .optional(),
+        email: z.string().optional(),
+        message: z.string(),
+        screenshotUrl: z.string().optional(),
+        title: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      log('submitFeedback input: %O', input);
+
+      try {
+        const result = await ctx.marketService.submitFeedback(input);
+        return { issueUrl: result?.issueUrl, success: true };
+      } catch (error) {
+        console.error('Error submitting feedback: %O', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to submit feedback',
+        });
+      }
+    }),
+
+  // ============================== User Profile ==============================
+  user: userRouter,
 });

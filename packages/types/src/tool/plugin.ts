@@ -1,8 +1,8 @@
-import type { LobeChatPluginManifest, Meta } from '@lobehub/chat-plugin-sdk';
+import type { Meta } from './builtin';
+import type { ToolManifest, ToolManifestType } from './manifest';
+import type { LobeToolType } from './tool';
 
-import { LobeToolType } from './tool';
-
-export type PluginManifestMap = Record<string, LobeChatPluginManifest>;
+export type PluginManifestMap = Record<string, ToolManifest>;
 
 export interface CustomPluginMetadata {
   avatar?: string;
@@ -12,12 +12,22 @@ export interface CustomPluginMetadata {
 
 export interface CustomPluginParams {
   apiMode?: 'openapi' | 'simple';
+  avatar?: string;
+  description?: string;
   enableSettings?: boolean;
+  /**
+   * Klavis integration parameters
+   */
+  klavis?: {
+    instanceId: string;
+    isAuthenticated: boolean;
+    oauthUrl?: string;
+    serverName: string;
+    serverUrl: string;
+  };
+
   manifestMode?: 'local' | 'url';
   manifestUrl?: string;
-  useProxy?: boolean;
-
-  /* eslint-disable sort-keys-fix/sort-keys-fix , typescript-sort-keys/interface */
   /**
    * TODO: Temporary solution, needs major refactoring in the future
    */
@@ -37,25 +47,13 @@ export interface CustomPluginParams {
     // Added headers configuration support
     headers?: Record<string, string>;
   };
-  /**
-   * Klavis integration parameters
-   */
-  klavis?: {
-    instanceId: string;
-    isAuthenticated: boolean;
-    oauthUrl?: string;
-    serverName: string;
-    serverUrl: string;
-  };
-  avatar?: string;
-  description?: string;
-  /* eslint-enable */
+  useProxy?: boolean;
 }
 
 export interface LobeToolCustomPlugin {
   customParams?: CustomPluginParams;
   identifier: string;
-  manifest?: LobeChatPluginManifest;
+  manifest?: ToolManifest;
   settings?: any;
   type: 'customPlugin';
 }
@@ -65,11 +63,20 @@ export interface InstallPluginMeta extends Partial<Meta> {
   createdAt?: string;
   homepage?: string;
   identifier: string;
-  runtimeType?: 'mcp' | 'default' | 'markdown' | 'standalone' | undefined;
+  runtimeType?: ToolManifestType;
   type: LobeToolType;
 }
 
 export interface PluginInstallError {
   cause?: string;
   message: 'noManifest' | 'fetchError' | 'manifestInvalid' | 'urlError';
+}
+
+export interface PluginRequestPayload {
+  apiName: string;
+  arguments?: string;
+  identifier: string;
+  indexUrl?: string;
+  manifest?: ToolManifest;
+  type?: string;
 }

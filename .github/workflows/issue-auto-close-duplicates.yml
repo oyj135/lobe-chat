@@ -2,8 +2,8 @@ name: Auto-close duplicate issues
 description: Auto-closes issues that are duplicates of existing issues
 on:
   schedule:
-    - cron: "0 2 * * *"
-  workflow_dispatch:
+    - cron: '0 2 * * *'
+  workflow_dispatch: {}
 
 jobs:
   auto-close-duplicates:
@@ -15,12 +15,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+
+      - name: Install dependencies
+        run: pnpm install
 
       - name: Auto-close duplicate issues
         run: bun run .github/scripts/auto-close-duplicates.ts

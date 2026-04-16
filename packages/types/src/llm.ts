@@ -1,7 +1,7 @@
-import { AiModelType, ModelParamsSchema, Pricing } from 'model-bank';
-import { ReactNode } from 'react';
+import type { AiModelSettings, AiModelType, ModelParamsSchema, Pricing } from 'model-bank';
+import type { ReactNode } from 'react';
 
-import { AiProviderSettings } from './aiProvider';
+import type { AiProviderSettings } from './aiProvider';
 
 export interface ChatModelCard {
   /**
@@ -63,6 +63,8 @@ export interface ChatModelCard {
    *  whether model supports search
    */
   search?: boolean;
+
+  settings?: AiModelSettings;
 
   type?: AiModelType;
 

@@ -15,16 +15,12 @@ vi.mock('next/navigation', () => ({
   })),
 }));
 
-vi.mock('@/components/BrandWatermark', () => ({
-  default: vi.fn(() => <div>Mocked BrandWatermark</div>),
-}));
-
 vi.mock('@/components/Menu', () => ({
   default: vi.fn(({ items, onClick }) => (
     <div>
       Mocked Menu
       {items.map((item: any) => (
-        <button key={item.key} onClick={onClick} type={'button'}>
+        <button key={item.key} type={'button'} onClick={onClick}>
           {item.label}
         </button>
       ))}
@@ -34,7 +30,7 @@ vi.mock('@/components/Menu', () => ({
 
 vi.mock('../UserInfo', () => ({
   default: vi.fn(({ onClick }) => (
-    <button onClick={onClick} type={'button'}>
+    <button type={'button'} onClick={onClick}>
       Mocked UserInfo
     </button>
   )),
@@ -52,7 +48,7 @@ vi.mock('../UserPanel/useMenu', () => ({
 
 vi.mock('../UserLoginOrSignup', () => ({
   default: vi.fn(({ onClick }) => (
-    <button onClick={onClick} type={'button'}>
+    <button type={'button'} onClick={onClick}>
       Mocked SignInBlock
     </button>
   )),
@@ -65,25 +61,6 @@ vi.mock('../DataStatistics', () => ({
 vi.mock('@/const/version', () => ({
   isDeprecatedEdition: false,
   isDesktop: false,
-}));
-
-// Use vi.hoisted to ensure variables exist before vi.mock factory executes
-const { enableAuth, enableClerk, enableNextAuth } = vi.hoisted(() => ({
-  enableAuth: { value: true },
-  enableClerk: { value: false },
-  enableNextAuth: { value: false },
-}));
-
-vi.mock('@/const/auth', () => ({
-  get enableAuth() {
-    return enableAuth.value;
-  },
-  get enableClerk() {
-    return enableClerk.value;
-  },
-  get enableNextAuth() {
-    return enableNextAuth.value;
-  },
 }));
 
 describe('PanelContent', () => {
@@ -129,40 +106,14 @@ describe('PanelContent', () => {
       expect(screen.getAllByText('Mocked Menu').length).toBe(2);
     });
 
-    it('should render BrandWatermark when user is not signed in', () => {
+    it('should render SignInBlock when user is not signed in', () => {
       act(() => {
         useUserStore.setState({ isSignedIn: false });
       });
 
       renderWithRouter(<PanelContent closePopover={closePopover} />);
 
-      expect(screen.getByText('Mocked BrandWatermark')).toBeInTheDocument();
-    });
-  });
-
-  describe('disable auth', () => {
-    it('should render UserInfo', () => {
-      act(() => {
-        useUserStore.setState({ isSignedIn: true });
-      });
-
-      renderWithRouter(<PanelContent closePopover={closePopover} />);
-
-      expect(screen.getByText('Mocked UserInfo')).toBeInTheDocument();
-      expect(screen.getByText('Mocked DataStatistics')).toBeInTheDocument();
-      expect(screen.queryByText('Mocked SignInBlock')).not.toBeInTheDocument();
-    });
-
-    it('should render BrandWatermark when disable auth', () => {
-      enableAuth.value = false;
-
-      act(() => {
-        useUserStore.setState({ isSignedIn: false });
-      });
-
-      renderWithRouter(<PanelContent closePopover={closePopover} />);
-
-      expect(screen.getByText('Mocked BrandWatermark')).toBeInTheDocument();
+      expect(screen.getByText('Mocked SignInBlock')).toBeInTheDocument();
     });
   });
 

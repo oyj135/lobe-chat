@@ -1,17 +1,23 @@
 'use client';
 
-import type { UIChatMessage } from '@lobechat/types';
+import { type UIChatMessage } from '@lobechat/types';
+import debug from 'debug';
 import isEqual from 'fast-deep-equal';
-import { type ReactNode, memo } from 'react';
+import { type ReactNode } from 'react';
+import { memo, useMemo } from 'react';
 
+import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+
+import { createStore, Provider } from './store';
 import StoreUpdater from './StoreUpdater';
-import { Provider, createStore } from './store';
-import type {
-  ActionsBarConfig,
-  ConversationContext,
-  ConversationHooks,
-  OperationState,
+import {
+  type ActionsBarConfig,
+  type ConversationContext,
+  type ConversationHooks,
+  type OperationState,
 } from './types';
+
+const log = debug('lobe-render:features:Conversation');
 
 export interface ConversationProviderProps {
   /**
@@ -42,8 +48,9 @@ export interface ConversationProviderProps {
    * Use this to sync messages back to external state (e.g., ChatStore)
    *
    * @param messages - The updated messages array
+   * @param context - The context that this data belongs to (prevents race conditions)
    */
-  onMessagesChange?: (messages: UIChatMessage[]) => void;
+  onMessagesChange?: (messages: UIChatMessage[], context: ConversationContext) => void;
   /**
    * External operation state (from ChatStore)
    *
@@ -74,6 +81,16 @@ export const ConversationProvider = memo<ConversationProviderProps>(
     operationState,
     skipFetch,
   }) => {
+    const contextKey = useMemo(() => messageMapKey(context), [context]);
+
+    log(
+      '[Provider] render | contextKey=%s | messagesCount=%d | hasInitMessages=%s | skipFetch=%s',
+      contextKey,
+      messages?.length ?? 0,
+      hasInitMessages,
+      skipFetch,
+    );
+
     return (
       <Provider createStore={() => createStore({ context, hooks, skipFetch })}>
         <StoreUpdater
@@ -82,9 +99,9 @@ export const ConversationProvider = memo<ConversationProviderProps>(
           hasInitMessages={hasInitMessages}
           hooks={hooks}
           messages={messages}
-          onMessagesChange={onMessagesChange}
           operationState={operationState}
           skipFetch={skipFetch}
+          onMessagesChange={onMessagesChange}
         />
         {children}
       </Provider>
