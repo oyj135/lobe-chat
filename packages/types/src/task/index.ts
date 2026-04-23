@@ -1,3 +1,16 @@
+// ── Task type aliases ──
+
+export type TaskStatus = 'backlog' | 'canceled' | 'completed' | 'failed' | 'paused' | 'running';
+
+export type TaskPriority = 0 | 1 | 2 | 3 | 4;
+
+export type TaskActivityType = 'brief' | 'comment' | 'created' | 'topic';
+
+// null = no automation
+export type TaskAutomationMode = 'heartbeat' | 'schedule';
+
+// ── Config types ──
+
 export interface CheckpointConfig {
   onAgentRequest?: boolean;
   tasks?: {
@@ -52,6 +65,7 @@ export interface TaskItem {
   accessedAt: Date;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  automationMode: TaskAutomationMode | null;
   completedAt: Date | null;
   config: unknown;
   context: unknown;
@@ -89,6 +103,7 @@ export interface NewTask {
   accessedAt?: Date;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  automationMode?: TaskAutomationMode | null;
   completedAt?: Date | null;
   config?: unknown;
   context?: unknown;
@@ -120,7 +135,15 @@ export interface NewTask {
 
 // ── Task Detail (shared across CLI, viewTask tool, task.detail router) ──
 
+export interface TaskDetailSubtaskAssignee {
+  avatar: string | null;
+  backgroundColor: string | null;
+  id: string;
+  title: string | null;
+}
+
 export interface TaskDetailSubtask {
+  assignee?: TaskDetailSubtaskAssignee | null;
   blockedBy?: string;
   children?: TaskDetailSubtask[];
   identifier: string;
@@ -146,25 +169,45 @@ export interface TaskDetailActivityAuthor {
   type: 'agent' | 'user';
 }
 
+export interface TaskDetailActivityAgent {
+  avatar: string | null;
+  backgroundColor: string | null;
+  id: string;
+  title: string | null;
+}
+
 export interface TaskDetailActivity {
+  actions?: unknown;
   agentId?: string | null;
+  agents?: TaskDetailActivityAgent[];
+  artifacts?: unknown;
   author?: TaskDetailActivityAuthor;
   briefType?: string;
   content?: string;
+  createdAt?: string;
+  cronJobId?: string | null;
   id?: string;
   priority?: string | null;
+  readAt?: string | null;
   resolvedAction?: string | null;
+  resolvedAt?: string | null;
+  resolvedComment?: string | null;
   seq?: number | null;
   status?: string | null;
   summary?: string;
+  taskId?: string | null;
   time?: string;
   title?: string;
-  type: 'brief' | 'comment' | 'topic';
+  topicId?: string | null;
+  type: TaskActivityType;
+  userId?: string | null;
 }
 
 export interface TaskDetailData {
   activities?: TaskDetailActivity[];
   agentId?: string | null;
+  // null/undefined = no automation configured
+  automationMode?: TaskAutomationMode | null;
   checkpoint?: CheckpointConfig;
   config?: Record<string, unknown>;
   createdAt?: string;

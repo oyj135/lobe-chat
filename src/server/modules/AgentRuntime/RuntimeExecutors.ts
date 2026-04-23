@@ -29,7 +29,7 @@ import { parse } from '@lobechat/conversation-flow';
 import { consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { chainCompressContext } from '@lobechat/prompts';
 import { type ChatToolPayload, type MessageToolCall, type UIChatMessage } from '@lobechat/types';
-import { serializePartsForStorage } from '@lobechat/utils';
+import { sanitizeToolCallArguments, serializePartsForStorage } from '@lobechat/utils';
 import debug from 'debug';
 
 import { type MessageModel, MessageModel as MessageModelClass } from '@/database/models/message';
@@ -48,6 +48,7 @@ import {
 } from '@/server/services/toolExecution';
 
 import { dispatchClientTool } from './dispatchClientTool';
+import { formatErrorEventData } from './formatErrorEventData';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import {
   createConversationParentMissingError,
@@ -192,51 +193,6 @@ const buildToolDiscoveryConfig = (operationToolSet: OperationToolSet, enabledToo
   if (availableTools.length === 0) return undefined;
 
   return { availableTools };
-};
-
-const formatErrorEventData = (error: unknown, phase: string) => {
-  let errorMessage = 'Unknown error';
-  let errorType: string | undefined;
-
-  if (error && typeof error === 'object') {
-    const payload = error as { error?: unknown; errorType?: unknown; message?: unknown };
-
-    if (typeof payload.errorType === 'string') {
-      errorType = payload.errorType;
-    }
-
-    if (typeof payload.message === 'string' && payload.message.length > 0) {
-      errorMessage = payload.message;
-    } else if (typeof payload.error === 'string' && payload.error.length > 0) {
-      errorMessage = payload.error;
-    } else if (
-      payload.error &&
-      typeof payload.error === 'object' &&
-      'message' in payload.error &&
-      typeof payload.error.message === 'string'
-    ) {
-      errorMessage = payload.error.message;
-    } else if (error instanceof Error && error.message.length > 0) {
-      errorMessage = error.message;
-    } else if (errorType) {
-      errorMessage = errorType;
-    }
-  } else if (error instanceof Error && error.message.length > 0) {
-    errorMessage = error.message;
-    errorType = error.name;
-  } else if (typeof error === 'string' && error.length > 0) {
-    errorMessage = error;
-  }
-
-  if (!errorType && error instanceof Error && error.name) {
-    errorType = error.name;
-  }
-
-  return {
-    error: errorMessage,
-    errorType,
-    phase,
-  };
 };
 
 export interface RuntimeExecutorContext {
@@ -819,7 +775,14 @@ export const createRuntimeExecutors = (
               },
               onToolsCalling: async ({ toolsCalling: raw }) => {
                 const resolvedCalls = new ToolNameResolver().resolve(raw, resolved.manifestMap);
-                // Attach source (origin) and executor (dispatch target) for routing
+                // Attach source (origin) and executor (dispatch target) for routing.
+                // `arguments` are kept RAW here on purpose so the tool executor can
+                // still detect malformed JSON and return an `INVALID_JSON_ARGUMENTS`
+                // tool-result with the original bad string — that's the
+                // self-reflection signal the model needs to fix its own output.
+                // Sanitization happens later, only at the persist boundaries
+                // (DB write and state.messages push) to protect strict providers
+                // replaying history. See LOBE-7761.
                 const payload = resolvedCalls.map((p) => ({
                   ...p,
                   executor: resolved.executorMap?.[p.identifier],
@@ -949,13 +912,24 @@ export const createRuntimeExecutors = (
               metadata.isMultimodal = true;
             }
 
+            // Sanitize tool_call `arguments` before persisting to DB so malformed
+            // JSON (e.g. Qwen emitting `{, ...}`) can't poison future context
+            // builds and 400 strict providers like NVIDIA NIM. See LOBE-7761.
+            const persistedTools =
+              toolsCalling.length > 0
+                ? toolsCalling.map((t) => ({
+                    ...t,
+                    arguments: sanitizeToolCallArguments(t.arguments),
+                  }))
+                : undefined;
+
             await ctx.messageModel.update(assistantMessageItem.id, {
               content: finalContent,
               imageList: imageList.length > 0 ? imageList : undefined,
               metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
               reasoning: finalReasoning,
               search: grounding,
-              tools: toolsCalling.length > 0 ? toolsCalling : undefined,
+              tools: persistedTools,
             });
           } catch (error) {
             console.error('[call_llm] Failed to update message:', error);
@@ -971,12 +945,26 @@ export const createRuntimeExecutors = (
           // falls through to a DB query; when human-approve fires on the
           // fresh LLM turn, both code paths miss and the op errors with
           // "No assistant message found as parent for pending tool messages".
+          // Sanitize mirrors the DB write above — state.messages flows into the
+          // next LLM call payload, so the same poisoning risk applies here.
+          // See LOBE-7761.
+          const stateToolCalls =
+            tool_calls.length > 0
+              ? tool_calls.map((tc) => ({
+                  ...tc,
+                  function: {
+                    ...tc.function,
+                    arguments: sanitizeToolCallArguments(tc.function.arguments),
+                  },
+                }))
+              : undefined;
+
           newState.messages.push({
             content,
             id: assistantMessageItem.id,
             reasoning: finalReasoning,
             role: 'assistant',
-            tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+            tool_calls: stateToolCalls,
           });
 
           if (currentStepUsage) {

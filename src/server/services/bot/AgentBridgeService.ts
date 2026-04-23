@@ -1,7 +1,6 @@
 import type { ChatTopicBotContext, ExecAgentResult } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import type { Message, SentMessage, Thread } from 'chat';
-import { emoji } from 'chat';
 import debug from 'debug';
 
 import { AgentBotProviderModel } from '@/database/models/agentBotProvider';
@@ -16,7 +15,13 @@ import { SystemAgentService } from '@/server/services/systemAgent';
 
 import { formatPrompt as formatPromptUtil } from './formatPrompt';
 import type { PlatformClient } from './platforms';
-import { platformRegistry } from './platforms';
+import {
+  getStepReactionEmoji,
+  platformRegistry,
+  RECEIVED_REACTION_EMOJI,
+  THINKING_REACTION_EMOJI,
+} from './platforms';
+import { clearReactionState, saveReactionState } from './reactionState';
 import {
   renderError,
   renderFinalReply,
@@ -37,9 +42,6 @@ const TOPIC_STALE_THRESHOLD = 4 * 60 * 60 * 1000; // 4 hours
 // PostgreSQL error code for foreign key constraint violations.
 // See: https://www.postgresql.org/docs/current/errcodes-appendix.html
 const PG_FOREIGN_KEY_VIOLATION = '23503';
-
-// Status emoji added on receive, removed on complete
-const RECEIVED_EMOJI = emoji.eyes;
 
 /**
  * Extract a human-readable error message from agent runtime error objects.
@@ -100,6 +102,15 @@ interface BridgeHandlerOpts {
   displayToolCalls?: boolean;
 }
 
+/** Snapshot of the emoji currently applied to a given user message. */
+interface ActiveReaction {
+  applicationId?: string;
+  emoji: string;
+  platform?: string;
+  reactionThreadId: string;
+  userMessageId: string;
+}
+
 /**
  * Platform-agnostic bridge between Chat SDK events and Agent Runtime.
  *
@@ -141,6 +152,15 @@ export class AgentBridgeService {
   private static pendingStopThreads = new Set<string>();
 
   /**
+   * Per-thread snapshot of the emoji currently attached to the user message.
+   * Used by the in-memory execution path so that consecutive step callbacks
+   * can remove the previous emoji before adding a new one. Queue mode relies
+   * on Redis (`reactionState`) for the same purpose since callbacks land in a
+   * different process.
+   */
+  private static activeReactions = new Map<string, ActiveReaction>();
+
+  /**
    * Check if a thread currently has an active agent execution.
    */
   static isThreadActive(threadId: string): boolean {
@@ -162,6 +182,73 @@ export class AgentBridgeService {
     AgentBridgeService.activeOperations.delete(threadId);
     AgentBridgeService.pendingStopThreads.delete(threadId);
     AgentBridgeService.startupControllers.delete(threadId);
+    AgentBridgeService.activeReactions.delete(threadId);
+  }
+
+  /**
+   * Apply (or swap to) the given emoji on a user message. Tracks the current
+   * emoji in an in-process map so the next call can remove it before adding
+   * the new one — the user only ever sees one bot reaction at a time.
+   *
+   * When `botContext` is provided (queue mode hand-off), the new state is
+   * also mirrored to Redis so the webhook callback service — which runs in a
+   * different process — can pick up swapping from here.
+   *
+   * All platform API calls are fire-and-forget via `safeSideEffect`: a
+   * transient reaction error must never abort the main message flow.
+   */
+  private async setReaction(
+    thread: Thread<ThreadState>,
+    message: Message,
+    client: PlatformClient | undefined,
+    nextEmoji: string,
+    botContext?: ChatTopicBotContext,
+  ): Promise<void> {
+    const reactionThreadId = client?.resolveReactionThreadId?.(thread.id, message.id) ?? thread.id;
+    const current = AgentBridgeService.activeReactions.get(thread.id);
+    if (current && current.emoji === nextEmoji && current.userMessageId === message.id) {
+      return;
+    }
+    const prevEmoji = current?.userMessageId === message.id ? current.emoji : null;
+    const messenger = client?.getMessenger(reactionThreadId);
+    await safeSideEffect(
+      () => messenger?.replaceReaction?.(message.id, prevEmoji, nextEmoji) ?? Promise.resolve(),
+      'replace reaction',
+    );
+    AgentBridgeService.activeReactions.set(thread.id, {
+      applicationId: botContext?.applicationId,
+      emoji: nextEmoji,
+      platform: botContext?.platform,
+      reactionThreadId,
+      userMessageId: message.id,
+    });
+
+    if (botContext?.platform && botContext?.applicationId && message.id) {
+      await saveReactionState(botContext.platform, botContext.applicationId, message.id, {
+        emoji: nextEmoji,
+        reactionThreadId,
+      });
+    }
+  }
+
+  /**
+   * Remove whatever emoji is currently stored for this thread and drop the
+   * tracking entry. Safe to call even when no reaction was set.
+   */
+  private async clearReaction(thread: Thread<ThreadState>, client?: PlatformClient): Promise<void> {
+    const current = AgentBridgeService.activeReactions.get(thread.id);
+    if (!current) return;
+    AgentBridgeService.activeReactions.delete(thread.id);
+    const messenger = client?.getMessenger(current.reactionThreadId);
+    await safeSideEffect(
+      () =>
+        messenger?.replaceReaction?.(current.userMessageId, current.emoji, null) ??
+        Promise.resolve(),
+      'clear reaction',
+    );
+    if (current.platform && current.applicationId) {
+      await clearReactionState(current.platform, current.applicationId, current.userMessageId);
+    }
   }
 
   /**
@@ -222,19 +309,29 @@ export class AgentBridgeService {
   }
 
   private async finishStartupFailure(params: {
+    client?: PlatformClient;
     error?: unknown;
+    operationId?: string;
     progressMessage?: SentMessage;
     stopped?: boolean;
     thread: Thread<ThreadState>;
     userMessage: Message;
   }): Promise<void> {
-    const { error, progressMessage, stopped, thread, userMessage } = params;
+    const { client, error, operationId, progressMessage, stopped, thread, userMessage } = params;
     const errorMessage =
       error instanceof Error ? error.message : error ? String(error) : 'Agent execution failed';
 
+    log(
+      'finishStartupFailure: thread=%s, operationId=%s, stopped=%s, error=%s',
+      thread.id,
+      operationId,
+      stopped,
+      errorMessage,
+    );
+
     AgentBridgeService.clearActiveThread(thread.id);
 
-    const errorContent = stopped ? renderStopped(errorMessage) : renderError(errorMessage);
+    const errorContent = stopped ? renderStopped(errorMessage) : renderError(operationId);
 
     if (progressMessage) {
       try {
@@ -252,7 +349,8 @@ export class AgentBridgeService {
       }
     }
 
-    await this.removeReceivedReaction(thread, userMessage);
+    await this.clearReaction(thread, client);
+    void userMessage;
   }
 
   /**
@@ -292,12 +390,7 @@ export class AgentBridgeService {
       // Immediate feedback: mark as received + show typing. Both are
       // non-essential UX niceties; a transient platform network error here
       // (e.g. ECONNRESET to api.telegram.org) must NOT abort the main flow.
-      const reactionThreadId =
-        client?.resolveReactionThreadId?.(thread.id, message.id) ?? thread.id;
-      await safeSideEffect(
-        () => thread.adapter.addReaction(reactionThreadId, message.id, RECEIVED_EMOJI),
-        'add eyes',
-      );
+      await this.setReaction(thread, message, client, RECEIVED_REACTION_EMOJI, botContext);
 
       // Auto-subscribe to thread (platforms can opt out, e.g. Discord top-level channels)
       const subscribe = client?.shouldSubscribe?.(thread.id) ?? true;
@@ -309,6 +402,12 @@ export class AgentBridgeService {
 
       // Fetch channel context for Discord context injection
       const channelContext = await this.fetchChannelContext(thread);
+
+      // Transition from "received" to "thinking" right before we hand off to
+      // the agent runtime. The first afterStep hook fires only after the
+      // first LLM call completes (often 5-10s), so without this swap the
+      // user would see 👀 for the entire duration of the first LLM call.
+      await this.setReaction(thread, message, client, THINKING_REACTION_EMOJI, botContext);
 
       try {
         // executeWithCallback handles progress message (post + edit at each step)
@@ -332,9 +431,8 @@ export class AgentBridgeService {
         }
       } catch (error) {
         log('handleMention error: %O', error);
-        const msg = error instanceof Error ? error.message : String(error);
         try {
-          await thread.post(`**Agent Execution Failed**\n\`\`\`\n${msg}\n\`\`\``);
+          await thread.post(renderError());
         } catch (postError) {
           log('handleMention: failed to post error message: %O', postError);
         }
@@ -344,7 +442,7 @@ export class AgentBridgeService {
       // In queue mode, the callback owns cleanup only after webhook handoff succeeds.
       // If setup fails before that point, clean up locally to avoid leaked reactions.
       if (!queueMode || !queueHandoffSucceeded) {
-        await this.removeReceivedReaction(thread, message, client);
+        await this.clearReaction(thread, client);
       }
     }
   }
@@ -431,13 +529,14 @@ export class AgentBridgeService {
       // Immediate feedback: mark as received + show typing. Both are
       // non-essential UX niceties; a transient platform network error here
       // (e.g. ECONNRESET to api.telegram.org) must NOT abort the main flow.
-      const reactionThreadId =
-        opts.client?.resolveReactionThreadId?.(thread.id, message.id) ?? thread.id;
-      await safeSideEffect(
-        () => thread.adapter.addReaction(reactionThreadId, message.id, RECEIVED_EMOJI),
-        'add eyes',
-      );
+      await this.setReaction(thread, message, opts.client, RECEIVED_REACTION_EMOJI, botContext);
       await safeSideEffect(() => thread.startTyping(), 'startTyping');
+
+      // Transition from "received" to "thinking" right before we hand off to
+      // the agent runtime. The first afterStep hook fires only after the
+      // first LLM call completes (often 5-10s), so without this swap the
+      // user would see 👀 for the entire duration of the first LLM call.
+      await this.setReaction(thread, message, opts.client, THINKING_REACTION_EMOJI, botContext);
 
       try {
         // executeWithCallback handles progress message (post + edit at each step)
@@ -480,7 +579,7 @@ export class AgentBridgeService {
       AgentBridgeService.activeThreads.delete(thread.id);
       // In queue mode, the callback owns cleanup only after webhook handoff succeeds.
       if (!queueMode || !queueHandoffSucceeded) {
-        await this.removeReceivedReaction(thread, message, opts.client);
+        await this.clearReaction(thread, opts.client);
       }
     }
   }
@@ -549,6 +648,7 @@ export class AgentBridgeService {
     const useGatewayTyping = gwClient.isEnabled && platformSupportsTyping;
 
     let progressMessage: SentMessage | undefined;
+    let gatewayConnectionId: string | undefined;
     if (useGatewayTyping) {
       log('executeWithWebhooks: using gateway typing, skipping ack message');
 
@@ -559,15 +659,21 @@ export class AgentBridgeService {
       // the entire AI generation (platform typing expires after ~10s).
       if (botContext?.platformThreadId && botContext?.applicationId) {
         const platform = botContext.platformThreadId.split(':')[0];
-        AgentBotProviderModel.findByPlatformAndAppId(this.db, platform, botContext.applicationId)
-          .then((row) => {
-            if (row?.id) {
-              return gwClient.startTyping(row.id, botContext.platformThreadId!);
-            }
-          })
-          .catch((err) => {
-            log('executeWithWebhooks: gateway startTyping failed: %O', err);
-          });
+        try {
+          const row = await AgentBotProviderModel.findByPlatformAndAppId(
+            this.db,
+            platform,
+            botContext.applicationId,
+          );
+          if (row?.id) {
+            gatewayConnectionId = row.id;
+            gwClient.startTyping(row.id, botContext.platformThreadId!).catch((err) => {
+              log('executeWithWebhooks: gateway startTyping failed: %O', err);
+            });
+          }
+        } catch (err) {
+          log('executeWithWebhooks: gateway provider lookup failed: %O', err);
+        }
       }
     } else {
       await safeSideEffect(() => thread.startTyping(), 'startTyping (executeWithWebhooks)');
@@ -618,6 +724,7 @@ export class AgentBridgeService {
         botPlatformContext,
         callbackUrl,
         channelContext,
+        client,
         files,
         progressMessage,
         prompt,
@@ -638,10 +745,12 @@ export class AgentBridgeService {
       client,
       displayToolCalls,
       files,
+      gatewayConnectionId,
       progressMessage,
       prompt,
       topicId,
       trigger,
+      userMessage,
       webhookBody,
     });
   }
@@ -659,6 +768,7 @@ export class AgentBridgeService {
       botPlatformContext?: { platformName: string; supportsMarkdown: boolean };
       callbackUrl: string;
       channelContext?: DiscordChannelContext;
+      client?: PlatformClient;
       files?: any;
       progressMessage?: SentMessage;
       prompt: string;
@@ -673,6 +783,7 @@ export class AgentBridgeService {
       botPlatformContext,
       callbackUrl,
       channelContext,
+      client,
       files,
       progressMessage,
       prompt,
@@ -740,6 +851,7 @@ export class AgentBridgeService {
       }
 
       await this.finishStartupFailure({
+        client,
         error,
         progressMessage,
         stopped: isAbortError(error),
@@ -751,7 +863,9 @@ export class AgentBridgeService {
 
     if (!result.success) {
       await this.finishStartupFailure({
+        client,
         error: result.error,
+        operationId: result.operationId,
         progressMessage,
         thread,
         userMessage,
@@ -800,10 +914,12 @@ export class AgentBridgeService {
       client?: PlatformClient;
       displayToolCalls?: boolean;
       files?: any;
+      gatewayConnectionId?: string;
       progressMessage?: SentMessage;
       prompt: string;
       topicId?: string;
       trigger?: string;
+      userMessage?: Message;
       webhookBody: Record<string, unknown>;
     },
   ): Promise<{ reply: string; topicId: string }> {
@@ -817,17 +933,29 @@ export class AgentBridgeService {
       client,
       displayToolCalls,
       files,
+      gatewayConnectionId,
       prompt,
       topicId,
       trigger,
+      userMessage,
       webhookBody,
     } = opts;
 
     let { progressMessage } = opts;
     let operationStartTime = 0;
 
+    const stopGatewayTyping = () => {
+      if (gatewayConnectionId && botContext?.platformThreadId) {
+        const gwClient = getMessageGatewayClient();
+        gwClient.stopTyping(gatewayConnectionId, botContext.platformThreadId).catch((err) => {
+          log('executeWithCallback[local]: gateway stopTyping failed: %O', err);
+        });
+      }
+    };
+
     return new Promise<{ reply: string; topicId: string }>((resolve, reject) => {
       const timeout = setTimeout(() => {
+        stopGatewayTyping();
         reject(new Error(`Agent execution timed out`));
       }, EXECUTION_TIMEOUT);
 
@@ -853,6 +981,11 @@ export class AgentBridgeService {
           hooks: [
             {
               handler: async (event) => {
+                if (event.shouldContinue && userMessage) {
+                  const desiredEmoji = getStepReactionEmoji(event.stepType, event.toolsCalling);
+                  await this.setReaction(thread, userMessage, client, desiredEmoji, botContext);
+                }
+
                 if (!event.shouldContinue || !progressMessage || displayToolCalls === false) return;
 
                 const msgBody = renderStepProgress({
@@ -899,14 +1032,20 @@ export class AgentBridgeService {
             {
               handler: async (event) => {
                 clearTimeout(timeout);
+                stopGatewayTyping();
 
                 const reason = event.reason;
                 log('onComplete: reason=%s', reason);
 
                 if (reason === 'error') {
                   const errorMsg = event.errorMessage || 'Agent execution failed';
+                  log(
+                    'onComplete: agent run failed, operationId=%s, errorMessage=%s',
+                    event.operationId,
+                    errorMsg,
+                  );
                   try {
-                    const errorText = renderError(errorMsg);
+                    const errorText = renderError(event.operationId);
                     if (progressMessage) {
                       await progressMessage.edit(errorText);
                     } else {
@@ -1027,11 +1166,15 @@ export class AgentBridgeService {
           if (!result.success) {
             clearTimeout(timeout);
 
+            log(
+              'executeWithCallback[local]: startup failed, operationId=%s, error=%s',
+              result.operationId,
+              result.error,
+            );
+
             if (progressMessage) {
               try {
-                await progressMessage.edit(
-                  renderError(result.error || 'Agent operation failed to start'),
-                );
+                await progressMessage.edit(renderError(result.operationId));
               } catch (error) {
                 log('executeWithCallback[local]: failed to edit startup error: %O', error);
               }
@@ -1079,9 +1222,21 @@ export class AgentBridgeService {
             return;
           }
 
+          log('executeWithCallback[local]: startup error: %s', extractErrorMessage(error));
+
+          // Stale topic_id FK violation: propagate so handleSubscribedMessage can
+          // clear thread state and retry as a fresh mention. Queue mode does the
+          // same bailout in executeWithHooksQueueMode.
+          const errMsg = error instanceof Error ? error.message : String(error);
+          if (errMsg.includes('Failed query') && errMsg.includes('topic_id')) {
+            stopGatewayTyping();
+            reject(error);
+            return;
+          }
+
           if (progressMessage) {
             try {
-              await progressMessage.edit(renderError(extractErrorMessage(error)));
+              await progressMessage.edit(renderError());
             } catch (editError) {
               log('executeWithCallback[local]: failed to edit startup error: %O', editError);
             }
@@ -1224,20 +1379,5 @@ export class AgentBridgeService {
 
     this.timezoneLoaded = true;
     return this.timezone;
-  }
-
-  /**
-   * Remove the received reaction from a user message (fire-and-forget).
-   */
-  private async removeReceivedReaction(
-    thread: Thread<ThreadState>,
-    message: Message,
-    client?: PlatformClient,
-  ): Promise<void> {
-    const reactionThreadId = client?.resolveReactionThreadId?.(thread.id, message.id) ?? thread.id;
-    await safeSideEffect(
-      () => thread.adapter.removeReaction(reactionThreadId, message.id, RECEIVED_EMOJI),
-      'remove eyes',
-    );
   }
 }

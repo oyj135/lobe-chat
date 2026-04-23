@@ -5,6 +5,8 @@ import BrowserWindowsCtr from './BrowserWindowsCtr';
 import CliCtr from './CliCtr';
 import DevtoolsCtr from './DevtoolsCtr';
 import GatewayConnectionCtr from './GatewayConnectionCtr';
+import GitCtr from './GitCtr';
+import HeterogeneousAgentCtr from './HeterogeneousAgentCtr';
 import LocalFileCtr from './LocalFileCtr';
 import McpCtr from './McpCtr';
 import McpInstallCtr from './McpInstallCtr';
@@ -13,6 +15,7 @@ import NetworkProxyCtr from './NetworkProxyCtr';
 import NotificationCtr from './NotificationCtr';
 import RemoteServerConfigCtr from './RemoteServerConfigCtr';
 import RemoteServerSyncCtr from './RemoteServerSyncCtr';
+import ScreenCaptureCtr from './ScreenCaptureCtr';
 import ShellCommandCtr from './ShellCommandCtr';
 import ShortcutController from './ShortcutCtr';
 import SystemController from './SystemCtr';
@@ -22,11 +25,13 @@ import UpdaterCtr from './UpdaterCtr';
 import UploadFileCtr from './UploadFileCtr';
 
 export const controllerIpcConstructors = [
+  HeterogeneousAgentCtr,
   AuthCtr,
   BrowserWindowsCtr,
   CliCtr,
   DevtoolsCtr,
   GatewayConnectionCtr,
+  GitCtr,
   LocalFileCtr,
   McpCtr,
   McpInstallCtr,
@@ -35,6 +40,7 @@ export const controllerIpcConstructors = [
   NotificationCtr,
   RemoteServerConfigCtr,
   RemoteServerSyncCtr,
+  ScreenCaptureCtr,
   ShellCommandCtr,
   ShortcutController,
   SystemController,

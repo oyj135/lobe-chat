@@ -19,6 +19,9 @@ import DesktopChatLayout from '@/routes/(main)/agent/_layout';
 import AgentChannelPage from '@/routes/(main)/agent/channel';
 import AgentCronDetailPage from '@/routes/(main)/agent/cron/[cronId]';
 import AgentProfilePage from '@/routes/(main)/agent/profile';
+import AgentTasksPage from '@/routes/(main)/agent/tasks';
+import AgentTasksLayout from '@/routes/(main)/agent/tasks/_layout';
+import AgentTaskDetailPage from '@/routes/(main)/agent/tasks/[taskId]';
 import CommunityLayout from '@/routes/(main)/community/_layout';
 import CommunityDetailLayout from '@/routes/(main)/community/(detail)/_layout';
 import CommunityDetailAgentPage from '@/routes/(main)/community/(detail)/agent';
@@ -69,6 +72,8 @@ import ResourceLibrarySlugPage from '@/routes/(main)/resource/library/[slug]';
 import SettingsTabPage from '@/routes/(main)/settings';
 import SettingsLayout from '@/routes/(main)/settings/_layout';
 import { ProviderDetailPage, ProviderLayout } from '@/routes/(main)/settings/provider';
+import AllTasksPage from '@/routes/(main)/tasks';
+import AllTasksLayout from '@/routes/(main)/tasks/_layout';
 import ShareTopicPage from '@/routes/share/t/[id]';
 import ShareTopicLayout from '@/routes/share/t/[id]/_layout';
 import { ErrorBoundary, redirectElement } from '@/utils/router';
@@ -102,9 +107,23 @@ export const desktopRoutes: RouteObject[] = [
                 element: <AgentChannelPage />,
                 path: 'channel',
               },
+              {
+                children: [
+                  {
+                    element: <AgentTasksPage />,
+                    index: true,
+                  },
+                  {
+                    element: <AgentTaskDetailPage />,
+                    path: ':taskId',
+                  },
+                ],
+                element: <AgentTasksLayout />,
+                path: 'tasks',
+              },
             ],
             element: <DesktopChatLayout />,
-            errorElement: <ErrorBoundary resetPath="/agent" />,
+            errorElement: <ErrorBoundary />,
             path: ':aid',
           },
         ],
@@ -130,7 +149,7 @@ export const desktopRoutes: RouteObject[] = [
               },
             ],
             element: <DesktopGroupLayout />,
-            errorElement: <ErrorBoundary resetPath="/group" />,
+            errorElement: <ErrorBoundary />,
             path: ':gid',
           },
         ],
@@ -230,7 +249,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <CommunityLayout />,
-        errorElement: <ErrorBoundary resetPath="/community" />,
+        errorElement: <ErrorBoundary />,
         path: 'community',
       },
 
@@ -264,7 +283,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <ResourceLayout />,
-        errorElement: <ErrorBoundary resetPath="/resource" />,
+        errorElement: <ErrorBoundary />,
         path: 'resource',
       },
 
@@ -297,7 +316,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <SettingsLayout />,
-        errorElement: <ErrorBoundary resetPath="/settings" />,
+        errorElement: <ErrorBoundary />,
         path: 'settings',
       },
 
@@ -330,7 +349,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <DesktopMemoryLayout />,
-        errorElement: <ErrorBoundary resetPath="/memory" />,
+        errorElement: <ErrorBoundary />,
         path: 'memory',
       },
 
@@ -343,7 +362,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <DesktopVideoLayout />,
-        errorElement: <ErrorBoundary resetPath="/video" />,
+        errorElement: <ErrorBoundary />,
         path: 'video',
       },
 
@@ -356,7 +375,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <DesktopImageLayout />,
-        errorElement: <ErrorBoundary resetPath="/image" />,
+        errorElement: <ErrorBoundary />,
         path: 'image',
       },
 
@@ -405,8 +424,21 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <EvalLayout />,
-        errorElement: <ErrorBoundary resetPath="/eval" />,
+        errorElement: <ErrorBoundary />,
         path: 'eval',
+      },
+
+      // Tasks routes (cross-agent)
+      {
+        children: [
+          {
+            element: <AllTasksPage />,
+            index: true,
+          },
+        ],
+        element: <AllTasksLayout />,
+        errorElement: <ErrorBoundary resetPath="/" />,
+        path: 'tasks',
       },
 
       // Pages routes
@@ -422,7 +454,7 @@ export const desktopRoutes: RouteObject[] = [
           },
         ],
         element: <DesktopPageLayout />,
-        errorElement: <ErrorBoundary resetPath="/page" />,
+        errorElement: <ErrorBoundary />,
         path: 'page',
       },
 
@@ -437,7 +469,7 @@ export const desktopRoutes: RouteObject[] = [
       },
     ],
     element: <DesktopMainLayout />,
-    errorElement: <ErrorBoundary resetPath="/" />,
+    errorElement: <ErrorBoundary />,
     path: '/',
   },
 
@@ -459,25 +491,25 @@ export const desktopRoutes: RouteObject[] = [
 // Desktop onboarding route (Electron only in .desktop.tsx)
 desktopRoutes.push({
   element: <DesktopOnboarding />,
-  errorElement: <ErrorBoundary resetPath="/" />,
+  errorElement: <ErrorBoundary />,
   path: '/desktop-onboarding',
 });
 
 // Web onboarding aliases redirect to the desktop-specific onboarding flow.
 desktopRoutes.push({
   element: redirectElement('/desktop-onboarding'),
-  errorElement: <ErrorBoundary resetPath="/" />,
+  errorElement: <ErrorBoundary />,
   path: '/onboarding',
 });
 
 desktopRoutes.push({
   element: redirectElement('/desktop-onboarding'),
-  errorElement: <ErrorBoundary resetPath="/" />,
+  errorElement: <ErrorBoundary />,
   path: '/onboarding/agent',
 });
 
 desktopRoutes.push({
   element: redirectElement('/desktop-onboarding'),
-  errorElement: <ErrorBoundary resetPath="/" />,
+  errorElement: <ErrorBoundary />,
   path: '/onboarding/classic',
 });

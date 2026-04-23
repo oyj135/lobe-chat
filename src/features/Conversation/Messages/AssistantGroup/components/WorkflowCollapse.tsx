@@ -1,15 +1,16 @@
 import { type ChatToolPayloadWithResult } from '@lobechat/types';
-import { Accordion, AccordionItem, Block, Flexbox, Icon, Text } from '@lobehub/ui';
+import { Accordion, AccordionItem, ActionIcon, Block, Flexbox, Icon, Text } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
-import { Check, HandIcon, X } from 'lucide-react';
+import { AlertTriangle, Check, HandIcon, Maximize2, Minimize2, X } from 'lucide-react';
 import { AnimatePresence, m as motion } from 'motion/react';
 import { type Key, memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
+import { useChatStore } from '@/store/chat';
+import { operationSelectors } from '@/store/chat/slices/operation/selectors';
 import { shinyTextStyles } from '@/styles';
-import { type AssistantContentBlock } from '@/types/index';
 
 import { messageStateSelectors, useConversationStore } from '../../../store';
 import {
@@ -24,24 +25,31 @@ import {
 import {
   areWorkflowToolsComplete,
   formatReasoningDuration,
+  getWorkflowCompletionStatus,
   getWorkflowStreamingHeadlineState,
   getWorkflowSummaryText,
-  hasToolError,
   shapeProseForWorkflowHeadline,
 } from '../toolDisplayNames';
+import type { RenderableAssistantContentBlock } from './types';
 import WorkflowExpandedList from './WorkflowExpandedList';
+
+const WORKFLOW_EXPAND_TOGGLE_ICON_SIZE = 12;
+const WORKFLOW_EXPAND_TOGGLE_TRANSITION = {
+  duration: 0.18,
+  ease: [0.4, 0, 0.2, 1],
+} as const;
 
 interface WorkflowCollapseProps {
   /** Assistant group message id (for generation state) */
   assistantMessageId: string;
-  blocks: AssistantContentBlock[];
+  blocks: RenderableAssistantContentBlock[];
   /** Default expansion state while the workflow is still streaming. Pending intervention always expands. */
   defaultStreamingExpanded?: boolean;
   disableEditing?: boolean;
   workflowChromeComplete?: boolean;
 }
 
-const collectTools = (blocks: AssistantContentBlock[]): ChatToolPayloadWithResult[] => {
+const collectTools = (blocks: RenderableAssistantContentBlock[]): ChatToolPayloadWithResult[] => {
   return blocks.flatMap((b) => b.tools ?? []);
 };
 
@@ -112,16 +120,24 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
     workflowChromeComplete = false,
   }) => {
     const { t } = useTranslation('chat');
+    const toolCallsUnit = t('task.metrics.toolCallsShort');
     const allTools = useMemo(() => collectTools(blocks), [blocks]);
     const toolsPhaseComplete = areWorkflowToolsComplete(allTools);
     const pendingInterventionPresent = useMemo(() => hasPendingIntervention(allTools), [allTools]);
     const isGenerating = useConversationStore(
       messageStateSelectors.isMessageGenerating(assistantMessageId),
     );
+    /** Earliest op startTime for this message — anchors the working timer so
+     *  it reflects wall-clock since the op began, not since the component mounted. */
+    const opStartTime = useChatStore((s) => {
+      const ops = operationSelectors.getOperationsByMessage(assistantMessageId)(s);
+      if (ops.length === 0) return undefined;
+      return ops.reduce((min, op) => Math.min(min, op.metadata.startTime), Infinity);
+    });
 
     const allComplete = toolsPhaseComplete && (workflowChromeComplete || !isGenerating);
     const summaryText = useMemo(() => getWorkflowSummaryText(blocks), [blocks]);
-    const errorPresent = hasToolError(allTools);
+    const completionStatus = useMemo(() => getWorkflowCompletionStatus(allTools), [allTools]);
 
     /** Sum of per-round model output duration (not reasoning-only); see ModelPerformance.duration */
     const totalWorkflowMs = useMemo(
@@ -131,7 +147,9 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
     const durationText = totalWorkflowMs > 0 ? formatReasoningDuration(totalWorkflowMs) : undefined;
     const streamingDefaultExpanded = defaultStreamingExpanded || pendingInterventionPresent;
 
-    const [expanded, setExpanded] = useState(() => !allComplete && streamingDefaultExpanded);
+    const [expandLevel, setExpandLevel] = useState<'collapsed' | 'semi' | 'full'>(() =>
+      !allComplete && streamingDefaultExpanded ? 'semi' : 'collapsed',
+    );
     const userOpenedRef = useRef(false);
     const prevCompleteRef = useRef(allComplete);
 
@@ -141,22 +159,22 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
 
       if (!allComplete && wasComplete) {
         userOpenedRef.current = false;
-        setExpanded(streamingDefaultExpanded);
+        setExpandLevel(streamingDefaultExpanded ? 'semi' : 'collapsed');
         return;
       }
 
       if (allComplete && !wasComplete && !userOpenedRef.current && allTools.length > 0) {
-        setExpanded(false);
+        setExpandLevel('collapsed');
       }
     }, [allComplete, allTools.length, streamingDefaultExpanded]);
 
     const streaming = !allComplete;
     const forceExpanded = streaming && pendingInterventionPresent;
-    const isExpanded = forceExpanded || expanded;
+    const isExpanded = forceExpanded || expandLevel !== 'collapsed';
 
     useEffect(() => {
       if (streaming && pendingInterventionPresent) {
-        setExpanded(true);
+        setExpandLevel('semi');
       }
     }, [pendingInterventionPresent, streaming]);
 
@@ -171,9 +189,11 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       defaultValue: 'Awaiting your confirmation',
     });
     const workingLabel = t('workflow.working', { defaultValue: 'Working...' });
+    const expandedWorkingLabel =
+      allTools.length > 0 ? `${allTools.length} ${toolCallsUnit}` : workingLabel;
     const streamingHeadlineRaw = useMemo(() => {
       if (pendingInterventionPresent) return pendingInterventionLabel;
-      if (showExpandedWorkingLabel) return workingLabel;
+      if (showExpandedWorkingLabel) return expandedWorkingLabel;
       switch (headlineState.kind) {
         case 'thinking': {
           return headlineState.reasoningTitle;
@@ -190,11 +210,11 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       }
     }, [
       committedProse,
+      expandedWorkingLabel,
       headlineState,
       pendingInterventionLabel,
       pendingInterventionPresent,
       showExpandedWorkingLabel,
-      workingLabel,
     ]);
     const streamingHeadline = useDebouncedHeadline(
       streamingHeadlineRaw,
@@ -224,7 +244,11 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       }
 
       if (activeWorkingStartedAtRef.current === null) {
-        activeWorkingStartedAtRef.current = Date.now();
+        // Initial/remount seeds from op start so elapsed reflects wall-clock
+        // since the op began. Intervention resume seeds from now so pause
+        // time stays excluded from the accumulator.
+        const isInitial = accumulatedWorkingMsRef.current === 0;
+        activeWorkingStartedAtRef.current = isInitial && opStartTime ? opStartTime : Date.now();
       }
 
       const tick = () => {
@@ -240,7 +264,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       const interval = setInterval(tick, 1000);
 
       return () => clearInterval(interval);
-    }, [pendingInterventionPresent, streaming]);
+    }, [opStartTime, pendingInterventionPresent, streaming]);
 
     const showWorkingElapsed =
       !pendingInterventionPresent &&
@@ -250,10 +274,14 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       const nowExpanded = keys.includes('workflow');
       if (forceExpanded && !nowExpanded) return;
 
-      setExpanded(nowExpanded);
-      if (nowExpanded) userOpenedRef.current = true;
+      if (nowExpanded) {
+        setExpandLevel('semi');
+        userOpenedRef.current = true;
+      } else {
+        setExpandLevel('collapsed');
+      }
     };
-    const constrained = streaming && isExpanded;
+    const constrained = expandLevel === 'semi';
 
     const { ref: scrollRef, handleScroll: handleAutoScroll } = useAutoScroll<HTMLDivElement>({
       deps: [allTools.length],
@@ -261,20 +289,66 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       threshold: WORKFLOW_EXPANDED_SCROLL_THRESHOLD_PX,
     });
 
-    const statusIcon = streaming ? (
-      pendingInterventionPresent ? (
-        <Icon color={cssVar.colorInfo} icon={HandIcon} />
-      ) : (
-        <NeuralNetworkLoading size={16} />
-      )
-    ) : errorPresent ? (
-      <Icon color={cssVar.colorError} icon={X} />
-    ) : (
-      <Icon color={cssVar.colorSuccess} icon={Check} />
+    const getStatusIcon = (): React.ReactNode => {
+      if (streaming) {
+        return pendingInterventionPresent ? (
+          <Icon color={cssVar.colorInfo} icon={HandIcon} />
+        ) : (
+          <NeuralNetworkLoading size={16} />
+        );
+      }
+
+      switch (completionStatus) {
+        case 'error': {
+          return <Icon color={cssVar.colorError} icon={X} />;
+        }
+        case 'partial': {
+          return <Icon color={cssVar.colorWarning} icon={AlertTriangle} />;
+        }
+        default: {
+          return <Icon color={cssVar.colorSuccess} icon={Check} />;
+        }
+      }
+    };
+
+    const showExpandToggle = expandLevel !== 'collapsed';
+    const expandToggleLabel =
+      expandLevel === 'semi' ? t('workflow.expandFull') : t('workflow.collapse');
+
+    const expandToggleIcon = expandLevel === 'semi' ? Maximize2 : Minimize2;
+
+    const handleToggleExpand = () => {
+      if (expandLevel === 'semi') {
+        setExpandLevel('full');
+        userOpenedRef.current = true;
+      } else {
+        setExpandLevel('semi');
+      }
+    };
+
+    const expandToggleNode = (
+      <AnimatePresence initial={false}>
+        {showExpandToggle && (
+          <motion.div
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            initial={{ opacity: 0, scale: 0.9 }}
+            style={{ display: 'flex' }}
+            transition={WORKFLOW_EXPAND_TOGGLE_TRANSITION}
+          >
+            <ActionIcon
+              icon={expandToggleIcon}
+              size={{ blockSize: 24, size: WORKFLOW_EXPAND_TOGGLE_ICON_SIZE }}
+              title={expandToggleLabel}
+              onClick={handleToggleExpand}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     );
 
     const title = (
-      <Flexbox horizontal align="center" gap={6}>
+      <Flexbox horizontal align="center" gap={6} style={{ minWidth: 0 }}>
         <Block
           horizontal
           align="center"
@@ -285,15 +359,18 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
           variant="outlined"
           width={24}
         >
-          {statusIcon}
+          {getStatusIcon()}
         </Block>
         {streaming ? (
           <Flexbox
             horizontal
             align="center"
-            flex={1}
             gap={6}
-            style={{ minHeight: WORKFLOW_STREAMING_TITLE_MIN_HEIGHT_PX, minWidth: 0 }}
+            style={{
+              minHeight: WORKFLOW_STREAMING_TITLE_MIN_HEIGHT_PX,
+              minWidth: 0,
+              overflow: 'hidden',
+            }}
           >
             <div style={{ minWidth: 0, overflow: 'hidden' }}>
               <AnimatePresence initial={false} mode="wait">
@@ -326,7 +403,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
             </div>
             {showWorkingElapsed && (
               <span style={{ color: cssVar.colorTextQuaternary, flexShrink: 0 }}>
-                ({workingElapsedSeconds}s)
+                ({formatReasoningDuration(workingElapsedSeconds * TIME_MS_PER_SECOND)})
               </span>
             )}
           </Flexbox>
@@ -359,7 +436,14 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
         variant="borderless"
         onExpandedChange={handleExpandedChange}
       >
-        <AccordionItem itemKey="workflow" paddingBlock={4} paddingInline={4} title={title}>
+        <AccordionItem
+          alwaysShowAction
+          action={expandToggleNode}
+          itemKey="workflow"
+          paddingBlock={4}
+          paddingInline={4}
+          title={title}
+        >
           <WorkflowExpandedList
             assistantId={assistantMessageId}
             blocks={blocks}

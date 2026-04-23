@@ -1,7 +1,9 @@
+import { isDesktop } from '@lobechat/const';
+import { HETEROGENEOUS_AGENT_CLIENT_CONFIGS } from '@lobechat/heterogeneous-agents/client';
 import { Icon } from '@lobehub/ui';
 import { GroupBotSquareIcon } from '@lobehub/ui/icons';
 import { App } from 'antd';
-import { type ItemType } from 'antd/es/menu/interface';
+import type { ItemType } from 'antd/es/menu/interface';
 import { BotIcon, FileTextIcon, FolderCogIcon, FolderPlus } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -11,13 +13,15 @@ import useSWRMutation from 'swr/mutation';
 import { useGroupTemplates } from '@/components/ChatGroupWizard/templates';
 import { DEFAULT_CHAT_GROUP_CHAT_CONFIG } from '@/const/settings';
 import { useOptionalAgentModal } from '@/routes/(main)/home/_layout/Body/Agent/ModalProvider';
-import { type CreateAgentParams } from '@/services/agent';
-import { type GroupMemberConfig } from '@/services/chatGroup';
+import type { CreateAgentParams } from '@/services/agent';
+import type { GroupMemberConfig } from '@/services/chatGroup';
 import { chatGroupService } from '@/services/chatGroup';
 import { useAgentStore } from '@/store/agent';
 import { useAgentGroupStore } from '@/store/agentGroup';
 import { useHomeStore } from '@/store/home';
 import { usePageStore } from '@/store/page';
+import { useUserStore } from '@/store/user';
+import { labPreferSelectors } from '@/store/user/selectors';
 
 interface CreateAgentOptions {
   groupId?: string;
@@ -35,6 +39,7 @@ export const useCreateMenuItems = () => {
   const { message } = App.useApp();
   const navigate = useNavigate();
   const groupTemplates = useGroupTemplates();
+  const enableHeterogeneousAgent = useUserStore(labPreferSelectors.enableHeterogeneousAgent);
 
   const [storeCreateAgent] = useAgentStore((s) => [s.createAgent]);
   const [addGroup, refreshAgentList, switchToGroup] = useHomeStore((s) => [
@@ -192,6 +197,38 @@ export const useCreateMenuItems = () => {
     [mutateGroup],
   );
 
+  /**
+   * Create a heterogeneous agent with CLI provider pre-configured.
+   *
+   * Bypasses `mutateAgent` so we skip its default /profile redirect —
+   * external CLI agents land straight on the chat page since their config is fixed.
+   */
+  const createHeterogeneousAgent = useCallback(
+    async (
+      definition: (typeof HETEROGENEOUS_AGENT_CLIENT_CONFIGS)[number],
+      options?: CreateAgentOptions,
+    ) => {
+      const result = await storeCreateAgent({
+        config: {
+          agencyConfig: {
+            heterogeneousProvider: {
+              command: definition.command,
+              type: definition.type,
+            },
+          },
+          avatar: definition.avatar,
+          systemRole: '',
+          title: definition.title,
+        },
+        groupId: options?.groupId,
+      });
+      await refreshAgentList();
+      navigate(`/agent/${result.agentId}`);
+      options?.onSuccess?.();
+    },
+    [storeCreateAgent, refreshAgentList, navigate],
+  );
+
   const agentModal = useOptionalAgentModal();
   const openCreateModal = agentModal?.openCreateModal;
 
@@ -215,6 +252,30 @@ export const useCreateMenuItems = () => {
       },
     }),
     [t, createAgent, openCreateModal],
+  );
+
+  /**
+   * Create heterogeneous agent menu items (Desktop only)
+   */
+  const createHeterogeneousAgentMenuItems = useCallback(
+    (options?: CreateAgentOptions): ItemType[] => {
+      if (!isDesktop || !enableHeterogeneousAgent) return [];
+
+      return HETEROGENEOUS_AGENT_CLIENT_CONFIGS.map((definition) => {
+        const AgentIcon = definition.icon;
+
+        return {
+          icon: <AgentIcon size={'1em'} />,
+          key: definition.menuKey,
+          label: t(definition.menuLabelKey),
+          onClick: async (info) => {
+            info.domEvent?.stopPropagation();
+            await createHeterogeneousAgent(definition, options);
+          },
+        };
+      });
+    },
+    [t, createHeterogeneousAgent, enableHeterogeneousAgent],
   );
 
   /**
@@ -311,6 +372,8 @@ export const useCreateMenuItems = () => {
     createEmptyGroup,
     createGroupChatMenuItem,
     createGroupFromTemplate,
+    createHeterogeneousAgent,
+    createHeterogeneousAgentMenuItems,
     createGroupWithMembers,
     createPage,
     createPageMenuItem,
