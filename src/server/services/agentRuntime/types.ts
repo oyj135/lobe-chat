@@ -1,13 +1,16 @@
 import { type AgentRuntimeContext, type AgentState } from '@lobechat/agent-runtime';
 import type {
+  BotPlatformContext,
   LobeToolManifest,
   OperationSkillSet,
   ToolExecutor,
   ToolSource,
 } from '@lobechat/context-engine';
-import { type UserInterventionConfig } from '@lobechat/types';
+import type { ChatTopicBotContext, UserInterventionConfig } from '@lobechat/types';
 
 import { type ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
+import type { AgentSignalOperationMarker } from '@/server/services/agentSignal/operationMarker';
+import type { DeviceAccessReason } from '@/server/services/aiAgent/deviceAccessPolicy';
 
 import { type AgentHook } from './hooks/types';
 
@@ -110,7 +113,8 @@ export type StepCompletionReason =
   | 'interrupted'
   | 'max_steps'
   | 'cost_limit'
-  | 'waiting_for_human';
+  | 'waiting_for_human'
+  | 'waiting_for_async_tool';
 
 // ==================== Execution Params ====================
 
@@ -127,6 +131,12 @@ export interface AgentExecutionParams {
    */
   rejectAndContinue?: boolean;
   rejectionReason?: string;
+  /**
+   * Resume a `waiting_for_async_tool` op after its deferred tools (e.g. server
+   * sub-agents) have all delivered results. Scheduled by the completion bridge
+   * via `tryResumeParentFromAsyncTool`.
+   */
+  resumeAsyncTool?: boolean;
   stepIndex: number;
   /** ID of the pending tool message targeted by the intervention. */
   toolMessageId?: string;
@@ -149,15 +159,39 @@ export interface OperationCreationParams {
   agentConfig?: any;
   appContext: {
     agentId?: string;
+    /**
+     * Run-scoped Agent Signal marker. Stamped at dispatch for background
+     * self-iteration / memory runs; lands in `state.metadata.agentSignal` and is
+     * read on the completion path to project receipts.
+     */
+    agentSignal?: AgentSignalOperationMarker;
+    defaultTaskAssigneeAgentId?: string;
+    documentId?: string | null;
     groupId?: string | null;
+    scope?: string | null;
+    /** Source user message ID used for same-turn Agent Signal procedure suppression. */
+    sourceMessageId?: string;
     taskId?: string;
     threadId?: string | null;
     topicId?: string | null;
     trigger?: string;
   };
   autoStart?: boolean;
+  /**
+   * Sender/owner identity for bot-originated runs. Forwarded into
+   * `state.metadata.botContext` so device-tool dispatch can audit who
+   * triggered the call. `undefined` for first-party (web/desktop) callers.
+   */
+  botContext?: ChatTopicBotContext;
   /** Bot platform context for injecting platform capabilities (e.g. markdown support) */
-  botPlatformContext?: any;
+  botPlatformContext?: BotPlatformContext;
+  /**
+   * Device-access policy decision computed once per turn by
+   * `resolveDeviceAccessPolicy`. Forwarded into `state.metadata.deviceAccessPolicy`
+   * so the dispatch site can include `reason` in the audit entry without
+   * re-deriving it.
+   */
+  deviceAccessPolicy?: { canUseDevice: boolean; reason: DeviceAccessReason };
   /** Device system info for placeholder variable replacement in Local System systemRole */
   deviceSystemInfo?: Record<string, string>;
   /** Discord context for injecting channel/guild info into agent system message */
@@ -177,6 +211,13 @@ export interface OperationCreationParams {
   operationId: string;
   /** Operation-level skill set for SkillResolver */
   operationSkillSet?: OperationSkillSet;
+  /**
+   * Operation ID of the parent run when this operation is a sub-agent
+   * invocation (e.g. spawned via `execSubAgentTask`). Persisted to
+   * `agent_operations.parent_operation_id` so analytics can join the
+   * sub-tree back to its root.
+   */
+  parentOperationId?: string;
   queueRetries?: number;
   queueRetryDelay?: string;
   /** Abort startup before the first step is scheduled */

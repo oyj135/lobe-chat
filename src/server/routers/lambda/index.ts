@@ -2,20 +2,23 @@
  * This file contains the root router of Lobe Chat tRPC-backend
  */
 import { accountDeletionRouter } from '@/business/server/lambda-routers/accountDeletion';
+import { pageShareRouter } from '@/business/server/lambda-routers/pageShare';
 import { referralRouter } from '@/business/server/lambda-routers/referral';
 import { spendRouter } from '@/business/server/lambda-routers/spend';
+import { storageOverageRouter } from '@/business/server/lambda-routers/storageOverage';
 import { subscriptionRouter } from '@/business/server/lambda-routers/subscription';
+import { taskTemplateRouter } from '@/business/server/lambda-routers/taskTemplate';
 import { topUpRouter } from '@/business/server/lambda-routers/topUp';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
 
 import { agentRouter } from './agent';
 import { agentBotProviderRouter } from './agentBotProvider';
-import { agentCronJobRouter } from './agentCronJob';
 import { agentDocumentRouter } from './agentDocument';
 import { agentEvalRouter } from './agentEval';
 import { agentEvalExternalRouter } from './agentEvalExternal';
 import { agentGroupRouter } from './agentGroup';
 import { agentNotifyRouter } from './agentNotify';
+import { agentSignalRouter } from './agentSignal';
 import { agentSkillsRouter } from './agentSkills';
 import { aiAgentRouter } from './aiAgent';
 import { aiChatRouter } from './aiChat';
@@ -24,13 +27,16 @@ import { aiProviderRouter } from './aiProvider';
 import { apiKeyRouter } from './apiKey';
 import { botMessageRouter } from './botMessage';
 import { briefRouter } from './brief';
+import { changelogRouter } from './changelog';
 import { chunkRouter } from './chunk';
 import { comfyuiRouter } from './comfyui';
 import { configRouter } from './config';
+import { connectorRouter } from './connector';
 import { deviceRouter } from './device';
 import { documentRouter } from './document';
 import { exporterRouter } from './exporter';
 import { fileRouter } from './file';
+import { followUpActionRouter } from './followUpAction';
 import { generationRouter } from './generation';
 import { generationBatchRouter } from './generationBatch';
 import { generationTopicRouter } from './generationTopic';
@@ -40,12 +46,15 @@ import { importerRouter } from './importer';
 import { klavisRouter } from './klavis';
 import { knowledgeRouter } from './knowledge';
 import { knowledgeBaseRouter } from './knowledgeBase';
+import { llmGenerationTracingRouter } from './llmGenerationTracing';
 import { marketRouter } from './market';
 import { messageRouter } from './message';
+import { messengerRouter } from './messenger';
 import { notebookRouter } from './notebook';
 import { notificationRouter } from './notification';
 import { oauthDeviceFlowRouter } from './oauthDeviceFlow';
 import { pluginRouter } from './plugin';
+import { pushTokenRouter } from './pushToken';
 import { ragEvalRouter } from './ragEval';
 import { recentRouter } from './recent';
 import { searchRouter } from './search';
@@ -61,18 +70,20 @@ import { userRouter } from './user';
 import { userMemoriesRouter } from './userMemories';
 import { userMemoryRouter } from './userMemory';
 import { videoRouter } from './video';
+import { webBrowsingRouter } from './webBrowsing';
 
 export const lambdaRouter = router({
   agent: agentRouter,
   agentBotProvider: agentBotProviderRouter,
   agentNotify: agentNotifyRouter,
   botMessage: botMessageRouter,
-  agentCronJob: agentCronJobRouter,
   agentDocument: agentDocumentRouter,
   agentEval: agentEvalRouter,
   agentEvalExternal: agentEvalExternalRouter,
   agentSkills: agentSkillsRouter,
+  agentSignal: agentSignalRouter,
   task: taskRouter,
+  changelog: changelogRouter,
   brief: briefRouter,
   aiAgent: aiAgentRouter,
   aiChat: aiChatRouter,
@@ -82,10 +93,12 @@ export const lambdaRouter = router({
   chunk: chunkRouter,
   comfyui: comfyuiRouter,
   config: configRouter,
+  connector: connectorRouter,
   device: deviceRouter,
   document: documentRouter,
   exporter: exporterRouter,
   file: fileRouter,
+  followUpAction: followUpActionRouter,
   generation: generationRouter,
   generationBatch: generationBatchRouter,
   generationTopic: generationTopicRouter,
@@ -97,12 +110,15 @@ export const lambdaRouter = router({
   klavis: klavisRouter,
   knowledge: knowledgeRouter,
   knowledgeBase: knowledgeBaseRouter,
+  llmGenerationTracing: llmGenerationTracingRouter,
   market: marketRouter,
   message: messageRouter,
+  messenger: messengerRouter,
   notebook: notebookRouter,
   notification: notificationRouter,
   oauthDeviceFlow: oauthDeviceFlowRouter,
   plugin: pluginRouter,
+  pushToken: pushTokenRouter,
   ragEval: ragEvalRouter,
   recent: recentRouter,
   search: searchRouter,
@@ -117,10 +133,14 @@ export const lambdaRouter = router({
   userMemories: userMemoriesRouter,
   userMemory: userMemoryRouter,
   video: videoRouter,
+  webBrowsing: webBrowsingRouter,
   accountDeletion: accountDeletionRouter,
+  pageShare: pageShareRouter,
   referral: referralRouter,
   spend: spendRouter,
+  storageOverage: storageOverageRouter,
   subscription: subscriptionRouter,
+  taskTemplate: taskTemplateRouter,
   topUp: topUpRouter,
 });
 

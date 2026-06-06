@@ -8,8 +8,9 @@ import { taskService } from '@/services/task';
 import type { StoreSetter } from '@/store/types';
 
 import type { TaskStore } from '../../store';
+import { useTaskStore } from '../../store';
 import type { TaskDetailDispatch } from './reducer';
-import { taskDetailReducer } from './reducer';
+import { findSubtaskParentId, taskDetailReducer } from './reducer';
 
 type CreatedTask = NonNullable<Awaited<ReturnType<typeof taskService.create>>['data']>;
 type DeletedTask = NonNullable<Awaited<ReturnType<typeof taskService.delete>>['data']>;
@@ -18,16 +19,32 @@ type DeletedTask = NonNullable<Awaited<ReturnType<typeof taskService.delete>>['d
 // - model/provider goes through configSlice.updateTaskModelConfig
 // - checkpoint goes through configSlice.updateCheckpoint
 // - review goes through configSlice.updateReview
-// - heartbeat config will get a dedicated action once the upstream infra in LOBE-6587 is complete
+// - heartbeat config will get a dedicated action once the upstream task scheduler infra is complete
 export interface TaskUpdatePayload {
   assigneeAgentId?: string | null;
   description?: string;
+  editorData?: unknown;
   instruction?: string;
   name?: string;
+  parentTaskId?: string | null;
   priority?: number;
 }
 
 const FETCH_TASK_DETAIL_KEY = 'fetchTaskDetail';
+const TASK_DETAIL_POLL_INTERVAL = 10_000;
+
+// Poll while the task itself or any topic activity is still in flight, so the
+// UI picks up status transitions (running → completed/failed) without needing
+// a manual refresh. Returns false once everything settles so SWR stops polling.
+const hasInFlightActivity = (detail: TaskDetailData | undefined): boolean => {
+  if (!detail) return false;
+  if (detail.status === 'running' || detail.status === 'pending') return true;
+  return (
+    detail.activities?.some(
+      (a) => a.type === 'topic' && (a.status === 'running' || a.status === 'pending'),
+    ) ?? false
+  );
+};
 
 type Setter = StoreSetter<TaskStore>;
 
@@ -49,10 +66,16 @@ export class TaskDetailSliceActionImpl {
   addComment = async (
     taskId: string,
     content: string,
-    opts?: { briefId?: string; topicId?: string },
-  ): Promise<void> => {
-    await taskService.addComment(taskId, content, opts);
+    opts?: {
+      authorAgentId?: string;
+      briefId?: string;
+      editorData?: unknown;
+      topicId?: string;
+    },
+  ): Promise<Awaited<ReturnType<typeof taskService.addComment>>> => {
+    const result = await taskService.addComment(taskId, content, opts);
     await this.internal_refreshTaskDetail(taskId);
+    return result;
   };
 
   deleteComment = async (commentId: string, taskId?: string): Promise<void> => {
@@ -61,8 +84,13 @@ export class TaskDetailSliceActionImpl {
     if (id) await this.internal_refreshTaskDetail(id);
   };
 
-  updateComment = async (commentId: string, content: string, taskId?: string): Promise<void> => {
-    await taskService.updateComment(commentId, content);
+  updateComment = async (
+    commentId: string,
+    content: string,
+    opts?: { editorData?: unknown; taskId?: string },
+  ): Promise<void> => {
+    const { taskId, ...rest } = opts ?? {};
+    await taskService.updateComment(commentId, content, rest);
     const id = taskId ?? this.#get().activeTaskId;
     if (id) await this.internal_refreshTaskDetail(id);
   };
@@ -111,12 +139,16 @@ export class TaskDetailSliceActionImpl {
 
   createTask = async (params: {
     assigneeAgentId?: string;
+    automationMode?: 'heartbeat' | 'schedule';
     createdByAgentId?: string;
     description?: string;
+    editorData?: unknown;
     instruction: string;
     name?: string;
     parentTaskId?: string;
     priority?: number;
+    schedulePattern?: string;
+    scheduleTimezone?: string;
   }): Promise<CreatedTask | null> => {
     this.#set({ isCreatingTask: true }, false, 'createTask/start');
     try {
@@ -177,7 +209,10 @@ export class TaskDetailSliceActionImpl {
   setActiveTaskId = (taskId?: string): void => {
     if (this.#get().activeTaskId === taskId) return;
     this.#set(
-      { activeTaskId: taskId, activeTopicDrawerTopicId: undefined },
+      {
+        activeTaskId: taskId,
+        activeTopicDrawerTopicId: undefined,
+      },
       false,
       'setActiveTaskId',
     );
@@ -195,28 +230,49 @@ export class TaskDetailSliceActionImpl {
 
   unpinDocument = async (taskId: string, documentId: string): Promise<void> => {
     await taskService.unpinDocument(taskId, documentId);
+    // taskId here is the source (owning) task — may be a descendant of the
+    // task currently open. The detail page's SWR cache is keyed by activeTaskId,
+    // so revalidate that too; otherwise the artifact stays visible until reload.
     await this.internal_refreshTaskDetail(taskId);
+    const activeTaskId = this.#get().activeTaskId;
+    if (activeTaskId && activeTaskId !== taskId) {
+      await this.internal_refreshTaskDetail(activeTaskId);
+    }
   };
 
   updateTask = async (id: string, data: TaskUpdatePayload): Promise<void> => {
     const { assigneeAgentId, ...rest } = data;
+    const optimisticRest = { ...rest };
+    delete optimisticRest.parentTaskId;
     const optimistic: Partial<TaskDetailData> = {
-      ...rest,
+      ...optimisticRest,
       ...(assigneeAgentId !== undefined ? { agentId: assigneeAgentId } : {}),
     };
+
+    // Snapshot every map entry the optimistic patch will touch BEFORE dispatch.
+    // activeTaskId can change mid-flight, and the patch can mutate a parent's
+    // cached subtree in addition to `id`, so rollback must target both.
+    const patchedParentId = findSubtaskParentId(this.#get().taskDetailMap, id);
+    const snapshotActiveTaskId = this.#get().activeTaskId;
+    const refreshPatchedTargets = async (): Promise<void> => {
+      const targets = new Set<string>([id]);
+      if (patchedParentId) targets.add(patchedParentId);
+      if (data.parentTaskId) targets.add(data.parentTaskId);
+      if (snapshotActiveTaskId) targets.add(snapshotActiveTaskId);
+      await Promise.all(
+        Array.from(targets).map((target) => this.internal_refreshTaskDetail(target)),
+      );
+    };
+
     this.internal_dispatchTaskDetail({ id, type: 'updateTaskDetail', value: optimistic });
     this.#set({ taskSaveStatus: 'saving' }, false, 'updateTask/saving');
 
     try {
       await taskService.update(id, data);
       this.#set({ taskSaveStatus: 'saved' }, false, 'updateTask/saved');
-      if (assigneeAgentId !== undefined) {
-        await this.#get().refreshTaskList();
-      }
     } catch (error) {
       this.#set({ taskSaveStatus: 'idle' }, false, 'updateTask/error');
-      // Revert by refreshing from server
-      await this.internal_refreshTaskDetail(id);
+      await refreshPatchedTargets();
       message.error(
         t('taskDetail.updateFailed', {
           defaultValue: 'Failed to update task',
@@ -225,14 +281,26 @@ export class TaskDetailSliceActionImpl {
       );
       throw error;
     }
+
+    if (assigneeAgentId !== undefined || data.parentTaskId !== undefined) {
+      await Promise.all([this.#get().refreshTaskList(), refreshPatchedTargets()]).catch(() => {});
+    }
   };
 
   useFetchTaskDetail = (taskId?: string) => {
+    // Drive polling from a reactive boolean. SWR's function-form refreshInterval
+    // is a trap here: it's only re-evaluated after a timer fires, so if the first
+    // call (with undefined cache data) returns 0, no timer is ever scheduled and
+    // polling never starts — even once real data arrives.
+    const shouldPoll = useTaskStore((s) => {
+      const detail = taskId ? s.taskDetailMap[taskId] : undefined;
+      return hasInFlightActivity(detail);
+    });
+
     return useClientDataSWR(
       taskId ? [FETCH_TASK_DETAIL_KEY, taskId] : null,
-      async ([, id]: [string, string]) => {
-        return this.fetchTaskDetail(id);
-      },
+      async ([, id]: [string, string]) => this.fetchTaskDetail(id),
+      { refreshInterval: shouldPoll ? TASK_DETAIL_POLL_INTERVAL : 0 },
     );
   };
 

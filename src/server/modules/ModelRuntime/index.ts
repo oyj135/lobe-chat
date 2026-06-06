@@ -1,5 +1,9 @@
 import { type GoogleGenAIOptions } from '@google/genai';
-import { ModelRuntime, type ModelRuntimeHooks } from '@lobechat/model-runtime';
+import {
+  mergeModelRuntimeHooks,
+  ModelRuntime,
+  type ModelRuntimeHooks,
+} from '@lobechat/model-runtime';
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import {
   type AWSBedrockKeyVault,
@@ -18,6 +22,7 @@ import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
+import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
@@ -62,7 +67,7 @@ const resolveRuntimeProvider = (provider: string, sdkType?: string): string => {
  *
  * For custom providers, we use runtimeProvider (sdkType) to determine which fields
  * to include in the payload. This ensures that provider-specific fields like
- * cloudflareBaseURLOrAccountID or azureApiVersion are correctly forwarded.
+ * cloudflareBaseURLOrAccountID are correctly forwarded.
  *
  * @param keyVaults - The keyVaults object from database (already decrypted)
  * @param runtimeProvider - The runtime provider (sdkType) to use for building payload
@@ -92,7 +97,6 @@ export const buildPayloadFromKeyVaults = (
     case ModelProvider.Azure: {
       return {
         apiKey: keyVaults.apiKey,
-        azureApiVersion: keyVaults.apiVersion,
         baseURL: keyVaults.baseURL || keyVaults.endpoint,
         runtimeProvider,
       };
@@ -194,11 +198,10 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
     }
 
     case ModelProvider.Azure: {
-      const { AZURE_API_KEY, AZURE_API_VERSION, AZURE_ENDPOINT } = llmConfig;
+      const { AZURE_API_KEY, AZURE_ENDPOINT } = llmConfig;
       const apiKey = apiKeyManager.pick(payload?.apiKey || AZURE_API_KEY);
       const baseURL = payload?.baseURL || AZURE_ENDPOINT;
-      const apiVersion = payload?.azureApiVersion || AZURE_API_VERSION;
-      return { apiKey, apiVersion, baseURL };
+      return { apiKey, baseURL };
     }
 
     case ModelProvider.AzureAI: {
@@ -422,8 +425,13 @@ export const initModelRuntimeFromDB = async (
   const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
 
   // 4. Get business hooks (billing in cloud, undefined in OSS)
-  const hooks = getBusinessModelRuntimeHooks(userId, provider);
+  const businessHooks = getBusinessModelRuntimeHooks(userId, provider);
 
-  // 5. Initialize ModelRuntime with the payload and hooks
+  // 5. Compose with the per-call llm_generation_tracing hook (no-op when the
+  //    service is unconfigured, so OSS / self-hosted setups pay nothing for it).
+  const tracingHooks = createLLMGenerationTracingHook(userId, provider);
+  const hooks = mergeModelRuntimeHooks(businessHooks, tracingHooks);
+
+  // 6. Initialize ModelRuntime with the payload and hooks
   return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
 };

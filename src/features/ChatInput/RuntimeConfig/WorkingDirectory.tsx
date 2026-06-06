@@ -1,20 +1,23 @@
 import { isDesktop } from '@lobechat/const';
-import { Github } from '@lobehub/icons';
 import { Flexbox, Icon } from '@lobehub/ui';
 import { confirmModal } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { CheckIcon, FolderIcon, FolderOpenIcon, GitBranchIcon, XIcon } from 'lucide-react';
-import { memo, type ReactNode, useCallback, useMemo, useState } from 'react';
+import { CheckIcon, FolderOpenIcon, XIcon } from 'lucide-react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { lambdaQuery } from '@/libs/trpc/client';
 import { electronSystemService } from '@/services/electron/system';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/selectors';
+import { useElectronStore } from '@/store/electron';
 
+import { renderDirIcon } from './dirIcon';
 import { addRecentDir, getRecentDirs, type RecentDirEntry, removeRecentDir } from './recentDirs';
 import { useRepoType } from './useRepoType';
+import { useUpdateDeviceCwd } from './useUpdateDeviceCwd';
 
 const styles = createStaticStyles(({ css }) => ({
   chooseFolderItem: css`
@@ -88,6 +91,22 @@ const styles = createStaticStyles(({ css }) => ({
     overflow-y: auto;
     max-height: 360px;
   `,
+  clearText: css`
+    cursor: pointer;
+
+    padding-block: 6px 2px;
+    padding-inline: 8px;
+
+    font-size: 11px;
+    font-weight: 500;
+    color: ${cssVar.colorTextTertiary};
+
+    transition: color 0.2s;
+
+    &:hover {
+      color: ${cssVar.colorText};
+    }
+  `,
   sectionTitle: css`
     padding-block: 6px 2px;
     padding-inline: 8px;
@@ -99,14 +118,6 @@ const styles = createStaticStyles(({ css }) => ({
     letter-spacing: 0.5px;
   `,
 }));
-
-const renderDirIcon = (repoType?: 'git' | 'github'): ReactNode => {
-  const iconStyle = { color: cssVar.colorTextTertiary, flex: 'none' as const };
-  if (repoType === 'github') return <Github size={16} style={iconStyle} />;
-  return (
-    <Icon icon={repoType === 'git' ? GitBranchIcon : FolderIcon} size={16} style={iconStyle} />
-  );
-};
 
 // Backfills `repoType` for entries cached before detection supported submodule /
 // worktree layouts — `useRepoType` probes and updates the recents cache.
@@ -138,6 +149,20 @@ const WorkingDirectoryContent = memo<WorkingDirectoryContentProps>(({ agentId, o
   const updateAgentRuntimeEnvConfig = useAgentStore((s) => s.updateAgentRuntimeEnvConfigById);
   const updateTopicMetadata = useChatStore((s) => s.updateTopicMetadata);
 
+  // Local runs execute on this very machine, so also record the chosen dir in
+  // its device-registry `workingDirs` — keeps the settings detail view + future
+  // device-mode picker in sync. workingDirs only; the device default is untouched.
+  const useFetchDeviceInfo = useElectronStore((s) => s.useFetchGatewayDeviceInfo);
+  const gatewayDeviceInfo = useElectronStore((s) => s.gatewayDeviceInfo);
+  useFetchDeviceInfo();
+  const currentDeviceId = gatewayDeviceInfo?.deviceId;
+  const { data: allDevices } = lambdaQuery.device.listDevices.useQuery(undefined, {
+    staleTime: 30_000,
+  });
+  const deviceWorkingDirs =
+    allDevices?.find((d) => d.deviceId === currentDeviceId)?.workingDirs ?? [];
+  const updateDeviceCwd = useUpdateDeviceCwd();
+
   const [recentDirs, setRecentDirs] = useState(getRecentDirs);
 
   const displayDirs = useMemo(() => {
@@ -162,6 +187,11 @@ const WorkingDirectoryContent = memo<WorkingDirectoryContentProps>(({ agentId, o
           await updateAgentRuntimeEnvConfig(agentId, { workingDirectory: newPath });
         }
         setRecentDirs(addRecentDir(entry));
+        // Record on this machine's device registry (workingDirs only) — the
+        // whole entry, so the detected repoType is preserved cross-device.
+        if (currentDeviceId) {
+          void updateDeviceCwd(currentDeviceId, entry, deviceWorkingDirs, { setDefault: false });
+        }
         onClose?.();
       };
 
@@ -189,12 +219,56 @@ const WorkingDirectoryContent = memo<WorkingDirectoryContentProps>(({ agentId, o
       activeTopicId,
       activeTopic,
       agentId,
+      currentDeviceId,
+      deviceWorkingDirs,
       t,
       updateAgentRuntimeEnvConfig,
+      updateDeviceCwd,
       updateTopicMetadata,
       onClose,
     ],
   );
+
+  const clearDir = useCallback(async () => {
+    // Mirror selectDir's scope: clear the topic binding once a topic is active,
+    // otherwise clear the agent-level default. Each falls back to the next
+    // level (topic → agent → desktop home) rather than to a hard-empty value.
+    const commit = async () => {
+      if (activeTopicId) {
+        await updateTopicMetadata(activeTopicId, { workingDirectory: undefined });
+      } else {
+        await updateAgentRuntimeEnvConfig(agentId, { workingDirectory: undefined });
+      }
+      onClose?.();
+    };
+
+    // Clearing changes the topic's cwd, which invalidates a pinned CC session
+    // the same way switching folders does — warn before the implicit reset.
+    const priorSessionId = activeTopic?.metadata?.heteroSessionId;
+    const priorCwd = activeTopic?.metadata?.workingDirectory;
+    const wouldResetSession = !!priorSessionId && !!priorCwd;
+
+    if (wouldResetSession) {
+      confirmModal({
+        cancelText: t('heteroAgent.switchCwd.cancel', { ns: 'chat' }),
+        content: t('heteroAgent.switchCwd.content', { ns: 'chat' }),
+        okText: t('heteroAgent.switchCwd.ok', { ns: 'chat' }),
+        onOk: commit,
+        title: t('heteroAgent.switchCwd.title', { ns: 'chat' }),
+      });
+      return;
+    }
+
+    await commit();
+  }, [
+    activeTopicId,
+    activeTopic,
+    agentId,
+    t,
+    updateAgentRuntimeEnvConfig,
+    updateTopicMetadata,
+    onClose,
+  ]);
 
   const handleChooseFolder = useCallback(async () => {
     if (!isDesktop) return;
@@ -216,7 +290,14 @@ const WorkingDirectoryContent = memo<WorkingDirectoryContentProps>(({ agentId, o
 
   return (
     <Flexbox gap={4} style={{ minWidth: 280 }}>
-      <div className={styles.sectionTitle}>{t('localSystem.workingDirectory.recent')}</div>
+      <Flexbox horizontal align={'center'} distribution={'space-between'}>
+        <div className={styles.sectionTitle}>{t('localSystem.workingDirectory.recent')}</div>
+        {effectiveDir && (
+          <div className={styles.clearText} onClick={clearDir}>
+            {t('localSystem.workingDirectory.clear')}
+          </div>
+        )}
+      </Flexbox>
       <div className={styles.scrollContainer}>
         {displayDirs.length === 0 ? (
           <Flexbox

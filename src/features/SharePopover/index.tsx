@@ -10,7 +10,7 @@ import {
   Text,
   usePopoverContext,
 } from '@lobehub/ui';
-import { Select } from '@lobehub/ui/base-ui';
+import { confirmModal, Select } from '@lobehub/ui/base-ui';
 import { App, Divider } from 'antd';
 import { ExternalLinkIcon, LinkIcon, LockIcon } from 'lucide-react';
 import { type ReactNode } from 'react';
@@ -31,17 +31,19 @@ type Visibility = 'private' | 'link';
 
 interface SharePopoverContentProps {
   onOpenModal?: () => void;
+  topicId?: string;
 }
 
-const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal }) => {
+const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal, topicId }) => {
   const { t } = useTranslation('chat');
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
   const [updating, setUpdating] = useState(false);
   const { close } = usePopoverContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const appOrigin = useAppOrigin();
 
-  const activeTopicId = useChatStore((s) => s.activeTopicId);
+  const chatActiveTopicId = useChatStore((s) => s.activeTopicId);
+  const activeTopicId = topicId ?? chatActiveTopicId;
   const [hideTopicSharePrivacyWarning, updateSystemStatus] = useGlobalStore((s) => [
     systemStatusSelectors.systemStatus(s).hideTopicSharePrivacyWarning ?? false,
     s.updateSystemStatus,
@@ -95,9 +97,8 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal }) => 
       ) {
         let doNotShowAgain = false;
 
-        modal.confirm({
+        confirmModal({
           cancelText: t('cancel', { ns: 'common' }),
-          centered: true,
           content: (
             <div>
               <p>{t('shareModal.popover.privacyWarning.content')}</p>
@@ -120,7 +121,6 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal }) => 
             updateVisibility(visibility);
           },
           title: t('shareModal.popover.privacyWarning.title'),
-          type: 'warning',
         });
       } else {
         updateVisibility(visibility);
@@ -129,7 +129,6 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal }) => 
     [
       currentVisibility,
       hideTopicSharePrivacyWarning,
-      modal,
       t,
       updateSystemStatus,
       updateVisibility,
@@ -240,15 +239,16 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal }) => 
 interface SharePopoverProps {
   children?: ReactNode;
   onOpenModal?: () => void;
+  topicId?: string;
 }
 
-const SharePopover = memo<SharePopoverProps>(({ children, onOpenModal }) => {
+const SharePopover = memo<SharePopoverProps>(({ children, onOpenModal, topicId }) => {
   const isMobile = useIsMobile();
 
   return (
     <Popover
       arrow={false}
-      content={<SharePopoverContent onOpenModal={onOpenModal} />}
+      content={<SharePopoverContent topicId={topicId} onOpenModal={onOpenModal} />}
       placement={isMobile ? 'top' : 'bottomRight'}
       trigger={['click']}
       styles={{

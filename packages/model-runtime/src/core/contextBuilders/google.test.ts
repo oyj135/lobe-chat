@@ -22,6 +22,8 @@ vi.mock('../../utils/imageToBase64', () => ({
   imageUrlToBase64: vi.fn(),
 }));
 
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ';
+
 describe('google contextBuilders', () => {
   describe('GEMINI_MAGIC_THOUGHT_SIGNATURE', () => {
     it('should use skip_thought_signature_validator for Vertex AI compatibility', () => {
@@ -76,6 +78,29 @@ describe('google contextBuilders', () => {
       expect(result).toEqual({
         inlineData: {
           data: 'iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==',
+          mimeType: 'image/png',
+        },
+        thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
+      });
+    });
+
+    it('should correct base64 image MIME type when declared type does not match bytes', async () => {
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: PNG_BASE64,
+        mimeType: 'image/jpeg',
+        type: 'base64',
+      });
+
+      const content: UserMessageContentPart = {
+        image_url: { url: `data:image/jpeg;base64,${PNG_BASE64}` },
+        type: 'image_url',
+      };
+
+      const result = await buildGooglePart(content);
+
+      expect(result).toEqual({
+        inlineData: {
+          data: PNG_BASE64,
           mimeType: 'image/png',
         },
         thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
@@ -288,6 +313,44 @@ describe('google contextBuilders', () => {
       });
     });
 
+    it('recovers functionCall.args from element[0] when arguments parse to an array', async () => {
+      // — same defense as Anthropic: prefer partial recovery from
+      // element[0] over total loss when malformed JSON parses to an array.
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const message = {
+        role: 'assistant',
+        tool_calls: [
+          {
+            function: {
+              arguments: '[{"content":"a"},{"content":"b"}]',
+              name: 'writeLocalFile',
+            },
+            id: 'call_array',
+            type: 'function',
+          },
+        ],
+      } as OpenAIChatMessage;
+
+      const converted = await buildGoogleMessage(message);
+
+      expect(converted).toEqual({
+        parts: [
+          {
+            functionCall: { args: { content: 'a' }, name: 'writeLocalFile' },
+          },
+        ],
+        role: 'model',
+      });
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('functionCall.args recovered from array'),
+        expect.objectContaining({
+          arrayLength: 2,
+          name: 'writeLocalFile',
+        }),
+      );
+      consoleWarnSpy.mockRestore();
+    });
+
     it('should correctly convert function call message with thoughtSignature', async () => {
       const message = {
         role: 'assistant',
@@ -350,7 +413,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州天气","searchEngines":["google"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_001',
                 type: 'function',
@@ -359,7 +422,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'Tool execution was aborted by user.',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_001',
           },
@@ -370,7 +433,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州 天气","searchEngines":["bing"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_002',
                 type: 'function',
@@ -379,7 +442,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'no result',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_002',
           },
@@ -406,7 +469,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州天气', searchEngines: ['google'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
@@ -417,7 +480,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'Tool execution was aborted by user.' },
                 },
               },
@@ -429,7 +492,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州 天气', searchEngines: ['bing'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
@@ -440,7 +503,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'no result' },
                 },
               },
@@ -464,7 +527,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州天气","searchEngines":["google"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_001',
                 thoughtSignature: existingSignature,
@@ -474,7 +537,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'Tool result',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_001',
           },
@@ -492,7 +555,7 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州天气', searchEngines: ['google'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 // Should keep existing thoughtSignature, not add magic signature
                 thoughtSignature: existingSignature,
@@ -504,7 +567,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'Tool result' },
                 },
               },
@@ -514,7 +577,7 @@ describe('google contextBuilders', () => {
         ]);
       });
 
-      it('should add magic signature only after last user message in multi-turn scenario', async () => {
+      it('should add magic signature to all function calls in multi-turn scenario', async () => {
         const messages: OpenAIChatMessage[] = [
           {
             content: 'First question',
@@ -580,7 +643,8 @@ describe('google contextBuilders', () => {
                   args: { query: 'first' },
                   name: 'search',
                 },
-                // No magic signature for this one (before last user message)
+                // Magic signature added to all function calls (cross-provider scenario)
+                thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
             ],
             role: 'model',
@@ -607,7 +671,6 @@ describe('google contextBuilders', () => {
                   args: { query: 'second' },
                   name: 'search',
                 },
-                // Magic signature added (after last user message)
                 thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
             ],
@@ -627,7 +690,7 @@ describe('google contextBuilders', () => {
         ]);
       });
 
-      it('should NOT add magic signature when last message is user text message', async () => {
+      it('should add magic signature when last message is user text (cross-provider scenario)', async () => {
         const messages: OpenAIChatMessage[] = [
           {
             content: '<plugins>Web Browsing plugin available</plugins>',
@@ -644,7 +707,7 @@ describe('google contextBuilders', () => {
               {
                 function: {
                   arguments: '{"query":"杭州天气","searchEngines":["google"]}',
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
                 id: 'call_001',
                 type: 'function',
@@ -653,7 +716,7 @@ describe('google contextBuilders', () => {
           },
           {
             content: 'Tool execution was aborted by user.',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             role: 'tool',
             tool_call_id: 'call_001',
           },
@@ -684,9 +747,11 @@ describe('google contextBuilders', () => {
               {
                 functionCall: {
                   args: { query: '杭州天气', searchEngines: ['google'] },
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                 },
-                // No thoughtSignature should be added when last message is user text
+                // Magic signature added even when last message is user text
+                // (cross-provider scenario: OpenAI → Gemini switch)
+                thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE,
               },
             ],
             role: 'model',
@@ -695,7 +760,7 @@ describe('google contextBuilders', () => {
             parts: [
               {
                 functionResponse: {
-                  name: 'lobe-web-browsing____search____builtin',
+                  name: 'lobe-web-browsing____search',
                   response: { result: 'Tool execution was aborted by user.' },
                 },
               },
@@ -1303,7 +1368,7 @@ describe('google contextBuilders', () => {
         {
           function: {
             description: 'Search the web',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             parameters: {
               properties: { query: { type: 'string' } },
               required: ['query'],
@@ -1327,7 +1392,7 @@ describe('google contextBuilders', () => {
         {
           function: {
             description: 'Search the web (duplicate)',
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             parameters: {
               properties: { query: { type: 'string' } },
               required: ['query'],
@@ -1342,9 +1407,7 @@ describe('google contextBuilders', () => {
 
       expect(googleTools).toHaveLength(1);
       expect(googleTools![0].functionDeclarations).toHaveLength(2);
-      expect(googleTools![0].functionDeclarations![0].name).toBe(
-        'lobe-web-browsing____search____builtin',
-      );
+      expect(googleTools![0].functionDeclarations![0].name).toBe('lobe-web-browsing____search');
       expect(googleTools![0].functionDeclarations![0].description).toBe('Search the web');
       expect(googleTools![0].functionDeclarations![1].name).toBe('get_weather');
     });

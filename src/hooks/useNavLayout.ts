@@ -53,6 +53,12 @@ export const useNavLayout = (): NavLayout => {
           url: '/',
         },
         {
+          icon: getRouteById('tasks')!.icon,
+          key: SidebarTabKey.Tasks,
+          title: t('tab.tasks'),
+          url: '/tasks',
+        },
+        {
           icon: getRouteById('page')!.icon,
           key: SidebarTabKey.Pages,
           title: t('tab.pages'),
@@ -65,6 +71,12 @@ export const useNavLayout = (): NavLayout => {
   const bottomMenuItems = useMemo(
     () =>
       [
+        {
+          icon: getRouteById('image')!.icon,
+          key: SidebarTabKey.Image,
+          title: t('tab.generation'),
+          url: '/image',
+        },
         {
           hidden: !showMarket,
           icon: getRouteById('community')!.icon,

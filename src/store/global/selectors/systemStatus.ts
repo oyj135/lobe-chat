@@ -1,5 +1,9 @@
-import { type GlobalState } from '../initialState';
-import { INITIAL_STATUS } from '../initialState';
+import type { GlobalState, ModelDetailPanelExpandedKey } from '../initialState';
+import {
+  DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS,
+  DEFAULT_MODEL_DETAIL_PANEL_EXPANDED_KEYS,
+  INITIAL_STATUS,
+} from '../initialState';
 
 export const systemStatus = (s: GlobalState) => s.status;
 
@@ -20,6 +24,7 @@ const pagePageSize = (s: GlobalState): number => s.status.pagePageSize || 20;
 const taskListViewOptions = (s: GlobalState) =>
   s.status.taskListViewOptions || {
     groupBy: 'status',
+    hideCompleted: true,
     orderBy: 'updatedAt',
     orderCompletedByRecency: true,
     orderDirection: 'asc',
@@ -29,15 +34,33 @@ const taskListViewOptions = (s: GlobalState) =>
 const taskCreateInlineCollapsed = (s: GlobalState): boolean =>
   s.status.taskCreateInlineCollapsed ?? false;
 
+export const DEFAULT_KANBAN_HIDDEN_COLUMNS: string[] = ['done', 'canceled'];
+
+const taskKanbanHiddenColumns = (s: GlobalState): string[] =>
+  s.status.taskKanbanHiddenColumns ?? DEFAULT_KANBAN_HIDDEN_COLUMNS;
+
+const taskKanbanHiddenPanelCollapsed = (s: GlobalState): boolean =>
+  s.status.taskKanbanHiddenPanelCollapsed ?? false;
+
 export const DEFAULT_HIDDEN_SECTIONS: string[] = ['memory'];
 
 const hiddenSidebarSections = (s: GlobalState): string[] =>
   s.status.hiddenSidebarSections ?? DEFAULT_HIDDEN_SECTIONS;
 
+const sidebarExpandedKeys = (s: GlobalState): string[] =>
+  s.status.sidebarExpandedKeys ?? DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS;
+
+/** Sentinel id representing the flex spacer slot. Its position in `sidebarItems`
+ * determines where the sidebar pushes items to the bottom. */
+export const SIDEBAR_SPACER_ID = '__spacer__';
+
 export const DEFAULT_SIDEBAR_ITEMS: string[] = [
+  'tasks',
   'pages',
   'recents',
   'agent',
+  SIDEBAR_SPACER_ID,
+  'image',
   'community',
   'resource',
   'memory',
@@ -46,11 +69,25 @@ export const DEFAULT_SIDEBAR_ITEMS: string[] = [
 /** Items that must stay contiguous in the sidebar list (accordion block). */
 export const SIDEBAR_ACCORDION_KEYS = new Set(['recents', 'agent']);
 
+const DEFAULT_BOTTOM_KEYS = new Set(
+  DEFAULT_SIDEBAR_ITEMS.slice(DEFAULT_SIDEBAR_ITEMS.indexOf(SIDEBAR_SPACER_ID) + 1),
+);
+
+/** Insert the spacer sentinel into `order` if missing — anchored before the first
+ * default "bottom" item (image/community/...), falling back to the end. */
+const ensureSpacer = (order: string[]): string[] => {
+  if (order.includes(SIDEBAR_SPACER_ID)) return order;
+  const insertAt = order.findIndex((k) => DEFAULT_BOTTOM_KEYS.has(k));
+  if (insertAt === -1) return [...order, SIDEBAR_SPACER_ID];
+  return [...order.slice(0, insertAt), SIDEBAR_SPACER_ID, ...order.slice(insertAt)];
+};
+
 /** Append any known keys missing from `order` so new items don't disappear on upgrade. */
 const withAllKnownKeys = (order: string[]): string[] => {
   const present = new Set(order);
-  const missing = DEFAULT_SIDEBAR_ITEMS.filter((k) => !present.has(k));
-  return missing.length === 0 ? order : [...order, ...missing];
+  const missing = DEFAULT_SIDEBAR_ITEMS.filter((k) => k !== SIDEBAR_SPACER_ID && !present.has(k));
+  const withMissing = missing.length === 0 ? order : [...order, ...missing];
+  return ensureSpacer(withMissing);
 };
 
 const accordionIndices = (items: string[]): number[] => {
@@ -154,14 +191,20 @@ const sidebarItems = (s: GlobalState): string[] => {
 const showSystemRole = (s: GlobalState) => s.status.showSystemRole;
 const mobileShowTopic = (s: GlobalState) => s.status.mobileShowTopic;
 const mobileShowPortal = (s: GlobalState) => s.status.mobileShowPortal;
+const showAgentBuilderPanel = (s: GlobalState) =>
+  !s.status.zenMode && s.status.showAgentBuilderPanel;
 const showRightPanel = (s: GlobalState) => !s.status.zenMode && s.status.showRightPanel;
 const showLeftPanel = (s: GlobalState) => !s.status.zenMode && s.status.showLeftPanel;
+const showPageAgentPanel = (s: GlobalState) => !s.status.zenMode && s.status.showPageAgentPanel;
+const showTaskAgentPanel = (s: GlobalState) => !s.status.zenMode && s.status.showTaskAgentPanel;
 const showFilePanel = (s: GlobalState) => s.status.showFilePanel;
 const showImagePanel = (s: GlobalState) => s.status.showImagePanel;
 const showImageTopicPanel = (s: GlobalState) => s.status.showImageTopicPanel;
 const hidePWAInstaller = (s: GlobalState) => s.status.hidePWAInstaller;
 const isShowCredit = (s: GlobalState) => s.status.isShowCredit;
 const language = (s: GlobalState) => s.status.language || 'auto';
+const modelDetailPanelExpandedKeys = (s: GlobalState): ModelDetailPanelExpandedKey[] =>
+  s.status.modelDetailPanelExpandedKeys ?? [...DEFAULT_MODEL_DETAIL_PANEL_EXPANDED_KEYS];
 const modelSwitchPanelGroupMode = (s: GlobalState) =>
   s.status.modelSwitchPanelGroupMode || 'byProvider';
 const modelSwitchPanelWidth = (s: GlobalState) => s.status.modelSwitchPanelWidth || 460;
@@ -216,6 +259,8 @@ const isBannerDismissed =
 const tokenDisplayFormatShort = (s: GlobalState) =>
   s.status.tokenDisplayFormatShort !== undefined ? s.status.tokenDisplayFormatShort : true;
 
+const homeSelectedAgentId = (s: GlobalState) => s.status.homeSelectedAgentId;
+
 export const systemStatusSelectors = {
   agentBuilderPanelWidth,
   agentPageSize,
@@ -228,6 +273,7 @@ export const systemStatusSelectors = {
   groupAgentBuilderPanelWidth,
   hiddenSidebarSections,
   hidePWAInstaller,
+  homeSelectedAgentId,
   imagePanelWidth,
   imageTopicViewMode,
   imageTopicPanelWidth,
@@ -240,6 +286,7 @@ export const systemStatusSelectors = {
   leftPanelWidth,
   mobileShowPortal,
   mobileShowTopic,
+  modelDetailPanelExpandedKeys,
   modelSwitchPanelGroupMode,
   modelSwitchPanelWidth,
   pageAgentPanelWidth,
@@ -247,16 +294,22 @@ export const systemStatusSelectors = {
   portalWidth,
   recentPageSize,
   taskCreateInlineCollapsed,
+  taskKanbanHiddenColumns,
+  taskKanbanHiddenPanelCollapsed,
   taskListViewOptions,
+  sidebarExpandedKeys,
   sidebarItems,
   sessionGroupKeys,
+  showAgentBuilderPanel,
   showChatHeader,
   showFilePanel,
   showImagePanel,
   showImageTopicPanel,
   showLeftPanel,
+  showPageAgentPanel,
   showRightPanel,
   showSystemRole,
+  showTaskAgentPanel,
   showVideoPanel,
   showVideoTopicPanel,
   systemStatus,

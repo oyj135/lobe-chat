@@ -700,6 +700,76 @@
       "when": 1776674965365,
       "tag": "0099_topic_status_tasks_automation_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1777552567945,
+      "tag": "0100_add_metadata_and_trigger_to_briefs",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1778164638645,
+      "tag": "0101_add_messenger_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1778602304603,
+      "tag": "0102_add_agent_operations_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1779464293586,
+      "tag": "0103_add_llm_tracing_and_eval_experiments",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1779966336116,
+      "tag": "0104_add_devices_connectors_push_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1780497229863,
+      "tag": "0105_add_usage_agent_share_workspace",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1780508742730,
+      "tag": "0106_add_workspace_id_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1780557205766,
+      "tag": "0107_add_workspace_id_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1780563957134,
+      "tag": "0108_add_workspace_id_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1780571940776,
+      "tag": "0109_migrate_unique_constraints",
+      "breakpoints": true
     }
   ],
   "version": "6"

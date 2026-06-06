@@ -1,22 +1,24 @@
 import type { TaskStatus } from '@lobechat/types';
-import { Icon, Tooltip } from '@lobehub/ui';
-import { Dropdown, type MenuProps } from 'antd';
+import { type DropdownItem, DropdownMenu, Icon, type MenuInfo, Tooltip } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import type { LucideIcon } from 'lucide-react';
 import {
   CircleCheck,
   CircleDashed,
   CircleDot,
-  CirclePause,
   CircleSlash,
   CircleX,
+  Clock,
+  HandIcon,
   Loader2Icon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useTaskStore } from '@/store/task';
+
+import { renderMenuExtra } from './menuExtra';
 
 interface StatusMeta {
   color: string;
@@ -25,7 +27,7 @@ interface StatusMeta {
   labelKey: string;
 }
 
-const STATUS_META: Record<TaskStatus, StatusMeta> = {
+export const STATUS_META: Record<TaskStatus, StatusMeta> = {
   backlog: {
     color: cssVar.colorTextQuaternary,
     icon: CircleDashed,
@@ -51,20 +53,31 @@ const STATUS_META: Record<TaskStatus, StatusMeta> = {
     labelKey: 'status.failed',
   },
   paused: {
-    color: cssVar.colorWarning,
-    icon: CirclePause,
-    label: 'Paused',
+    color: cssVar.colorInfo,
+    icon: HandIcon,
+    label: 'Pending review',
     labelKey: 'status.paused',
   },
   running: {
-    color: cssVar.colorInfo,
+    color: cssVar.colorWarning,
     icon: CircleDot,
     label: 'Running',
     labelKey: 'status.running',
   },
+  scheduled: {
+    color: cssVar.colorWarning,
+    icon: Clock,
+    label: 'Scheduled',
+    labelKey: 'status.scheduled',
+  },
 };
 
-const USER_SELECTABLE_STATUSES: TaskStatus[] = ['backlog', 'completed', 'canceled'];
+export const USER_SELECTABLE_STATUSES: TaskStatus[] = [
+  'backlog',
+  'paused',
+  'completed',
+  'canceled',
+];
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   trigger: css`
@@ -91,6 +104,7 @@ interface TaskStatusTagProps {
 const TaskStatusTag = memo<TaskStatusTagProps>(
   ({ children, disableDropdown, onChange, size = 16, status, taskIdentifier }) => {
     const [loading, setLoading] = useState(false);
+    const [open, setOpen] = useState(false);
     const { t } = useTranslation('chat');
     const updateTaskStatus = useTaskStore((s) => s.updateTaskStatus);
 
@@ -116,21 +130,42 @@ const TaskStatusTag = memo<TaskStatusTagProps>(
       [displayStatus, onChange, taskIdentifier, updateTaskStatus],
     );
 
-    const menuItems = useMemo<MenuProps['items']>(
+    const handleStatusChangeRef = useRef(handleStatusChange);
+    handleStatusChangeRef.current = handleStatusChange;
+
+    useEffect(() => {
+      if (!open) return;
+      const onKeyDown = (event: KeyboardEvent) => {
+        const num = Number.parseInt(event.key, 10);
+        if (Number.isNaN(num)) return;
+        const idx = num - 1;
+        if (idx < 0 || idx >= USER_SELECTABLE_STATUSES.length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void handleStatusChangeRef.current(USER_SELECTABLE_STATUSES[idx]);
+        setOpen(false);
+      };
+      document.addEventListener('keydown', onKeyDown, true);
+      return () => document.removeEventListener('keydown', onKeyDown, true);
+    }, [open]);
+
+    const menuItems = useMemo<DropdownItem[]>(
       () =>
-        USER_SELECTABLE_STATUSES.map((key) => {
+        USER_SELECTABLE_STATUSES.map((key, index) => {
           const statusMeta = STATUS_META[key];
+          const isCurrent = key === displayStatus;
           return {
+            extra: renderMenuExtra(String(index + 1), isCurrent),
             icon: <Icon color={statusMeta.color} icon={statusMeta.icon} size={16} />,
             key,
             label: t(`taskDetail.${statusMeta.labelKey}`, { defaultValue: statusMeta.label }),
-            onClick: ({ domEvent }) => {
+            onClick: ({ domEvent }: MenuInfo) => {
               domEvent.stopPropagation();
               void handleStatusChange(key);
             },
           };
         }),
-      [handleStatusChange, t],
+      [displayStatus, handleStatusChange, t],
     );
 
     const triggerNode =
@@ -148,15 +183,9 @@ const TaskStatusTag = memo<TaskStatusTagProps>(
     if (disableDropdown) return <>{triggerNode}</>;
 
     return (
-      <Dropdown
-        trigger={['click']}
-        menu={{
-          items: menuItems,
-          selectedKeys: [displayStatus],
-        }}
-      >
+      <DropdownMenu items={menuItems} open={open} onOpenChange={setOpen}>
         {triggerNode}
-      </Dropdown>
+      </DropdownMenu>
     );
   },
 );

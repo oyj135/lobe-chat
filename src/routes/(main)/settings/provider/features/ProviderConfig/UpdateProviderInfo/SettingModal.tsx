@@ -1,6 +1,7 @@
 import { ProviderIcon } from '@lobehub/icons';
 import { type FormItemProps } from '@lobehub/ui';
 import { Button, Flexbox, FormModal, Icon, Input, Select, TextArea } from '@lobehub/ui';
+import { confirmModal } from '@lobehub/ui/base-ui';
 import { App } from 'antd';
 import { BrainIcon } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -11,6 +12,7 @@ import { useAiInfraStore } from '@/store/aiInfra/store';
 import { type AiProviderDetailItem, type UpdateAiProviderParams } from '@/types/aiProvider';
 
 import { CUSTOM_PROVIDER_SDK_OPTIONS } from '../../customProviderSdkOptions';
+import { isResponsesApiSupportedSdkType, normalizeProviderSettings } from '../../providerSettings';
 
 interface CreateNewProviderProps {
   id: string;
@@ -27,14 +29,34 @@ const CreateNewProvider = memo<CreateNewProviderProps>(({ onClose, open, initial
     s.deleteAiProvider,
   ]);
 
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
   const navigate = useNavigate();
 
   const onFinish = async (values: UpdateAiProviderParams) => {
     setLoading(true);
 
     try {
-      await updateAiProvider(id, values);
+      const finalValues: UpdateAiProviderParams = {
+        ...values,
+        settings: normalizeProviderSettings({
+          nextSettings: values.settings,
+          previousSettings: initialValues.settings,
+        }) as UpdateAiProviderParams['settings'],
+      };
+
+      const nextSdkType = finalValues.settings?.sdkType;
+      if (nextSdkType && !isResponsesApiSupportedSdkType(nextSdkType)) {
+        const previousConfig = (initialValues as { config?: UpdateAiProviderParams['config'] })
+          .config;
+
+        finalValues.config = {
+          ...previousConfig,
+          ...finalValues.config,
+          enableResponseApi: false,
+        };
+      }
+
+      await updateAiProvider(id, finalValues);
       setLoading(false);
       message.success(t('updateAiProvider.updateSuccess'));
       onClose?.();
@@ -119,7 +141,7 @@ const CreateNewProvider = memo<CreateNewProviderProps>(({ onClose, open, initial
             disabled={loading}
             type={'primary'}
             onClick={() => {
-              modal.confirm({
+              confirmModal({
                 okButtonProps: {
                   danger: true,
                 },

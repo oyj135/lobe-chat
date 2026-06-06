@@ -13,6 +13,7 @@ export enum PortalViewType {
   FilePreview = 'filePreview',
   GroupThread = 'groupThread',
   Home = 'home',
+  LocalFile = 'localFile',
   MessageDetail = 'messageDetail',
   Notebook = 'notebook',
   Thread = 'thread',
@@ -28,9 +29,10 @@ export interface PortalFile {
 export type PortalViewData =
   | { type: PortalViewType.Home }
   | { artifact: PortalArtifact; type: PortalViewType.Artifact }
-  | { documentId: string; type: PortalViewType.Document }
+  | { agentDocumentId?: string; documentId: string; type: PortalViewType.Document }
   | { type: PortalViewType.Notebook }
   | { file: PortalFile; type: PortalViewType.FilePreview }
+  | { type: PortalViewType.LocalFile }
   | { messageId: string; type: PortalViewType.MessageDetail }
   | { identifier: string; messageId: string; type: PortalViewType.ToolUI }
   | { startMessageId?: string; threadId?: string; type: PortalViewType.Thread }
@@ -39,8 +41,16 @@ export type PortalViewData =
 // ============== Portal State ==============
 
 export interface ChatPortalState {
+  /** Path of the currently active tab; undefined when no tabs open. */
+  activeLocalFilePath?: string;
+
+  /** Unsaved edit buffers keyed by file path. Presence implies the file is dirty. */
+  dirtyLocalFileContents: Record<string, string>;
+
   // Legacy fields (kept for backward compatibility during migration)
   // TODO: Remove after Phase 3 migration complete
+  /** Open file tabs in the LocalFile portal. */
+  openLocalFiles: Array<{ filePath: string; workingDirectory: string }>;
   /** @deprecated Use portalStack instead */
   portalArtifact?: PortalArtifact;
   portalArtifactDisplayMode: ArtifactDisplayMode;
@@ -62,6 +72,8 @@ export interface ChatPortalState {
 }
 
 export const initialChatPortalState: ChatPortalState = {
+  dirtyLocalFileContents: {},
+  openLocalFiles: [],
   portalArtifactDisplayMode: ArtifactDisplayMode.Preview,
   portalStack: [],
   showPortal: false,

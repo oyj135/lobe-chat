@@ -1,24 +1,29 @@
 import { memo } from 'react';
 
 import RightPanel from '@/features/RightPanel';
+import { useGlobalStore } from '@/store/global';
+import { systemStatusSelectors } from '@/store/global/selectors';
 
 import Conversation from './Conversation';
+import { TaskAgentProvider } from './TaskAgentProvider';
 
-/**
- * Tasks page right-side chat panel.
- *
- * Holds its own `activeTopicId` in `useTaskChatStore` so switching a task
- * topic here does not mutate the main chat's `activeTopicId`. Messages are
- * still read from `useChatStore.dbMessagesMap` via a distinct `messageMapKey`
- * derived from the isolated topic id.
- *
- * The parent `_layout` sets `scenarioEnabledToolIds` on the chat store so
- * `lobe-task` is available for every LLM step here.
- */
 const AgentTaskManager = memo(() => {
+  const [expand, toggleTaskAgentPanel] = useGlobalStore((s) => [
+    systemStatusSelectors.showTaskAgentPanel(s),
+    s.toggleTaskAgentPanel,
+  ]);
+
   return (
-    <RightPanel defaultWidth={420} maxWidth={720} minWidth={320}>
-      <Conversation />
+    <RightPanel
+      defaultWidth={420}
+      expand={expand}
+      maxWidth={720}
+      minWidth={320}
+      onExpandChange={(next) => toggleTaskAgentPanel(next)}
+    >
+      <TaskAgentProvider>
+        <Conversation />
+      </TaskAgentProvider>
     </RightPanel>
   );
 });

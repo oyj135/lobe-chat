@@ -1,10 +1,9 @@
 import type { IconType } from '@lobehub/icons';
-import { Icon, Tooltip } from '@lobehub/ui';
-import { Dropdown, type MenuProps } from 'antd';
+import { type DropdownItem, DropdownMenu, Icon, type MenuInfo, Tooltip } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { Loader2Icon } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useTaskStore } from '@/store/task';
@@ -14,20 +13,24 @@ import PriorityLowIcon from './icons/PriorityLowIcon';
 import PriorityMediumIcon from './icons/PriorityMediumIcon';
 import PriorityNoneIcon from './icons/PriorityNoneIcon';
 import PriorityUrgentIcon from './icons/PriorityUrgentIcon';
+import { renderMenuExtra } from './menuExtra';
 
 interface PriorityMeta {
   icon: IconType;
+  label: string;
   labelKey: string;
   level: number;
 }
 
-const PRIORITY_META: Record<number, PriorityMeta> = {
-  0: { icon: PriorityNoneIcon, labelKey: 'priority.none', level: 0 },
-  1: { icon: PriorityUrgentIcon, labelKey: 'priority.urgent', level: 1 },
-  2: { icon: PriorityHighIcon, labelKey: 'priority.high', level: 2 },
-  3: { icon: PriorityMediumIcon, labelKey: 'priority.normal', level: 3 },
-  4: { icon: PriorityLowIcon, labelKey: 'priority.low', level: 4 },
+export const PRIORITY_META: Record<number, PriorityMeta> = {
+  0: { icon: PriorityNoneIcon, label: 'No priority', labelKey: 'priority.none', level: 0 },
+  1: { icon: PriorityUrgentIcon, label: 'Urgent', labelKey: 'priority.urgent', level: 1 },
+  2: { icon: PriorityHighIcon, label: 'High', labelKey: 'priority.high', level: 2 },
+  3: { icon: PriorityMediumIcon, label: 'Normal', labelKey: 'priority.normal', level: 3 },
+  4: { icon: PriorityLowIcon, label: 'Low', labelKey: 'priority.low', level: 4 },
 };
+
+const PRIORITY_LEVELS = [0, 1, 2, 3, 4];
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   trigger: css`
@@ -64,15 +67,17 @@ interface TaskPriorityTagProps {
 const TaskPriorityTag = memo<TaskPriorityTagProps>(
   ({ children, disableDropdown, onChange, size = 16, priority, taskIdentifier }) => {
     const [loading, setLoading] = useState(false);
+    const [open, setOpen] = useState(false);
     const { t } = useTranslation('chat');
     const updateTask = useTaskStore((s) => s.updateTask);
     const refreshTaskList = useTaskStore((s) => s.refreshTaskList);
 
-    const meta = PRIORITY_META[priority ?? 0] ?? PRIORITY_META[0];
+    const currentLevel = priority ?? 0;
+    const meta = PRIORITY_META[currentLevel] ?? PRIORITY_META[0];
 
     const handlePriorityChange = useCallback(
       async (nextPriority: number) => {
-        if (nextPriority === (priority ?? 0)) return;
+        if (nextPriority === currentLevel) return;
         if (onChange) {
           onChange(nextPriority);
           return;
@@ -83,42 +88,63 @@ const TaskPriorityTag = memo<TaskPriorityTagProps>(
         await refreshTaskList();
         setLoading(false);
       },
-      [onChange, priority, refreshTaskList, taskIdentifier, updateTask],
+      [currentLevel, onChange, refreshTaskList, taskIdentifier, updateTask],
     );
 
-    const menuItems = useMemo<MenuProps['items']>(
+    const handlePriorityChangeRef = useRef(handlePriorityChange);
+    handlePriorityChangeRef.current = handlePriorityChange;
+
+    useEffect(() => {
+      if (!open) return;
+      const onKeyDown = (event: KeyboardEvent) => {
+        const num = Number.parseInt(event.key, 10);
+        if (Number.isNaN(num)) return;
+        const idx = num - 1;
+        if (idx < 0 || idx >= PRIORITY_LEVELS.length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void handlePriorityChangeRef.current(PRIORITY_LEVELS[idx]);
+        setOpen(false);
+      };
+      document.addEventListener('keydown', onKeyDown, true);
+      return () => document.removeEventListener('keydown', onKeyDown, true);
+    }, [open]);
+
+    const menuItems = useMemo<DropdownItem[]>(
       () =>
-        Object.entries(PRIORITY_META).map(([key, value]) => {
+        Object.entries(PRIORITY_META).map(([key, value], index) => {
           const level = Number(key);
           const IconRender = value.icon;
           const isUrgentLevel = value.level === 1;
+          const isCurrent = level === currentLevel;
           return {
+            extra: renderMenuExtra(String(index + 1), isCurrent),
             icon: (
               <IconRender
-                color={isUrgentLevel ? cssVar.orange : cssVar.colorTextDescription}
+                color={isUrgentLevel ? cssVar.orange : cssVar.colorTextSecondary}
                 size={16}
               />
             ),
             key,
-            label: t(`taskDetail.${value.labelKey}`, { defaultValue: '' }),
-            onClick: ({ domEvent }) => {
+            label: t(`taskDetail.${value.labelKey}` as never, { defaultValue: value.label }),
+            onClick: ({ domEvent }: MenuInfo) => {
               domEvent.stopPropagation();
               void handlePriorityChange(level);
             },
           };
         }),
-      [handlePriorityChange, t],
+      [currentLevel, handlePriorityChange, t],
     );
 
     const IconRender = meta.icon;
-    const isUrgent = priority === 1;
+    const isUrgent = currentLevel === 1;
 
     const triggerNode = children ? (
       children
     ) : loading ? (
       <Icon spin color={cssVar.colorTextDescription} icon={Loader2Icon} size={size} />
     ) : (
-      <Tooltip title={t(`taskDetail.${meta.labelKey}`, { defaultValue: '' })}>
+      <Tooltip title={t(`taskDetail.${meta.labelKey}` as never, { defaultValue: meta.label })}>
         <span
           className={isUrgent ? styles.triggerUrgent : styles.trigger}
           onClick={(e) => e.stopPropagation()}
@@ -131,15 +157,9 @@ const TaskPriorityTag = memo<TaskPriorityTagProps>(
     if (disableDropdown) return <>{triggerNode}</>;
 
     return (
-      <Dropdown
-        trigger={['click']}
-        menu={{
-          items: menuItems,
-          selectedKeys: [String(priority ?? 0)],
-        }}
-      >
+      <DropdownMenu items={menuItems} open={open} onOpenChange={setOpen}>
         {triggerNode}
-      </Dropdown>
+      </DropdownMenu>
     );
   },
 );

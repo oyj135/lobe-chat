@@ -8,11 +8,17 @@ export type TaskOrderDirection = 'asc' | 'desc';
 
 export interface TaskListViewOptions {
   groupBy: TaskGroupBy;
+  hideCompleted: boolean;
   orderBy: TaskOrderBy;
   orderCompletedByRecency: boolean;
   orderDirection: TaskOrderDirection;
   subGroupBy: TaskGroupBy;
 }
+
+export const HIDDEN_WHEN_COMPLETED_STATUSES: ReadonlyArray<NonNullable<TaskGroupMeta['status']>> = [
+  'completed',
+  'canceled',
+];
 
 export interface TaskGroupMeta {
   assigneeId?: string;
@@ -25,6 +31,7 @@ export interface TaskGroupMeta {
 
 export const DEFAULT_TASK_LIST_VIEW_OPTIONS: TaskListViewOptions = {
   groupBy: 'status',
+  hideCompleted: true,
   orderBy: 'updatedAt',
   orderCompletedByRecency: true,
   orderDirection: 'asc',
@@ -55,6 +62,10 @@ export const normalizeTaskListViewOptions = (
 
   return {
     groupBy,
+    hideCompleted:
+      typeof next.hideCompleted === 'boolean'
+        ? next.hideCompleted
+        : DEFAULT_TASK_LIST_VIEW_OPTIONS.hideCompleted,
     orderBy: TASK_ORDER_BY_SET.has(next.orderBy as TaskOrderBy)
       ? (next.orderBy as TaskOrderBy)
       : DEFAULT_TASK_LIST_VIEW_OPTIONS.orderBy,
@@ -78,11 +89,11 @@ const PRIORITY_RANK_MAP: Record<number, number> = {
 };
 
 const STATUS_GROUP_RANK_MAP: Record<NonNullable<TaskGroupMeta['status']>, number> = {
-  backlog: 0,
-  running: 1,
-  paused: 2,
-  completed: 3,
-  failed: 4,
+  paused: 0,
+  failed: 1,
+  running: 2,
+  backlog: 3,
+  completed: 4,
   canceled: 5,
 };
 
@@ -93,6 +104,7 @@ const TASK_STATUS_TO_GROUP_MAP: Record<string, NonNullable<TaskGroupMeta['status
   failed: 'failed',
   paused: 'paused',
   running: 'running',
+  scheduled: 'running',
 };
 
 const getPriorityValue = (task: TaskListItem) => task.priority ?? 0;

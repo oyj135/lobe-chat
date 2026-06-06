@@ -3,9 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type StreamEvent } from '@/services/agentRuntime';
 import { useChatStore } from '@/store/chat/store';
+import { notifyDesktopHumanApprovalRequired } from '@/store/chat/utils/desktopNotification';
 
 // Keep zustand mock as it's needed globally
 vi.mock('zustand/traditional');
+vi.mock('@/store/chat/utils/desktopNotification', () => ({
+  notifyDesktopHumanApprovalRequired: vi.fn().mockResolvedValue(undefined),
+}));
 
 // Test Constants
 const TEST_IDS = {
@@ -312,6 +316,200 @@ describe('runAgent actions', () => {
 
         // Should not process event
         expect(result.current.internal_dispatchMessage).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('step_start event', () => {
+      it('should notify desktop when human approval is required', async () => {
+        const { result } = renderHook(() => useChatStore());
+
+        act(() => {
+          useChatStore.setState({
+            operations: {
+              [TEST_IDS.OPERATION_ID]: {
+                abortController: new AbortController(),
+                context: { agentId: 'agent-1', groupId: 'group-1', topicId: 'topic-1' },
+                id: TEST_IDS.OPERATION_ID,
+                metadata: {
+                  lastEventId: '0',
+                  startTime: Date.now(),
+                  stepCount: 0,
+                },
+                status: 'running',
+                type: 'groupAgentGenerate',
+              },
+            },
+          });
+        });
+
+        const context = createStreamingContext({
+          assistantId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+        });
+
+        const event: StreamEvent = {
+          type: 'step_start',
+          timestamp: Date.now(),
+          operationId: TEST_IDS.OPERATION_ID,
+          data: {
+            pendingToolsCalling: [{ id: 'tool-1' }],
+            phase: 'human_approval',
+            requiresApproval: true,
+          },
+        };
+
+        await act(async () => {
+          await result.current.internal_handleAgentStreamEvent(
+            TEST_IDS.OPERATION_ID,
+            event,
+            context,
+          );
+        });
+
+        expect(result.current.updateOperationMetadata).toHaveBeenCalledWith(TEST_IDS.OPERATION_ID, {
+          needsHumanInput: true,
+          pendingApproval: [{ id: 'tool-1' }],
+        });
+        expect(notifyDesktopHumanApprovalRequired).toHaveBeenCalledWith(
+          expect.any(Function),
+          expect.objectContaining({
+            agentId: 'agent-1',
+            groupId: 'group-1',
+            topicId: 'topic-1',
+          }),
+        );
+      });
+
+      it('replaces messages from server-pushed uiMessages snapshot (SoT)', async () => {
+        const replaceMessages = vi.fn();
+        act(() => {
+          useChatStore.setState({
+            replaceMessages,
+            operations: {
+              [TEST_IDS.OPERATION_ID]: {
+                abortController: new AbortController(),
+                context: { agentId: 'agent-1', topicId: 'topic-1' },
+                id: TEST_IDS.OPERATION_ID,
+                metadata: { lastEventId: '0', startTime: Date.now(), stepCount: 0 },
+                status: 'running',
+                type: 'groupAgentGenerate',
+              },
+            },
+          });
+        });
+        const { result } = renderHook(() => useChatStore());
+        const context = createStreamingContext({ assistantId: TEST_IDS.ASSISTANT_MESSAGE_ID });
+        const uiMessages = [{ id: 'msg_a', role: 'user' }] as any;
+
+        const event: StreamEvent = {
+          type: 'step_start',
+          timestamp: Date.now(),
+          operationId: TEST_IDS.OPERATION_ID,
+          data: { phase: 'tool_execution', uiMessages },
+        };
+
+        await act(async () => {
+          await result.current.internal_handleAgentStreamEvent(
+            TEST_IDS.OPERATION_ID,
+            event,
+            context,
+          );
+        });
+
+        expect(replaceMessages).toHaveBeenCalledWith(uiMessages, {
+          context: { agentId: 'agent-1', topicId: 'topic-1' },
+        });
+      });
+
+      it('does not call replaceMessages when uiMessages absent on step_start', async () => {
+        const replaceMessages = vi.fn();
+        act(() => {
+          useChatStore.setState({ replaceMessages });
+        });
+        const { result } = renderHook(() => useChatStore());
+        const context = createStreamingContext({ assistantId: TEST_IDS.ASSISTANT_MESSAGE_ID });
+        const event: StreamEvent = {
+          type: 'step_start',
+          timestamp: Date.now(),
+          operationId: TEST_IDS.OPERATION_ID,
+          data: { phase: 'tool_execution' }, // no uiMessages
+        };
+
+        await act(async () => {
+          await result.current.internal_handleAgentStreamEvent(
+            TEST_IDS.OPERATION_ID,
+            event,
+            context,
+          );
+        });
+
+        expect(replaceMessages).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('agent_runtime_end event', () => {
+      it('replaces messages from terminal uiMessages snapshot (final-step SoT)', async () => {
+        const replaceMessages = vi.fn();
+        act(() => {
+          useChatStore.setState({
+            replaceMessages,
+            operations: {
+              [TEST_IDS.OPERATION_ID]: {
+                abortController: new AbortController(),
+                context: { agentId: 'agent-1', topicId: 'topic-1' },
+                id: TEST_IDS.OPERATION_ID,
+                metadata: { lastEventId: '0', startTime: Date.now(), stepCount: 0 },
+                status: 'running',
+                type: 'groupAgentGenerate',
+              },
+            },
+          });
+        });
+        const { result } = renderHook(() => useChatStore());
+        const uiMessages = [{ id: 'msg_final', role: 'assistantGroup' }] as any;
+
+        const event: StreamEvent = {
+          type: 'agent_runtime_end',
+          timestamp: Date.now(),
+          operationId: TEST_IDS.OPERATION_ID,
+          data: { finalState: { status: 'done' }, reason: 'done', uiMessages },
+        };
+
+        await act(async () => {
+          await result.current.internal_handleAgentStreamEvent(
+            TEST_IDS.OPERATION_ID,
+            event,
+            createStreamingContext({ assistantId: TEST_IDS.ASSISTANT_MESSAGE_ID }),
+          );
+        });
+
+        expect(replaceMessages).toHaveBeenCalledWith(uiMessages, {
+          context: { agentId: 'agent-1', topicId: 'topic-1' },
+        });
+      });
+    });
+
+    describe('step_complete event', () => {
+      // The previous DB-refetch on tool_execution was the source of the
+      // assistantGroup-clobber regression — tool results are
+      // now reconciled via the next step_start's uiMessages snapshot.
+      it('does NOT refreshMessages on tool_execution phase', async () => {
+        const { result } = renderHook(() => useChatStore());
+        const event: StreamEvent = {
+          type: 'step_complete',
+          timestamp: Date.now(),
+          operationId: TEST_IDS.OPERATION_ID,
+          data: { executionTime: 10, phase: 'tool_execution', result: { ok: true } },
+        };
+
+        await act(async () => {
+          await result.current.internal_handleAgentStreamEvent(
+            TEST_IDS.OPERATION_ID,
+            event,
+            createStreamingContext({ assistantId: TEST_IDS.ASSISTANT_MESSAGE_ID }),
+          );
+        });
+
+        expect(result.current.refreshMessages).not.toHaveBeenCalled();
       });
     });
   });

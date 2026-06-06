@@ -1,47 +1,74 @@
-import { ActionIcon, type DropdownItem, DropdownMenu, Icon } from '@lobehub/ui';
+import { ActionIcon, copyToClipboard, type DropdownItem, DropdownMenu, Icon } from '@lobehub/ui';
+import { confirmModal } from '@lobehub/ui/base-ui';
 import { App } from 'antd';
-import { MoreHorizontal, Trash } from 'lucide-react';
-import { memo, useMemo } from 'react';
+import { CopyIcon, LinkIcon, MoreHorizontal, Trash } from 'lucide-react';
+import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
+import { useAppOrigin } from '@/hooks/useAppOrigin';
 import { useTaskStore } from '@/store/task';
 import { taskDetailSelectors } from '@/store/task/selectors';
 
+import { taskDetailPath } from '../shared/taskDetailPath';
+
 const TaskDetailHeaderActions = memo(() => {
   const { t } = useTranslation(['chat', 'common']);
-  const { modal } = App.useApp();
+  const { message } = App.useApp();
   const navigate = useNavigate();
+  const appOrigin = useAppOrigin();
   const taskId = useTaskStore(taskDetailSelectors.activeTaskId);
-  const agentId = useTaskStore(taskDetailSelectors.activeTaskAgentId);
+  const taskAgentId = useTaskStore(taskDetailSelectors.activeTaskAgentId);
   const deleteTask = useTaskStore((s) => s.deleteTask);
+
+  const triggerDelete = useCallback(() => {
+    if (!taskId) return;
+    confirmModal({
+      content: t('taskDetail.deleteConfirm.content'),
+      okButtonProps: { danger: true },
+      okText: t('taskDetail.deleteConfirm.ok'),
+      onOk: async () => {
+        await deleteTask(taskId);
+        navigate('/tasks');
+      },
+      title: t('taskDetail.deleteConfirm.title'),
+    });
+  }, [taskId, t, deleteTask, navigate]);
 
   const menuItems = useMemo<DropdownItem[]>(() => {
     if (!taskId) return [];
 
+    const taskUrl = `${appOrigin}${taskDetailPath(taskId, taskAgentId ?? undefined)}`;
+
     return [
+      {
+        icon: <Icon icon={CopyIcon} />,
+        key: 'copyId',
+        label: t('taskList.contextMenu.copyId'),
+        onClick: async () => {
+          await copyToClipboard(taskId);
+          message.success(t('taskList.contextMenu.copyIdSuccess'));
+        },
+      },
+      {
+        icon: <Icon icon={LinkIcon} />,
+        key: 'copyLink',
+        label: t('taskList.contextMenu.copyLink'),
+        onClick: async () => {
+          await copyToClipboard(taskUrl);
+          message.success(t('taskList.contextMenu.copyLinkSuccess'));
+        },
+      },
+      { type: 'divider' },
       {
         danger: true,
         icon: <Icon icon={Trash} />,
         key: 'delete',
         label: t('delete', { ns: 'common' }),
-        onClick: () => {
-          modal.confirm({
-            centered: true,
-            content: t('taskDetail.deleteConfirm.content'),
-            okButtonProps: { danger: true },
-            okText: t('taskDetail.deleteConfirm.ok'),
-            onOk: async () => {
-              await deleteTask(taskId);
-              if (agentId) navigate(`/agent/${agentId}/tasks`);
-            },
-            title: t('taskDetail.deleteConfirm.title'),
-            type: 'error',
-          });
-        },
+        onClick: triggerDelete,
       },
     ];
-  }, [taskId, agentId, deleteTask, modal, navigate, t]);
+  }, [taskId, taskAgentId, appOrigin, t, message, triggerDelete]);
 
   if (!taskId) return null;
 

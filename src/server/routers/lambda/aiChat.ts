@@ -1,6 +1,13 @@
-import { type CreateMessageParams, type SendMessageServerResponse } from '@lobechat/types';
+import { randomUUID } from 'node:crypto';
+
+import { getErrorCodeSpec } from '@lobechat/model-runtime';
+import type { CreateMessageParams, SendMessageServerResponse } from '@lobechat/types';
 import { AiSendMessageServerSchema, RequestTrigger, StructureOutputSchema } from '@lobechat/types';
+import { createTimingHelpers, createTimingRequestId } from '@lobechat/utils';
+import { TRPCError } from '@trpc/server';
+import { getStatusKeyFromCode } from '@trpc/server/unstable-core-do-not-import';
 import debug from 'debug';
+import { z } from 'zod';
 
 import { LOADING_FLAT } from '@/const/message';
 import { AgentModel } from '@/database/models/agent';
@@ -9,12 +16,48 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { resolveContext } from '@/server/routers/lambda/_helpers/resolveContext';
 import { AiChatService } from '@/server/services/aiChat';
+import { AiGenerationService } from '@/server/services/aiGeneration';
 import { FileService } from '@/server/services/file';
+import { archiveToolResultIfNeeded } from '@/server/services/toolExecution/archiveToolResult';
 
 const log = debug('lobe-lambda-router:ai-chat');
+const { createPrefixedTimingContext, logTiming, runTimedStage } = createTimingHelpers(
+  'lobe-server:chat:lobehub:timing',
+);
+
+type TRPCErrorCode = ConstructorParameters<typeof TRPCError>[0]['code'];
+type TRPCStatusCode = Parameters<typeof getStatusKeyFromCode>[0];
+
+const getRuntimeErrorType = (error: unknown): string | undefined => {
+  if (!error || typeof error !== 'object') return;
+
+  const errorType = (error as { errorType?: unknown }).errorType;
+  return typeof errorType === 'string' ? errorType : undefined;
+};
+
+const getTRPCErrorCodeFromStatus = (status: number): TRPCErrorCode => {
+  const code = getStatusKeyFromCode(status as TRPCStatusCode) as TRPCErrorCode;
+  if (code !== 'INTERNAL_SERVER_ERROR' || status === 500) return code;
+
+  if (status >= 500) return 'INTERNAL_SERVER_ERROR';
+  if (status >= 400) return 'BAD_REQUEST';
+
+  return 'INTERNAL_SERVER_ERROR';
+};
+
+const createRuntimeTRPCError = (error: unknown): TRPCError | undefined => {
+  const errorType = getRuntimeErrorType(error);
+  const spec = getErrorCodeSpec(errorType);
+  if (!errorType || !spec) return;
+
+  return new TRPCError({
+    cause: error,
+    code: getTRPCErrorCodeFromStatus(spec.httpStatus),
+    message: errorType,
+  });
+};
 
 const aiChatProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -23,6 +66,7 @@ const aiChatProcedure = authedProcedure.use(serverDatabase).use(async (opts) => 
     ctx: {
       agentModel: new AgentModel(ctx.serverDB, ctx.userId),
       aiChatService: new AiChatService(ctx.serverDB, ctx.userId),
+      aiGenerationService: new AiGenerationService(ctx.serverDB, ctx.userId),
       fileService: new FileService(ctx.serverDB, ctx.userId),
       messageModel: new MessageModel(ctx.serverDB, ctx.userId),
       threadModel: new ThreadModel(ctx.serverDB, ctx.userId),
@@ -37,28 +81,57 @@ export const aiChatRouter = router({
     log('messages count: %d', input.messages.length);
     log('schema: %O', input.schema);
 
-    log('initializing model runtime from DB with provider: %s', input.provider);
-    // Read user's provider config from database
-    const modelRuntime = await initModelRuntimeFromDB(ctx.serverDB, ctx.userId, input.provider);
+    // Pre-allocate the tracing row id so we can return it to the client even
+    // though the actual `service.record()` call happens in Next's `after()`
+    // (after the response has been sent). Honour the caller-supplied id when
+    // one was passed via `tracing.tracingId` — the schema already validates
+    // it as UUID, so a malformed value never reaches here.
+    const tracingId = input.tracing?.tracingId ?? randomUUID();
 
-    log('calling generateObject');
-    const result = await modelRuntime.generateObject(
-      {
-        messages: input.messages,
-        model: input.model,
-        schema: input.schema,
-        tools: input.tools,
-      },
-      { metadata: { trigger: RequestTrigger.Chat } },
-    );
+    // Always stamp a trigger on metadata so cross-cutting hooks (timing,
+    // routing) and the tracing registry have a fallback when the caller
+    // forgets to set one. `tracing` carries the structured tracing config
+    // (scenario / promptVersion / schemaName / inputHint / ...).
+    let data: unknown;
+    try {
+      data = await ctx.aiGenerationService.generateObject(
+        {
+          messages: input.messages,
+          model: input.model,
+          provider: input.provider,
+          schema: input.schema,
+          tools: input.tools,
+        },
+        {
+          metadata: { trigger: RequestTrigger.Chat, ...input.metadata },
+          tracing: { ...input.tracing, tracingId },
+        },
+      );
+    } catch (error) {
+      const runtimeTRPCError = createRuntimeTRPCError(error);
+      if (runtimeTRPCError) throw runtimeTRPCError;
 
-    log('generateObject completed, result: %O', result);
-    return result;
+      throw error;
+    }
+
+    log('generateObject completed, result: %O', data);
+    return { data, tracingId };
   }),
 
   sendMessageInServer: aiChatProcedure
     .input(AiSendMessageServerSchema)
     .mutation(async ({ input, ctx }) => {
+      const timingContext =
+        input.newAssistantMessage.provider === 'lobehub'
+          ? { requestId: createTimingRequestId(), startedAt: Date.now() }
+          : undefined;
+      logTiming(timingContext, 'lambda.aiChat.sendMessageInServer:start', {
+        hasNewThread: !!input.newThread,
+        hasNewTopic: !!input.newTopic,
+        hasSessionId: !!input.sessionId,
+        hasTopicId: !!input.topicId,
+        preloadCount: input.preloadMessages?.length ?? 0,
+      });
       log('sendMessageInServer called for agentId: %s', input.agentId);
       log(
         'topicId: %s, newTopic: %O, newThread: %O',
@@ -68,7 +141,12 @@ export const aiChatRouter = router({
       );
       let sessionId = input.sessionId;
       if (!sessionId) {
-        const context = await resolveContext(input, ctx.serverDB, ctx.userId);
+        const context = await runTimedStage(
+          timingContext,
+          'lambda.aiChat.resolveContext',
+          () => resolveContext(input, ctx.serverDB, ctx.userId),
+          { hasAgentId: !!input.agentId },
+        );
         if (!!context.sessionId) sessionId = context.sessionId;
       }
 
@@ -77,27 +155,54 @@ export const aiChatRouter = router({
       let createdThreadId: string | undefined;
 
       let isCreateNewTopic = false;
+      let agentTouchUpdatedAtTask: Promise<void> | undefined;
 
       // create topic if there should be a new topic
       if (input.newTopic) {
         log('creating new topic with title: %s', input.newTopic.title);
-        const topicItem = await ctx.topicModel.create({
-          agentId: input.agentId,
-          groupId: input.groupId,
-          messages: input.newTopic.topicMessageIds,
-          metadata: input.newTopic.metadata,
-          sessionId,
-          title: input.newTopic.title,
-          trigger: input.newTopic.trigger,
-        });
+        const topicItem = await runTimedStage(
+          timingContext,
+          'lambda.aiChat.topic.create',
+          () => {
+            const payload = {
+              agentId: input.agentId,
+              groupId: input.groupId,
+              messages: input.newTopic!.topicMessageIds,
+              metadata: input.newTopic!.metadata,
+              sessionId,
+              title: input.newTopic!.title,
+              trigger: input.newTopic!.trigger,
+            };
+            const modelTiming = createPrefixedTimingContext(
+              timingContext,
+              'lambda.aiChat.topic.create',
+            );
+            return modelTiming
+              ? ctx.topicModel.create(payload, undefined, modelTiming)
+              : ctx.topicModel.create(payload);
+          },
+          {
+            messageCount: input.newTopic.topicMessageIds?.length ?? 0,
+            trigger: input.newTopic.trigger,
+          },
+        );
         topicId = topicItem.id;
         isCreateNewTopic = true;
         log('new topic created with id: %s', topicId);
 
         // update agent's updatedAt to reflect new activity
         if (input.agentId) {
-          await ctx.agentModel.touchUpdatedAt(input.agentId);
-          log('agent updatedAt touched for agentId: %s', input.agentId);
+          agentTouchUpdatedAtTask = runTimedStage(
+            timingContext,
+            'lambda.aiChat.agent.touchUpdatedAt',
+            async () => {
+              await ctx.agentModel.touchUpdatedAt(input.agentId!);
+            },
+            { hasAgentId: true },
+          ).catch((error) => {
+            console.error('[aiChat] Failed to touch agent updatedAt:', error);
+          });
+          log('agent updatedAt touch scheduled for agentId: %s', input.agentId);
         }
       }
 
@@ -108,13 +213,19 @@ export const aiChatRouter = router({
           input.newThread.sourceMessageId,
           input.newThread.type,
         );
-        const threadItem = await ctx.threadModel.create({
-          parentThreadId: input.newThread.parentThreadId,
-          sourceMessageId: input.newThread.sourceMessageId,
-          title: input.newThread.title,
-          topicId,
-          type: input.newThread.type,
-        });
+        const threadItem = await runTimedStage(
+          timingContext,
+          'lambda.aiChat.thread.create',
+          () =>
+            ctx.threadModel.create({
+              parentThreadId: input.newThread!.parentThreadId,
+              sourceMessageId: input.newThread!.sourceMessageId,
+              title: input.newThread!.title,
+              topicId,
+              type: input.newThread!.type,
+            }),
+          { threadType: input.newThread.type },
+        );
         if (threadItem) {
           threadId = threadItem.id;
           createdThreadId = threadItem.id;
@@ -127,85 +238,145 @@ export const aiChatRouter = router({
       if (input.preloadMessages?.length) {
         log('creating %d preload messages before user message', input.preloadMessages.length);
 
-        for (const preloadMessage of input.preloadMessages) {
-          const preloadItem = await ctx.messageModel.create({
-            agentId: input.agentId,
-            content: preloadMessage.content,
-            groupId: input.groupId,
-            metadata: preloadMessage.metadata,
-            parentId,
-            plugin: preloadMessage.plugin as CreateMessageParams['plugin'],
-            role: preloadMessage.role,
-            sessionId,
-            threadId,
-            tool_call_id: preloadMessage.tool_call_id,
-            tools: preloadMessage.tools as CreateMessageParams['tools'],
-            topicId,
-          });
+        parentId = await runTimedStage(
+          timingContext,
+          'lambda.aiChat.preloadMessages.create',
+          async () => {
+            let latestParentId = parentId;
+            for (const preloadMessage of input.preloadMessages!) {
+              const payload = {
+                agentId: input.agentId,
+                content: preloadMessage.content,
+                groupId: input.groupId,
+                metadata: preloadMessage.metadata,
+                parentId: latestParentId,
+                plugin: preloadMessage.plugin as CreateMessageParams['plugin'],
+                role: preloadMessage.role,
+                sessionId,
+                threadId,
+                tool_call_id: preloadMessage.tool_call_id,
+                tools: preloadMessage.tools as CreateMessageParams['tools'],
+                topicId,
+              };
+              const modelTiming = createPrefixedTimingContext(
+                timingContext,
+                'lambda.aiChat.preloadMessages.create',
+              );
+              const preloadItem = await (modelTiming
+                ? ctx.messageModel.create(payload, undefined, modelTiming)
+                : ctx.messageModel.create(payload));
 
-          parentId = preloadItem.id;
-        }
+              latestParentId = preloadItem.id;
+            }
+            return latestParentId;
+          },
+          { count: input.preloadMessages.length },
+        );
       }
 
       // create user message
       log('creating user message with content length: %d', input.newUserMessage.content.length);
 
       // Build user message metadata with pageSelections if present
-      const userMessageMetadata = input.newUserMessage.pageSelections?.length
-        ? { pageSelections: input.newUserMessage.pageSelections }
-        : undefined;
+      const userMessageMetadata =
+        input.newUserMessage.metadata || input.newUserMessage.pageSelections?.length
+          ? {
+              ...input.newUserMessage.metadata,
+              ...(input.newUserMessage.pageSelections?.length
+                ? { pageSelections: input.newUserMessage.pageSelections }
+                : undefined),
+            }
+          : undefined;
 
-      const userMessageItem = await ctx.messageModel.create({
-        agentId: input.agentId,
-        content: input.newUserMessage.content,
-        editorData: input.newUserMessage.editorData,
-        files: input.newUserMessage.files,
-        groupId: input.groupId,
-        metadata: userMessageMetadata,
-        parentId,
-        role: 'user',
-        sessionId,
-        threadId,
-        topicId,
-      });
+      const createMessagePairPromise = runTimedStage(
+        timingContext,
+        'lambda.aiChat.messages.createUserAndAssistant',
+        () => {
+          const userMessage = {
+            agentId: input.agentId,
+            content: input.newUserMessage.content,
+            editorData: input.newUserMessage.editorData,
+            files: input.newUserMessage.files,
+            groupId: input.groupId,
+            metadata: userMessageMetadata,
+            parentId,
+            role: 'user',
+            sessionId,
+            threadId,
+            topicId,
+          } satisfies CreateMessageParams;
+          const assistantMessage = {
+            agentId: input.agentId,
+            content: LOADING_FLAT,
+            groupId: input.groupId,
+            metadata: input.newAssistantMessage.metadata,
+            model: input.newAssistantMessage.model,
+            provider: input.newAssistantMessage.provider,
+            role: 'assistant',
+            sessionId,
+            threadId,
+            topicId,
+          } satisfies CreateMessageParams;
+          const modelTiming = createPrefixedTimingContext(
+            timingContext,
+            'lambda.aiChat.messages.createUserAndAssistant',
+          );
+          return ctx.messageModel.createUserAndAssistantMessages(
+            { assistantMessage, userMessage },
+            {
+              ...(modelTiming ? { timing: modelTiming } : {}),
+              touchTopicUpdatedAt: !isCreateNewTopic,
+            },
+          );
+        },
+        {
+          contentLength: input.newUserMessage.content.length,
+          fileCount: input.newUserMessage.files?.length ?? 0,
+          model: input.newAssistantMessage.model,
+          provider: input.newAssistantMessage.provider,
+        },
+      );
+      const { assistantMessage: assistantMessageItem, userMessage: userMessageItem } =
+        agentTouchUpdatedAtTask
+          ? (await Promise.all([createMessagePairPromise, agentTouchUpdatedAtTask]))[0]
+          : await createMessagePairPromise;
 
       const messageId = userMessageItem.id;
       log('user message created with id: %s', messageId);
 
-      // create assistant message
-      log(
-        'creating assistant message with model: %s, provider: %s, metadata: %O',
-        input.newAssistantMessage.model,
-        input.newAssistantMessage.provider,
-        input.newAssistantMessage.metadata,
-      );
-      const assistantMessageItem = await ctx.messageModel.create({
-        agentId: input.agentId,
-        content: LOADING_FLAT,
-        groupId: input.groupId,
-        metadata: input.newAssistantMessage.metadata,
-        model: input.newAssistantMessage.model,
-        parentId: messageId,
-        provider: input.newAssistantMessage.provider,
-        role: 'assistant',
-        sessionId,
-        threadId,
-        topicId,
-      });
       log('assistant message created with id: %s', assistantMessageItem.id);
 
       // retrieve latest messages and topic with
       log('retrieving messages and topics');
-      const { messages, topics } = await ctx.aiChatService.getMessagesAndTopics({
-        agentId: input.agentId,
-        groupId: input.groupId,
-        includeTopic: isCreateNewTopic,
-        sessionId,
-        threadId,
-        topicId,
-      });
+      const { messages, topics } = await runTimedStage(
+        timingContext,
+        'lambda.aiChat.messagesAndTopics.query',
+        () =>
+          ctx.aiChatService.getMessagesAndTopics({
+            agentId: input.agentId,
+            groupId: input.groupId,
+            includeTopic: isCreateNewTopic,
+            sessionId,
+            threadId,
+            topicFilter: input.topicFilter,
+            topicId,
+            topicPageSize: input.topicPageSize,
+            ...(timingContext
+              ? {
+                  timingRequestId: timingContext.requestId,
+                  timingStartedAt: timingContext.startedAt,
+                }
+              : {}),
+          }),
+        { includeTopic: isCreateNewTopic },
+      );
 
       log('retrieved %d messages, %d topics', messages.length, topics?.items?.length ?? 0);
+      logTiming(timingContext, 'lambda.aiChat.sendMessageInServer:done', {
+        isCreateNewTopic,
+        messageCount: messages.length,
+        topicCount: topics?.items?.length ?? 0,
+      });
 
       return {
         assistantMessageId: assistantMessageItem.id,
@@ -216,5 +387,24 @@ export const aiChatRouter = router({
         topics,
         userMessageId: messageId,
       } as SendMessageServerResponse;
+    }),
+
+  archiveToolResult: aiChatProcedure
+    .input(
+      z.object({
+        agentId: z.string().nullish(),
+        content: z.string(),
+        identifier: z.string().optional(),
+        limit: z.number().optional(),
+        toolCallId: z.string(),
+        topicId: z.string(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return archiveToolResultIfNeeded({
+        ...input,
+        serverDB: ctx.serverDB,
+        userId: ctx.userId,
+      });
     }),
 });

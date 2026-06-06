@@ -1,13 +1,18 @@
-import { type ChatToolPayload, type RuntimeStepContext } from '@lobechat/types';
+import {
+  type ChatToolPayload,
+  type RuntimeStepContext,
+  type SubAgentCallbacks,
+} from '@lobechat/types';
 import debug from 'debug';
 
 import { type MCPToolCallResult } from '@/libs/mcp';
-import { truncateToolResult } from '@/server/utils/truncateToolResult';
 import { mcpService } from '@/services/mcp';
 import { messageService } from '@/services/message';
+import { archiveToolResultViaServer } from '@/services/toolResultArchive';
 import { AI_RUNTIME_OPERATION_TYPES } from '@/store/chat/slices/operation';
 import { type ChatStore } from '@/store/chat/store';
 import { useToolStore } from '@/store/tool';
+import { klavisStoreSelectors, lobehubSkillStoreSelectors } from '@/store/tool/selectors';
 import { hasExecutor } from '@/store/tool/slices/builtin/executors';
 import { type StoreSetter } from '@/store/types';
 import { safeParseJSON } from '@/utils/safeParseJSON';
@@ -41,14 +46,33 @@ export class PluginTypesActionImpl {
     payload: ChatToolPayload,
     stepContext?: RuntimeStepContext,
   ): Promise<any> => {
-    // Check if this is a Klavis tool by source field
-    if (payload.source === 'klavis') {
-      return await this.#get().invokeKlavisTypePlugin(id, payload);
+    // When the tool call comes from a DB-stored message (e.g. after humanIntervention approval),
+    // the `source` field is not persisted and arrives as undefined. Fall back to a live store
+    // lookup so Klavis / LobeHub Skill tools still route correctly.
+    let effectiveSource = payload.source;
+    if (!effectiveSource) {
+      const toolStoreState = useToolStore.getState();
+      const klavisTools = klavisStoreSelectors.klavisAsLobeTools(toolStoreState);
+      if (klavisTools.some((t) => t.identifier === payload.identifier)) {
+        effectiveSource = 'klavis';
+      } else {
+        const lobehubSkillTools =
+          lobehubSkillStoreSelectors.lobehubSkillAsLobeTools(toolStoreState);
+        if (lobehubSkillTools.some((t) => t.identifier === payload.identifier)) {
+          effectiveSource = 'lobehubSkill';
+        }
+      }
     }
 
-    // Check if this is a LobeHub Skill tool by source field
-    if (payload.source === 'lobehubSkill') {
-      return await this.#get().invokeLobehubSkillTypePlugin(id, payload);
+    if (effectiveSource === 'klavis') {
+      return await this.#get().invokeKlavisTypePlugin(id, { ...payload, source: effectiveSource });
+    }
+
+    if (effectiveSource === 'lobehubSkill') {
+      return await this.#get().invokeLobehubSkillTypePlugin(id, {
+        ...payload,
+        source: effectiveSource,
+      });
     }
 
     const params = safeParseJSON(payload.arguments);
@@ -63,10 +87,32 @@ export class PluginTypesActionImpl {
       const operation = operationId ? this.#get().operations[operationId] : undefined;
       const context = operationId ? { operationId } : undefined;
 
-      // Get agent ID, group ID, and topic ID from operation context
-      let agentId = operation?.context?.agentId;
-      let groupId = operation?.context?.groupId;
-      const topicId = operation?.context?.topicId;
+      let rootRuntimeOperationId: string | undefined;
+      let rootRuntimeOperationContext = operation?.context;
+      if (operationId) {
+        let currentOp = operation;
+        while (currentOp) {
+          if (AI_RUNTIME_OPERATION_TYPES.includes(currentOp.type)) {
+            rootRuntimeOperationId = currentOp.id;
+            rootRuntimeOperationContext = currentOp.context;
+            break;
+          }
+          // Move up to parent operation
+          const parentId = currentOp.parentOperationId;
+          currentOp = parentId ? this.#get().operations[parentId] : undefined;
+        }
+      }
+
+      // Get agent ID, group ID, topic ID, and page scope from operation context.
+      // Prefer the concrete tool operation; fall back to the runtime root for
+      // legacy operations created before child context inheritance was complete.
+      let agentId = operation?.context?.agentId ?? rootRuntimeOperationContext?.agentId;
+      let groupId = operation?.context?.groupId ?? rootRuntimeOperationContext?.groupId;
+      const documentId = operation?.context?.documentId ?? rootRuntimeOperationContext?.documentId;
+      const scope = operation?.context?.scope ?? rootRuntimeOperationContext?.scope;
+      const viewedTask = operation?.context?.viewedTask ?? rootRuntimeOperationContext?.viewedTask;
+      const taskId = viewedTask?.type === 'detail' ? viewedTask.taskId : undefined;
+      const topicId = operation?.context?.topicId ?? rootRuntimeOperationContext?.topicId;
 
       // For agent-builder tools, inject activeAgentId from store if not in context
       // This is needed because AgentBuilderProvider uses a separate scope for messages
@@ -89,21 +135,28 @@ export class PluginTypesActionImpl {
       // Get group orchestration callbacks if available (for group management tools)
       const groupOrchestration = this.#get().getGroupOrchestrationCallbacks?.();
 
-      // Find root execAgentRuntime operation for registering afterCompletion callbacks
-      // Navigate up the operation tree to find the root runtime operation
-      let rootRuntimeOperationId: string | undefined;
-      if (operationId) {
-        let currentOp = operation;
-        while (currentOp) {
-          if (AI_RUNTIME_OPERATION_TYPES.includes(currentOp.type)) {
-            rootRuntimeOperationId = currentOp.id;
-            break;
+      // Sub-agent runner injected for sub-agent-spawning tools (lobe-agent.callSubAgent).
+      // Runs the sub-agent in an isolated thread using the current client runtime
+      // and resolves with its output, so the tool returns a normal tool result.
+      const subAgentParentOperationId = rootRuntimeOperationId ?? operationId;
+      const subAgent: SubAgentCallbacks = {
+        run: (runParams) => {
+          if (!agentId || !topicId) {
+            return Promise.resolve({
+              error: 'No agent context available for sub-agent execution',
+              result: 'No agent context available for sub-agent execution',
+              success: false,
+              threadId: '',
+            });
           }
-          // Move up to parent operation
-          const parentId = currentOp.parentOperationId;
-          currentOp = parentId ? this.#get().operations[parentId] : undefined;
-        }
-      }
+          return this.#get().runClientSubAgent({
+            ...runParams,
+            agentId,
+            parentOperationId: subAgentParentOperationId,
+            topicId,
+          });
+        },
+      };
 
       // Create registerAfterCompletion function that registers callback to root runtime operation
       const registerAfterCompletion = rootRuntimeOperationId
@@ -125,22 +178,60 @@ export class PluginTypesActionImpl {
       );
 
       // Call Tool Store's invokeBuiltinTool
+      log('[BuiltinToolCall] invoke:start', {
+        agentId,
+        apiName: payload.apiName,
+        documentId,
+        identifier: payload.identifier,
+        messageId: id,
+        operationId,
+        rootRuntimeOperationId,
+        scope,
+        taskId,
+        topicId,
+      });
+
       const result = await useToolStore
         .getState()
         .invokeBuiltinTool(payload.identifier, payload.apiName, params, {
           agentId,
+          documentId,
           groupId,
           groupOrchestration,
           messageId: id,
           operationId,
           registerAfterCompletion,
+          scope,
           signal: operation?.abortController?.signal,
+          sourceMessageId:
+            operation?.context?.sourceMessageId ??
+            rootRuntimeOperationContext?.sourceMessageId ??
+            rootRuntimeOperationContext?.messageId,
           stepContext,
+          subAgent,
+          taskId,
+          toolCallId: payload.id,
           topicId,
         });
 
+      log('[BuiltinToolCall] invoke:end', {
+        apiName: payload.apiName,
+        errorType: result.error?.type,
+        identifier: payload.identifier,
+        messageId: id,
+        operationId,
+        success: result.success,
+      });
+
       // When error exists but content is empty, backfill error message into content
-      const content = result.content || result.error?.message || '';
+      const rawContent = result.content || result.error?.message || '';
+      const content = await archiveToolResultViaServer({
+        agentId,
+        content: rawContent,
+        identifier: payload.identifier,
+        toolCallId: payload.id,
+        topicId,
+      });
 
       // Use optimisticUpdateToolMessage to batch update content, state, error, metadata
       await optimisticUpdateToolMessage(
@@ -259,8 +350,15 @@ export class PluginTypesActionImpl {
 
     if (!data) return;
 
-    // Truncate content to prevent context overflow
-    const truncatedContent = truncateToolResult(data.content || (data.error as any)?.message || '');
+    // Archive oversized content (or truncate if archive context unavailable)
+    const rawContent = data.content || (data.error as any)?.message || '';
+    const truncatedContent = await archiveToolResultViaServer({
+      agentId: message?.agentId,
+      content: rawContent,
+      identifier: payload.identifier,
+      toolCallId: payload.id,
+      topicId: message?.topicId,
+    });
 
     // operationId already declared above, reuse it
     const context = operationId ? { operationId } : undefined;
@@ -334,7 +432,14 @@ export class PluginTypesActionImpl {
     // If error occurred, exit
     if (!data) return;
 
-    const remoteContent = data.content || (data.error as any)?.message || '';
+    const rawContent = data.content || (data.error as any)?.message || '';
+    const remoteContent = await archiveToolResultViaServer({
+      agentId: message?.agentId,
+      content: rawContent,
+      identifier: payload.identifier,
+      toolCallId: payload.id,
+      topicId: message?.topicId,
+    });
     const context = operationId ? { operationId } : undefined;
 
     // Use optimisticUpdateToolMessage to update content and state/error in a single call

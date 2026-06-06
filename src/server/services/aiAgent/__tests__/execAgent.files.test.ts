@@ -108,6 +108,11 @@ vi.mock('@/server/services/klavis', () => ({
 
 vi.mock('@/server/services/file', () => ({
   FileService: vi.fn().mockImplementation(() => ({
+    getFileAccessUrl: vi
+      .fn()
+      .mockImplementation((file: { url: string }) =>
+        Promise.resolve(`https://s3.example.com/${file.url}`),
+      ),
     getFullFileUrl: vi
       .fn()
       .mockImplementation((key: string) => Promise.resolve(`https://s3.example.com/${key}`)),
@@ -132,11 +137,15 @@ vi.mock('@/server/modules/Mecha', () => ({
   serverMessagesEngine: vi.fn().mockResolvedValue([{ content: 'test', role: 'user' }]),
 }));
 
-vi.mock('@/server/services/toolExecution/deviceProxy', () => ({
-  deviceProxy: {
+vi.mock('@/server/services/toolExecution/deviceGateway', () => ({
+  deviceGateway: {
     isConfigured: false,
     queryDeviceList: vi.fn().mockResolvedValue([]),
   },
+}));
+
+vi.mock('@/server/modules/ModelRuntime', () => ({
+  initModelRuntimeFromDB: vi.fn(),
 }));
 
 vi.mock('model-bank', async (importOriginal) => {
@@ -239,6 +248,7 @@ describe('AiAgentService.execAgent - file upload handling', () => {
 
       expect(lastMessage).toMatchObject({
         content: 'Describe this screenshot',
+        id: 'msg-1',
         role: 'user',
       });
       expect(lastMessage.imageList).toEqual([

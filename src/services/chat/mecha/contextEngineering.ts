@@ -8,15 +8,15 @@ import {
   generateKlavisServicesList,
   type KlavisServiceSummary,
 } from '@lobechat/builtin-tool-creds';
-import {
-  CronIdentifier,
-  type CronJobSummaryForContext,
-  generateCronJobsList,
-} from '@lobechat/builtin-tool-cron';
 import { GroupAgentBuilderIdentifier } from '@lobechat/builtin-tool-group-agent-builder';
-import { GTDIdentifier } from '@lobechat/builtin-tool-gtd';
+import { LobeAgentIdentifier } from '@lobechat/builtin-tool-lobe-agent';
+import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
 import { WebOnboardingIdentifier } from '@lobechat/builtin-tool-web-onboarding';
-import { isDesktop, KLAVIS_SERVER_TYPES, LOBEHUB_SKILL_PROVIDERS } from '@lobechat/const';
+import {
+  AGENT_PLAN_FILE_TYPE,
+  KLAVIS_SERVER_TYPES,
+  LOBEHUB_SKILL_PROVIDERS,
+} from '@lobechat/const';
 import type {
   AgentBuilderContext,
   AgentContextDocument,
@@ -24,10 +24,10 @@ import type {
   AgentManagementContext,
   GroupAgentBuilderContext,
   GroupOfficialToolItem,
-  GTDConfig,
   LobeToolManifest,
   MemoryContext,
   OnboardingContext,
+  PlanTodoConfig,
   ToolDiscoveryConfig,
   UserMemoryData,
 } from '@lobechat/context-engine';
@@ -44,6 +44,11 @@ import debug from 'debug';
 import { isCanUseFC } from '@/helpers/isCanUseFC';
 import { VARIABLE_GENERATORS } from '@/helpers/parserPlaceholder';
 import { lambdaClient } from '@/libs/trpc/client';
+import {
+  agentService,
+  AVAILABLE_AGENTS_CONTEXT_LIMIT,
+  AVAILABLE_AGENTS_CONTEXT_QUERY_LIMIT,
+} from '@/services/agent';
 import { notebookService } from '@/services/notebook';
 import { getAgentStoreState } from '@/store/agent';
 import { agentChatConfigSelectors, agentSelectors } from '@/store/agent/selectors';
@@ -102,7 +107,7 @@ interface ContextEngineeringContext {
   stepContext?: RuntimeStepContext;
   systemRole?: string;
   tools?: string[];
-  /** Topic ID for GTD context injection */
+  /** Topic ID for plan/todo context injection */
   topicId?: string;
 }
 
@@ -321,17 +326,17 @@ export const contextEngineering = async ({
     userMemoryData = combineUserMemoryData(topicMemories, persona);
   }
 
-  // Resolve GTD context: plan and todos
-  // GTD tool must be enabled and topicId must be provided
-  const isGTDEnabled = tools?.includes(GTDIdentifier) ?? false;
-  let gtdConfig: GTDConfig | undefined;
+  // Resolve plan + todos context (now part of the lobe-agent tool).
+  // Lobe-agent must be enabled and topicId must be provided.
+  const isPlanTodoEnabled = tools?.includes(LobeAgentIdentifier) ?? false;
+  let planTodoConfig: PlanTodoConfig | undefined;
 
-  if (isGTDEnabled && topicId) {
+  if (isPlanTodoEnabled && topicId) {
     try {
       // Fetch plan document for the current topic
       const planResult = await notebookService.listDocuments({
         topicId,
-        type: 'agent/plan',
+        type: AGENT_PLAN_FILE_TYPE,
       });
 
       if (planResult.data.length > 0) {
@@ -351,17 +356,17 @@ export const contextEngineering = async ({
         // Get todos from plan's metadata
         const todos = planDoc.metadata?.todos;
 
-        gtdConfig = {
+        planTodoConfig = {
           enabled: true,
           plan,
           todos,
         };
 
-        log('GTD context resolved: plan=%s, todos=%o', plan.goal, todos?.items?.length ?? 0);
+        log('Plan/Todo context resolved: plan=%s, todos=%o', plan.goal, todos?.items?.length ?? 0);
       }
     } catch (error) {
-      // Silently fail - GTD context is optional
-      log('Failed to resolve GTD context:', error);
+      // Silently fail - plan/todo context is optional
+      log('Failed to resolve plan/todo context:', error);
     }
   }
 
@@ -422,42 +427,6 @@ export const contextEngineering = async ({
     }
   }
 
-  // Resolve cron jobs context for cron tool
-  // Only inject a small preview (up to 4) to save context window;
-  // the model can call listCronJobs API for the full list.
-  const isCronEnabled = tools?.includes(CronIdentifier) ?? false;
-  let cronJobsList: CronJobSummaryForContext[] | undefined;
-  let cronJobsTotal = 0;
-
-  if (isCronEnabled && agentId) {
-    try {
-      const cronResult = await lambdaClient.agentCronJob.list.query({ agentId, limit: 4 });
-      const jobs = (cronResult as any)?.data ?? [];
-      cronJobsTotal = (cronResult as any)?.pagination?.total ?? jobs.length;
-      cronJobsList = jobs.map(
-        (job: any): CronJobSummaryForContext => ({
-          cronPattern: job.cronPattern,
-          description: job.description,
-          enabled: job.enabled,
-          id: job.id,
-          lastExecutedAt: job.lastExecutedAt,
-          name: job.name,
-          remainingExecutions: job.remainingExecutions,
-          timezone: job.timezone ?? 'UTC',
-          totalExecutions: job.totalExecutions ?? 0,
-        }),
-      );
-      log(
-        'Cron jobs context resolved: count=%d, total=%d',
-        cronJobsList?.length ?? 0,
-        cronJobsTotal,
-      );
-    } catch (error) {
-      // Silently fail - cron context is optional
-      log('Failed to resolve cron jobs context:', error);
-    }
-  }
-
   const userMemoryConfig =
     enableUserMemories && userMemoryData
       ? {
@@ -497,13 +466,9 @@ export const contextEngineering = async ({
 
   if (shouldInjectAvailableAgents) {
     try {
-      // Over-fetch by 2: +1 reserved for the current agent (filtered out below
-      // so the model has no exposure to its own id and cannot self-delegate)
-      // and +1 to detect overflow for the `hasMore` flag.
-      const AVAILABLE_AGENTS_LIMIT = 10;
-      const recentAgents = await lambdaClient.agent.queryAgents.query({
-        limit: AVAILABLE_AGENTS_LIMIT + 2,
-      });
+      const recentAgents =
+        agentStoreState.availableAgents ??
+        (await agentService.queryAgents({ limit: AVAILABLE_AGENTS_CONTEXT_QUERY_LIMIT }));
 
       // Exclude current agent from `availableAgents`. The model is the current
       // agent — its identity/persona is already established by `systemRole`, so
@@ -511,8 +476,8 @@ export const contextEngineering = async ({
       // model never sees its own id in the agent-management context (so it
       // cannot accidentally call itself via `callAgent`).
       const otherAgents = agentId ? recentAgents.filter((a) => a.id !== agentId) : recentAgents;
-      const hasMoreAgents = otherAgents.length > AVAILABLE_AGENTS_LIMIT;
-      const availableAgents = otherAgents.slice(0, AVAILABLE_AGENTS_LIMIT).map((a) => ({
+      const hasMoreAgents = otherAgents.length > AVAILABLE_AGENTS_CONTEXT_LIMIT;
+      const availableAgents = otherAgents.slice(0, AVAILABLE_AGENTS_CONTEXT_LIMIT).map((a) => ({
         description: a.description ?? undefined,
         id: a.id,
         title: a.title ?? 'Untitled',
@@ -645,56 +610,32 @@ export const contextEngineering = async ({
   }
 
   // Resolve topic references from messages containing <refer_topic> tags
-  const topicReferences = await resolveTopicReferences(
-    messages,
-    async (topicId: string) => {
-      const topic = topicSelectors.getTopicById(topicId)(getChatStoreState());
-      return topic ?? null;
-    },
-    async (topicId: string) => {
-      const { messageService } = await import('@/services/message');
-      const msgs = await messageService.getMessages({ agentId, groupId, topicId });
-      return msgs.map((m) => ({
-        content: typeof m.content === 'string' ? m.content : '',
-        role: m.role,
-      }));
-    },
-  );
+  const topicReferences =
+    (await resolveTopicReferences(
+      messages,
+      async (topicId: string) => {
+        const topic = topicSelectors.getTopicById(topicId)(getChatStoreState());
+        return topic ?? null;
+      },
+      async (topicId: string) => {
+        const { messageService } = await import('@/services/message');
+        const msgs = await messageService.getMessages({ agentId, groupId, topicId });
+        return msgs.map((m) => ({
+          content: typeof m.content === 'string' ? m.content : '',
+          role: m.role,
+        }));
+      },
+    )) ?? [];
 
-  // Build onboarding context if this is the web-onboarding agent
+  // Build onboarding context if this is the web-onboarding agent.
+  // Single combined trpc call — server runs state/soul/persona DB queries in parallel.
   let onboardingContext: OnboardingContext | undefined;
   const isOnboardingAgent = tools?.includes(WebOnboardingIdentifier);
   if (isOnboardingAgent) {
     try {
       const { userService } = await import('@/services/user');
-      const { formatWebOnboardingStateMessage } =
-        await import('@lobechat/builtin-tool-web-onboarding/utils');
-      const state = await userService.getOnboardingState();
-      const phaseGuidance = formatWebOnboardingStateMessage(state);
-
-      // Fetch SOUL.md and persona documents via raw DB access to avoid placeholder text
-      let soulContent: string | null = null;
-      let personaContent: string | null = null;
-      try {
-        const soulDoc = await userService.readOnboardingDocument('soul');
-        // Only inject real content, not empty-state placeholder messages
-        if (soulDoc?.id && soulDoc.content) {
-          soulContent = soulDoc.content;
-        }
-      } catch {
-        // Ignore — document may not exist yet
-      }
-      try {
-        const personaDoc = await userService.readOnboardingDocument('persona');
-        if (personaDoc?.id && personaDoc.content) {
-          personaContent = personaDoc.content;
-        }
-      } catch {
-        // Ignore — document may not exist yet
-      }
-
-      onboardingContext = { personaContent, phaseGuidance, soulContent };
-      log('Built onboarding context, phase: %s', state.phase);
+      onboardingContext = await userService.getOnboardingAgentContext();
+      log('Built onboarding context');
     } catch (error) {
       log('Failed to build onboarding context: %O', error);
     }
@@ -718,7 +659,7 @@ export const contextEngineering = async ({
     },
 
     // File context configuration
-    fileContext: { enabled: true, includeFileUrl: !isDesktop },
+    fileContext: { enabled: true, includeFileUrl: false },
 
     // Knowledge injection
     knowledge: {
@@ -742,6 +683,10 @@ export const contextEngineering = async ({
     selectedSkills: initialContext?.selectedSkills,
     selectedTools: initialContext?.selectedTools,
 
+    // Pass enableAgentMode through; MessagesEngine force-disables skills /
+    // agent-document injectors when this is `false` (chat mode).
+    enableAgentMode: agentChatConfigSelectors.currentChatConfig(agentStoreState).enableAgentMode,
+
     // Skills configuration
     // In auto mode: expose all installed skills so the AI can discover and activate them
     // In manual mode: only expose user-selected skills (filtered by pluginIds)
@@ -763,6 +708,9 @@ export const contextEngineering = async ({
 
     // Tools configuration
     toolsConfig: {
+      disabledToolIdentifiers: tools?.includes(PageAgentIdentifier)
+        ? undefined
+        : [PageAgentIdentifier],
       manifests,
       tools,
     },
@@ -777,8 +725,15 @@ export const contextEngineering = async ({
       CREDS_LIST: () => (credsList ? generateCredsList(credsList) : ''),
       // NOTICE: required by builtin-tool-creds/src/systemRole.ts (Klavis integrations)
       KLAVIS_SERVICES_LIST: () => klavisServicesList,
-      // NOTICE: required by builtin-tool-cron/src/systemRole.ts
-      CRON_JOBS_LIST: () => (cronJobsList ? generateCronJobsList(cronJobsList, cronJobsTotal) : ''),
+      // NOTICE: required by builtin-tool-creds/src/systemRole.ts (session_context)
+      session_date: () =>
+        new Intl.DateTimeFormat('en-US', {
+          day: 'numeric',
+          month: 'long',
+          weekday: 'long',
+          year: 'numeric',
+        }).format(new Date()),
+      sandbox_enabled: () => String(tools?.includes('lobe-cloud-sandbox') ?? false),
       // NOTICE(@nekomeowww): required by builtin-tool-memory/src/systemRole.ts
       memory_effort: () => (userMemoryConfig ? (memoryContext?.effort ?? '') : ''),
       // Current agent + topic identity — referenced by the LobeHub builtin
@@ -806,7 +761,7 @@ export const contextEngineering = async ({
     ...(isGroupAgentBuilderEnabled && { groupAgentBuilderContext }),
     ...(agentManagementContext && { agentManagementContext }),
     ...(agentGroup && { agentGroup }),
-    ...(gtdConfig && { gtd: gtdConfig }),
+    ...(planTodoConfig && { planTodo: planTodoConfig }),
     ...(topicReferences && topicReferences.length > 0 && { topicReferences }),
     ...(onboardingContext && { onboardingContext }),
   });

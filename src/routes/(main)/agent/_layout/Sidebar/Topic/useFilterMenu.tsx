@@ -8,20 +8,20 @@ import { useUserStore } from '@/store/user';
 import { preferenceSelectors } from '@/store/user/selectors';
 import type { TopicGroupMode, TopicSortBy } from '@/types/topic';
 
+import { useAgentTopicGroupMode } from './hooks/useAgentTopicGroupMode';
+
 export const useTopicFilterDropdownMenu = (): DropdownItem[] => {
   const { t } = useTranslation('topic');
+  const { topicGroupMode, updateTopicGroupMode } = useAgentTopicGroupMode();
 
-  const [topicGroupMode, topicSortBy, topicIncludeCompleted, updatePreference] = useUserStore(
-    (s) => [
-      preferenceSelectors.topicGroupMode(s),
-      preferenceSelectors.topicSortBy(s),
-      preferenceSelectors.topicIncludeCompleted(s),
-      s.updatePreference,
-    ],
-  );
+  const [topicSortBy, topicIncludeCompleted, updatePreference] = useUserStore((s) => [
+    preferenceSelectors.topicSortBy(s),
+    preferenceSelectors.topicIncludeCompleted(s),
+    s.updatePreference,
+  ]);
 
   return useMemo(() => {
-    const groupModes: TopicGroupMode[] = ['byTime', 'byProject', 'flat'];
+    const groupModes: TopicGroupMode[] = ['byStatus', 'byTime', 'byProject', 'flat'];
     const sortByOptions: TopicSortBy[] = ['createdAt', 'updatedAt'];
 
     return [
@@ -31,7 +31,7 @@ export const useTopicFilterDropdownMenu = (): DropdownItem[] => {
           key: `group-${mode}`,
           label: t(`filter.groupMode.${mode}`),
           onClick: () => {
-            updatePreference({ topicGroupMode: mode });
+            void updateTopicGroupMode(mode);
           },
         })),
         key: 'organize',
@@ -69,5 +69,12 @@ export const useTopicFilterDropdownMenu = (): DropdownItem[] => {
         type: 'group' as const,
       },
     ];
-  }, [topicGroupMode, topicSortBy, topicIncludeCompleted, updatePreference, t]);
+  }, [
+    topicGroupMode,
+    topicSortBy,
+    topicIncludeCompleted,
+    updatePreference,
+    updateTopicGroupMode,
+    t,
+  ]);
 };

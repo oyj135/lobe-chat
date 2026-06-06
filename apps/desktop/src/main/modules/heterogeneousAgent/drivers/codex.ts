@@ -1,4 +1,3 @@
-import { JsonlStreamProcessor } from '../jsonlProcessor';
 import type { HeterogeneousAgentBuildPlanParams, HeterogeneousAgentDriver } from '../types';
 
 const CODEX_REQUIRED_ARGS = ['--json', '--skip-git-repo-check'] as const;
@@ -21,7 +20,7 @@ const buildCodexOptionArgs = async ({
   const imageArgs = imagePaths.flatMap((filePath) => ['--image', filePath]);
   const autoExecutionArgs = hasAnyFlag(args, CODEX_AUTO_EXECUTION_FLAGS) ? [] : ['--full-auto'];
 
-  return [...CODEX_REQUIRED_ARGS, ...autoExecutionArgs, ...imageArgs, ...args];
+  return [...CODEX_REQUIRED_ARGS, ...autoExecutionArgs, ...args, ...imageArgs];
 };
 
 export const codexDriver: HeterogeneousAgentDriver = {
@@ -37,14 +36,8 @@ export const codexDriver: HeterogeneousAgentDriver = {
     return {
       args: resumeSessionId
         ? ['exec', 'resume', ...optionArgs, resumeSessionId, '-']
-        : ['exec', ...optionArgs, '-'],
+        : ['exec', ...optionArgs],
       stdinPayload: prompt,
     };
-  },
-  createStreamProcessor() {
-    return new JsonlStreamProcessor({
-      extractSessionId: (payload) =>
-        payload?.type === 'thread.started' ? payload?.thread_id : undefined,
-    });
   },
 };

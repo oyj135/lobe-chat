@@ -48,7 +48,127 @@ export interface GitWorkingTreeFiles {
   modified: string[];
 }
 
+export type GitFileDiffStatus = 'added' | 'modified' | 'deleted';
+
+export interface GitWorkingTreePatch {
+  /** Number of `+` lines in the patch (excluding the `+++ b/...` header). */
+  additions: number;
+  /** Number of `-` lines in the patch (excluding the `--- a/...` header). */
+  deletions: number;
+  /** Repo-relative path of the file. */
+  filePath: string;
+  /**
+   * True when git reported `Binary files … differ` for this entry — the UI
+   * should show a placeholder instead of a textual diff.
+   */
+  isBinary: boolean;
+  /**
+   * Unified diff patch text exactly as `git diff` produced it (including the
+   * `diff --git` header line). Empty when isBinary or truncated.
+   */
+  patch: string;
+  /** Same status bucket as GitWorkingTreeFiles. */
+  status: GitFileDiffStatus;
+  /** Patch was elided because it exceeded the per-file size cap. */
+  truncated: boolean;
+}
+
+/**
+ * Patches collected from a dirty submodule of the parent repo. The submodule
+ * itself is a self-contained git repo, so its patches use the same
+ * `GitWorkingTreePatch` shape; we only add metadata the renderer needs to tag
+ * the group and route per-file ops (revert, etc.) into the right working dir.
+ */
+export interface SubmoduleWorkingTreePatches {
+  /**
+   * Absolute path on disk — used as the `cwd` for revert / branch operations
+   * the renderer fires from inside the group.
+   */
+  absolutePath: string;
+  /** Current branch short name inside the submodule, or short SHA when detached. */
+  branch?: string;
+  /** True when the submodule's HEAD is detached (no branch ref). */
+  detached?: boolean;
+  /**
+   * Display name — the submodule's directory basename. Matches what users see
+   * in `.gitmodules` and in tools like WebStorm's commit grouping.
+   */
+  name: string;
+  /**
+   * Per-file diff blocks inside this submodule, same ordering as the parent's
+   * `patches`. Empty when the submodule's pointer moved in the parent but the
+   * submodule's own working tree is clean.
+   */
+  patches: GitWorkingTreePatch[];
+  /** Path relative to the parent repo root (e.g. `lobehub` or `packages/foo`). */
+  relativePath: string;
+}
+
+export interface GitWorkingTreePatches {
+  /**
+   * All dirty file patches in the parent repo, ordered added → modified →
+   * deleted. Submodule directories are filtered out of this list — their
+   * internal diffs live under `submodules[]` instead.
+   */
+  patches: GitWorkingTreePatch[];
+  /**
+   * One group per dirty submodule (pointer bumped, content changed, or both).
+   * Undefined when the parent has no submodules with pending changes — lets
+   * the renderer keep the flat single-repo layout in that common case.
+   */
+  submodules?: SubmoduleWorkingTreePatches[];
+}
+
+export interface GitRemoteBranchListItem {
+  /** Whether this ref is the resolved default branch (origin/HEAD target). */
+  isDefault: boolean;
+  /** Short ref name, e.g. `origin/canary`. */
+  name: string;
+}
+
+export interface GetGitBranchDiffPayload {
+  /**
+   * Override the comparison base. When omitted, the controller resolves
+   * `refs/remotes/origin/HEAD` and uses that.
+   */
+  baseRef?: string;
+  path: string;
+}
+
+export interface GitBranchDiffPatches {
+  /**
+   * Resolved base ref the diff was taken against (e.g. `origin/canary`).
+   * Undefined when no remote default branch could be resolved — in that case
+   * `patches` is empty and the UI should show a `noBaseRef` empty state.
+   */
+  baseRef?: string;
+  /**
+   * Current branch short name (e.g. `fix/gateway-loading-flicker`), or short
+   * SHA when HEAD is detached. Lets the UI render a GitHub-style
+   * `<headRef> → <baseRef>` compare label without a second IPC round-trip.
+   */
+  headRef?: string;
+  /**
+   * Per-file diff blocks for the parent repo, ordered added → modified →
+   * deleted. Submodule pointer-bump entries are filtered out and their
+   * internal branch diffs live under `submodules[]` instead.
+   */
+  patches: GitWorkingTreePatch[];
+  /**
+   * One group per submodule whose pointer differs between the parent's base
+   * and HEAD. Each group carries the submodule's own branch diff (its HEAD
+   * vs its own origin/HEAD). Undefined when no submodules differ — lets the
+   * renderer keep the flat single-repo layout in that case.
+   */
+  submodules?: SubmoduleWorkingTreePatches[];
+}
+
 export interface GitCheckoutResult {
+  error?: string;
+  success: boolean;
+}
+
+export interface GitFileRevertResult {
   error?: string;
   success: boolean;
 }

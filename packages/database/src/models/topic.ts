@@ -1,13 +1,46 @@
-import type { ChatTopicMetadata, DBMessageItem, TopicRankItem } from '@lobechat/types';
+import type {
+  ChatTopicMetadata,
+  ChatTopicStatus,
+  DBMessageItem,
+  TopicQuerySortBy,
+  TopicRankItem,
+} from '@lobechat/types';
+import type { TimingSink } from '@lobechat/utils';
+import {
+  getDurationMs,
+  logTimingSink as logTiming,
+  runTimedSinkStage as runTimedStage,
+} from '@lobechat/utils';
 import type { SQL } from 'drizzle-orm';
-import { and, count, desc, eq, gt, gte, inArray, isNull, lte, ne, not, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  not,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import type { TopicItem } from '../schemas';
-import { agents, agentsToSessions, messagePlugins, messages, topics } from '../schemas';
+import { agents, messagePlugins, messages, topics } from '../schemas';
 import type { LobeChatDatabase } from '../type';
 import { sanitizeBm25Query } from '../utils/bm25';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../utils/genWhere';
 import { idGenerator } from '../utils/idGenerator';
+import { recomputeTopicUsage } from './topicUsage';
+
+type OnboardingSessionMetadataPatch = Partial<NonNullable<ChatTopicMetadata['onboardingSession']>>;
+type TopicMetadataPatch = Omit<Partial<ChatTopicMetadata>, 'onboardingSession'> & {
+  onboardingSession?: OnboardingSessionMetadataPatch;
+};
 
 export interface CreateTopicParams {
   agentId?: string | null;
@@ -53,15 +86,54 @@ interface QueryTopicParams {
   isInbox?: boolean;
   pageSize?: number;
   /**
+   * Server-side ordering. Defaults to `updatedAt`. `status` orders by status
+   * priority (see `STATUS_SORT_RANK`) so the sidebar "group by status" mode
+   * keeps high-priority topics on the first page.
+   */
+  sortBy?: TopicQuerySortBy;
+  timing?: ModelTimingContext;
+  /**
    * Include only topics matching the given trigger types (positive filter)
    */
   triggers?: string[];
+  /**
+   * When true, the SELECT also returns the heavier card-detail columns used
+   * by the per-agent Topics management page: `firstUserMessage` (subquery),
+   * `messageCount` (subquery), `description`, `trigger`. `cost` and
+   * `tokenUsage` are intentionally omitted until a dedicated schema migration
+   * adds real columns to back them. Defaults to false so sidebar paths stay
+   * cheap.
+   */
+  withDetails?: boolean;
 }
+
+export interface ModelTimingContext extends TimingSink {}
 
 export interface ListTopicsForMemoryExtractorCursor {
   createdAt: Date;
   id: string;
 }
+
+// Status priority for the sidebar "group by status" ordering. Lower rank =
+// higher in the list. A NULL / unknown status falls through to `active` (2),
+// matching the client which treats a missing status as active. Keep this in
+// sync with `STATUS_GROUP_ORDER` in `@lobechat/utils` (client-side bucketing).
+const STATUS_SORT_RANK = sql`CASE ${topics.status}
+  WHEN 'waitingForHuman' THEN 0
+  WHEN 'running' THEN 1
+  WHEN 'active' THEN 2
+  WHEN 'paused' THEN 3
+  WHEN 'failed' THEN 4
+  WHEN 'completed' THEN 5
+  WHEN 'archived' THEN 6
+  ELSE 2 END`;
+
+// Favorites always float to the top; the rest are ordered by the requested
+// strategy. `status` adds the priority bucket before the recency tiebreaker.
+const buildTopicOrderBy = (sortBy?: TopicQuerySortBy): SQL[] =>
+  sortBy === 'status'
+    ? [desc(topics.favorite), asc(STATUS_SORT_RANK), desc(topics.updatedAt)]
+    : [desc(topics.favorite), desc(topics.updatedAt)];
 
 export class TopicModel {
   private userId: string;
@@ -83,9 +155,60 @@ export class TopicModel {
     pageSize = 9999,
     groupId,
     isInbox,
+    sortBy,
+    timing,
     triggers,
+    withDetails = false,
   }: QueryTopicParams = {}) => {
+    const orderBy = buildTopicOrderBy(sortBy);
+    const queryStartedAt = Date.now();
+    logTiming(timing, 'db.topic.query:start', {
+      current,
+      hasAgentId: !!agentId,
+      hasContainerId: !!containerId,
+      hasGroupId: !!groupId,
+      isInbox: !!isInbox,
+      pageSize,
+      withDetails,
+    });
     const offset = current * pageSize;
+
+    // Heavier columns gated behind `withDetails` and used by the per-agent
+    // Topics management page: real aggregates from the `messages` table
+    // (firstUserMessage + messageCount), plus the `description` / `trigger`
+    // columns that sidebar paths don't consume. `cost` and `tokenUsage`
+    // intentionally stay undefined here — they need their own schema
+    // migration before they can be backed by real numbers.
+    //
+    // The two correlated subqueries are built with Drizzle's query builder
+    // (not a raw `sql` template) so the inner `eq(messages.topicId,
+    // topics.id)` renders as `"messages"."topic_id" = "topics"."id"` — both
+    // sides fully qualified. A bare `sql\`... ${topics.id} ...\`` template
+    // renders `topics.id` as an unqualified `"id"`, which PostgreSQL then
+    // resolves against the inner FROM (messages.id) and the WHERE silently
+    // matches nothing.
+    const firstUserMessageSubquery = this.db
+      .select({ value: messages.content })
+      .from(messages)
+      .where(and(eq(messages.topicId, topics.id), eq(messages.role, 'user')))
+      .orderBy(asc(messages.createdAt))
+      .limit(1);
+    const messageCountSubquery = this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(messages)
+      .where(eq(messages.topicId, topics.id));
+
+    const detailColumns = withDetails
+      ? {
+          description: topics.description,
+          firstUserMessage: sql<string | null>`(${firstUserMessageSubquery})`.as(
+            'first_user_message',
+          ),
+          messageCount: sql<number>`(${messageCountSubquery})`.as('message_count'),
+          trigger: topics.trigger,
+        }
+      : {};
+
     const includeTriggerCondition =
       includeTriggers && includeTriggers.length > 0
         ? inArray(topics.trigger, includeTriggers)
@@ -101,7 +224,7 @@ export class TopicModel {
       excludeStatuses && excludeStatuses.length > 0
         ? or(
             isNull(topics.status),
-            not(inArray(topics.status, excludeStatuses as ('active' | 'completed' | 'archived')[])),
+            not(inArray(topics.status, excludeStatuses as ChatTopicStatus[])),
           )
         : undefined;
 
@@ -117,70 +240,61 @@ export class TopicModel {
       );
 
       const [items, totalResult] = await Promise.all([
-        this.db
-          .select({
-            completedAt: topics.completedAt,
-            createdAt: topics.createdAt,
-            favorite: topics.favorite,
-            historySummary: topics.historySummary,
-            id: topics.id,
-            metadata: topics.metadata,
-            status: topics.status,
-            title: topics.title,
-            updatedAt: topics.updatedAt,
-          })
-          .from(topics)
-          .where(whereCondition)
-          .orderBy(desc(topics.favorite), desc(topics.updatedAt))
-          .limit(pageSize)
-          .offset(offset),
-        this.db
-          .select({ count: count(topics.id) })
-          .from(topics)
-          .where(whereCondition),
+        runTimedStage(
+          timing,
+          'db.topic.query.group.items.select',
+          () =>
+            this.db
+              // Cast to `any` because Drizzle's `.select` infers a strict
+              // SelectedFields shape and the conditional `detailColumns` widens
+              // to a union; the runtime shape is correct and the client casts
+              // back to `ChatTopic[]` after TRPC serialization.
+              .select({
+                completedAt: topics.completedAt,
+                createdAt: topics.createdAt,
+                favorite: topics.favorite,
+                historySummary: topics.historySummary,
+                id: topics.id,
+                metadata: topics.metadata,
+                status: topics.status,
+                title: topics.title,
+                updatedAt: topics.updatedAt,
+                ...detailColumns,
+              } as any)
+              .from(topics)
+              .where(whereCondition)
+              .orderBy(...orderBy)
+              .limit(pageSize)
+              .offset(offset),
+          { current, pageSize },
+        ),
+        runTimedStage(timing, 'db.topic.query.group.count.select', () =>
+          this.db
+            .select({ count: count(topics.id) })
+            .from(topics)
+            .where(whereCondition),
+        ),
       ]);
 
+      logTiming(timing, 'db.topic.query:done', {
+        itemCount: items.length,
+        stageMs: getDurationMs(queryStartedAt),
+        total: totalResult[0].count,
+      });
       return { items, total: totalResult[0].count };
     }
 
-    // If agentId is provided, query topics that match either:
-    // 1. topics.agentId = agentId (new data with agentId stored directly)
-    // 2. topics.sessionId = associated sessionId (legacy data via agentsToSessions lookup)
-    // 3. For inbox: sessionId IS NULL AND groupId IS NULL AND agentId IS NULL (legacy inbox data)
+    // If agentId is provided, match topics by `topics.agentId` directly. The
+    // inbox agent additionally adopts very old orphan rows where every owner
+    // column (session / group / agent) is null.
     if (agentId) {
-      // Get the associated sessionId for backward compatibility with legacy data
-      const agentSession = await this.db
-        .select({ sessionId: agentsToSessions.sessionId })
-        .from(agentsToSessions)
-        .where(and(eq(agentsToSessions.agentId, agentId), eq(agentsToSessions.userId, this.userId)))
-        .limit(1);
+      const agentCondition = isInbox
+        ? or(
+            eq(topics.agentId, agentId),
+            and(isNull(topics.sessionId), isNull(topics.groupId), isNull(topics.agentId)),
+          )
+        : eq(topics.agentId, agentId);
 
-      const associatedSessionId = agentSession[0]?.sessionId;
-
-      // Build condition to match both new (agentId) and legacy (sessionId) data
-      let agentCondition;
-      if (isInbox) {
-        // For inbox agent: query topics that match:
-        // 1. topics.agentId = agentId (new data)
-        // 2. topics.sessionId = associatedSessionId (legacy data with session relation)
-        // 3. sessionId IS NULL AND groupId IS NULL AND agentId IS NULL (very old legacy inbox data)
-        const conditions = [
-          eq(topics.agentId, agentId),
-          and(isNull(topics.sessionId), isNull(topics.groupId), isNull(topics.agentId)),
-        ];
-        // Also include topics linked via legacy session relation
-        if (associatedSessionId) {
-          conditions.push(eq(topics.sessionId, associatedSessionId));
-        }
-        agentCondition = or(...conditions);
-      } else if (associatedSessionId) {
-        agentCondition = or(eq(topics.agentId, agentId), eq(topics.sessionId, associatedSessionId));
-      } else {
-        agentCondition = eq(topics.agentId, agentId);
-      }
-
-      // Fetch items and total count in parallel
-      // Include sessionId and agentId for migration detection
       const agentWhere = and(
         eq(topics.userId, this.userId),
         agentCondition,
@@ -191,29 +305,48 @@ export class TopicModel {
       );
 
       const [items, totalResult] = await Promise.all([
-        this.db
-          .select({
-            completedAt: topics.completedAt,
-            createdAt: topics.createdAt,
-            favorite: topics.favorite,
-            historySummary: topics.historySummary,
-            id: topics.id,
-            metadata: topics.metadata,
-            status: topics.status,
-            title: topics.title,
-            updatedAt: topics.updatedAt,
-          })
-          .from(topics)
-          .where(agentWhere)
-          .orderBy(desc(topics.favorite), desc(topics.updatedAt))
-          .limit(pageSize)
-          .offset(offset),
-        this.db
-          .select({ count: count(topics.id) })
-          .from(topics)
-          .where(agentWhere),
+        runTimedStage(
+          timing,
+          'db.topic.query.agent.items.select',
+          () =>
+            this.db
+              // See note on the group-branch select above re: `as any` cast.
+              .select({
+                completedAt: topics.completedAt,
+                createdAt: topics.createdAt,
+                favorite: topics.favorite,
+                historySummary: topics.historySummary,
+                id: topics.id,
+                metadata: topics.metadata,
+                status: topics.status,
+                title: topics.title,
+                updatedAt: topics.updatedAt,
+                ...detailColumns,
+              } as any)
+              .from(topics)
+              .where(agentWhere)
+              .orderBy(...orderBy)
+              .limit(pageSize)
+              .offset(offset),
+          { current, isInbox: !!isInbox, pageSize },
+        ),
+        runTimedStage(
+          timing,
+          'db.topic.query.agent.count.select',
+          () =>
+            this.db
+              .select({ count: count(topics.id) })
+              .from(topics)
+              .where(agentWhere),
+          { isInbox: !!isInbox },
+        ),
       ]);
 
+      logTiming(timing, 'db.topic.query:done', {
+        itemCount: items.length,
+        stageMs: getDurationMs(queryStartedAt),
+        total: totalResult[0].count,
+      });
       return { items, total: totalResult[0].count };
     }
 
@@ -228,36 +361,50 @@ export class TopicModel {
     );
 
     const [items, totalResult] = await Promise.all([
-      this.db
-        .select({
-          agentId: topics.agentId,
-          completedAt: topics.completedAt,
-          createdAt: topics.createdAt,
-          favorite: topics.favorite,
-          historySummary: topics.historySummary,
-          id: topics.id,
-          metadata: topics.metadata,
-          sessionId: topics.sessionId,
-          status: topics.status,
-          title: topics.title,
-          updatedAt: topics.updatedAt,
-        })
-        .from(topics)
-        .where(whereCondition)
-        // In boolean sorting, false is considered "smaller" than true.
-        // So here we use desc to ensure that topics with favorite as true are in front.
-        .orderBy(desc(topics.favorite), desc(topics.updatedAt))
-        .limit(pageSize)
-        .offset(offset),
-      this.db
-        .select({ count: count(topics.id) })
-        .from(topics)
-        .where(whereCondition),
+      runTimedStage(
+        timing,
+        'db.topic.query.container.items.select',
+        () =>
+          this.db
+            // See note on the group-branch select above re: `as any` cast.
+            .select({
+              agentId: topics.agentId,
+              completedAt: topics.completedAt,
+              createdAt: topics.createdAt,
+              favorite: topics.favorite,
+              historySummary: topics.historySummary,
+              id: topics.id,
+              metadata: topics.metadata,
+              sessionId: topics.sessionId,
+              status: topics.status,
+              title: topics.title,
+              updatedAt: topics.updatedAt,
+              ...detailColumns,
+            } as any)
+            .from(topics)
+            .where(whereCondition)
+            .orderBy(...orderBy)
+            .limit(pageSize)
+            .offset(offset),
+        { current, pageSize },
+      ),
+      runTimedStage(timing, 'db.topic.query.container.count.select', () =>
+        this.db
+          .select({ count: count(topics.id) })
+          .from(topics)
+          .where(whereCondition),
+      ),
     ]);
 
     // Remove internal fields before returning
 
     const cleanItems = items.map(({ agentId, sessionId, ...rest }) => rest);
+
+    logTiming(timing, 'db.topic.query:done', {
+      itemCount: cleanItems.length,
+      stageMs: getDurationMs(queryStartedAt),
+      total: totalResult[0].count,
+    });
 
     return { items: cleanItems, total: totalResult[0].count };
   };
@@ -348,27 +495,9 @@ export class TopicModel {
     startDate?: string;
   }): Promise<number> => {
     // Build agent-specific condition if agentId is provided
-    let agentCondition: SQL | undefined;
-    if (params?.agentId) {
-      // Get the associated sessionId for backward compatibility with legacy data
-      const agentSession = await this.db
-        .select({ sessionId: agentsToSessions.sessionId })
-        .from(agentsToSessions)
-        .where(
-          and(
-            eq(agentsToSessions.agentId, params.agentId),
-            eq(agentsToSessions.userId, this.userId),
-          ),
-        )
-        .limit(1);
-
-      const associatedSessionId = agentSession[0]?.sessionId;
-
-      // Build condition to match both new (agentId) and legacy (sessionId) data
-      agentCondition = associatedSessionId
-        ? or(eq(topics.agentId, params.agentId), eq(topics.sessionId, associatedSessionId))
-        : eq(topics.agentId, params.agentId);
-    }
+    const agentCondition: SQL | undefined = params?.agentId
+      ? eq(topics.agentId, params.agentId)
+      : undefined;
 
     const result = await this.db
       .select({
@@ -398,9 +527,9 @@ export class TopicModel {
   rank = async (limit: number = 10): Promise<TopicRankItem[]> => {
     return this.db
       .select({
+        agentId: topics.agentId,
         count: count(messages.id).as('count'),
         id: topics.id,
-        sessionId: topics.sessionId,
         title: topics.title,
       })
       .from(topics)
@@ -458,30 +587,67 @@ export class TopicModel {
   create = async (
     { messages: messageIds, ...params }: CreateTopicParams,
     id: string = this.genId(),
+    timing?: ModelTimingContext,
   ): Promise<TopicItem> => {
-    return this.db.transaction(async (tx) => {
-      const insertData = {
-        ...params,
-        agentId: params.agentId || null,
-        groupId: params.groupId || null,
-        id,
-        sessionId: params.sessionId || null,
-        userId: this.userId,
-      };
+    const insertData = {
+      ...params,
+      agentId: params.agentId || null,
+      groupId: params.groupId || null,
+      id,
+      sessionId: params.sessionId || null,
+      userId: this.userId,
+    };
+    const insertMeta = {
+      hasAgentId: !!params.agentId,
+      hasGroupId: !!params.groupId,
+      hasSessionId: !!params.sessionId,
+    };
 
-      // Insert new topic
-      const [topic] = await tx.insert(topics).values(insertData).returning();
-
-      // Update associated messages' topicId
-      if (messageIds && messageIds.length > 0) {
-        await tx
-          .update(messages)
-          .set({ topicId: topic.id })
-          .where(and(eq(messages.userId, this.userId), inArray(messages.id, messageIds)));
-      }
+    if (!messageIds || messageIds.length === 0) {
+      const [topic] = await runTimedStage(
+        timing,
+        'db.topic.create.topics.insert',
+        () => this.db.insert(topics).values(insertData).returning(),
+        insertMeta,
+      );
 
       return topic;
-    });
+    }
+
+    return runTimedStage(
+      timing,
+      'db.topic.create.transaction',
+      () =>
+        this.db.transaction(async (tx) => {
+          // Insert new topic
+          const [topic] = await runTimedStage(
+            timing,
+            'db.topic.create.topics.insert',
+            () => tx.insert(topics).values(insertData).returning(),
+            insertMeta,
+          );
+
+          // Update associated messages' topicId
+          await runTimedStage(
+            timing,
+            'db.topic.create.messages.updateTopic',
+            () =>
+              tx
+                .update(messages)
+                .set({ topicId: topic.id })
+                .where(and(eq(messages.userId, this.userId), inArray(messages.id, messageIds))),
+            { messageCount: messageIds.length },
+          );
+
+          return topic;
+        }),
+      {
+        hasAgentId: !!params.agentId,
+        hasGroupId: !!params.groupId,
+        hasSessionId: !!params.sessionId,
+        messageCount: messageIds?.length ?? 0,
+      },
+    );
   };
 
   batchCreate = async (topicParams: (CreateTopicParams & { id?: string })[]) => {
@@ -653,27 +819,12 @@ export class TopicModel {
   };
 
   /**
-   * Deletes multiple topics based on the agentId.
-   * This will delete topics that have either:
-   * 1. Direct agentId match (new data)
-   * 2. SessionId match via agentsToSessions lookup (legacy data)
+   * Deletes all topics matching the given agentId (`topics.agentId`).
    */
   batchDeleteByAgentId = async (agentId: string) => {
-    // Get the associated sessionId for backward compatibility with legacy data
-    const agentSession = await this.db
-      .select({ sessionId: agentsToSessions.sessionId })
-      .from(agentsToSessions)
-      .where(and(eq(agentsToSessions.agentId, agentId), eq(agentsToSessions.userId, this.userId)))
-      .limit(1);
-
-    const associatedSessionId = agentSession[0]?.sessionId;
-
-    // Build condition to match both new (agentId) and legacy (sessionId) data
-    const agentCondition = associatedSessionId
-      ? or(eq(topics.agentId, agentId), eq(topics.sessionId, associatedSessionId))
-      : eq(topics.agentId, agentId);
-
-    return this.db.delete(topics).where(and(eq(topics.userId, this.userId), agentCondition));
+    return this.db
+      .delete(topics)
+      .where(and(eq(topics.userId, this.userId), eq(topics.agentId, agentId)));
   };
 
   /**
@@ -700,26 +851,75 @@ export class TopicModel {
   };
 
   /**
+   * Recompute this topic's denormalized usage/cost rollup from its assistant
+   * messages. The canonical aggregation lives in `recomputeTopicUsage`; the
+   * live path (MessageModel) calls it inline within its own transaction, while
+   * external callers use this wrapper. Runs in a transaction for consistency.
+   */
+  recomputeUsage = async (id: string) =>
+    this.db.transaction((trx) => recomputeTopicUsage(trx, this.userId, id));
+
+  /**
    * Update topic metadata with merge logic
    * This method merges new metadata with existing metadata instead of replacing it
    */
-  updateMetadata = async (id: string, metadata: Partial<ChatTopicMetadata>) => {
+  updateMetadata = async (id: string, metadata: TopicMetadataPatch) => {
     // Get existing topic to merge metadata
     const existing = await this.db.query.topics.findFirst({
       columns: { metadata: true },
       where: and(eq(topics.id, id), eq(topics.userId, this.userId)),
     });
 
-    const mergedMetadata: ChatTopicMetadata = {
+    const mergedOnboardingSession =
+      existing?.metadata?.onboardingSession && metadata.onboardingSession
+        ? {
+            ...existing.metadata.onboardingSession,
+            ...metadata.onboardingSession,
+          }
+        : metadata.onboardingSession;
+
+    const mergedMetadata = {
       ...existing?.metadata,
       ...metadata,
-    };
+      ...(mergedOnboardingSession && { onboardingSession: mergedOnboardingSession }),
+    } as ChatTopicMetadata;
 
     return this.db
       .update(topics)
       .set({ metadata: mergedMetadata })
       .where(and(eq(topics.id, id), eq(topics.userId, this.userId)))
       .returning();
+  };
+
+  getCronTopicsGroupedByCronJob = async (
+    agentId: string,
+  ): Promise<{ cronJobId: string; topics: TopicItem[] }[]> => {
+    const rows = await this.db
+      .select()
+      .from(topics)
+      .where(
+        and(
+          eq(topics.userId, this.userId),
+          eq(topics.agentId, agentId),
+          eq(topics.trigger, 'cron'),
+          sql`(${topics.metadata}->>'cronJobId') IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(topics.createdAt));
+
+    const grouped = new Map<string, TopicItem[]>();
+    for (const topic of rows) {
+      const cronJobId = (topic.metadata as { cronJobId?: string } | null)?.cronJobId;
+      if (!cronJobId) continue;
+      const group = grouped.get(cronJobId) ?? [];
+      group.push(topic);
+      grouped.set(cronJobId, group);
+    }
+
+    return [...grouped.entries()].map(([cronJobId, topicList]) => ({
+      cronJobId,
+      topics: topicList,
+    }));
   };
 
   // **************** Helper *************** //
@@ -806,53 +1006,5 @@ export class TopicModel {
       );
 
     return result[0]?.total ?? 0;
-  };
-
-  /**
-   * Get cron topics grouped by cronJob for a specific agent
-   * Returns topics where trigger='cron' and metadata contains cronJobId
-   */
-  getCronTopicsGroupedByCronJob = async (agentId: string) => {
-    const cronTopics = await this.db
-      .select({
-        createdAt: topics.createdAt,
-        favorite: topics.favorite,
-        historySummary: topics.historySummary,
-        id: topics.id,
-        metadata: topics.metadata,
-        title: topics.title,
-        trigger: topics.trigger,
-        updatedAt: topics.updatedAt,
-      })
-      .from(topics)
-      .where(
-        and(
-          eq(topics.userId, this.userId),
-          eq(topics.agentId, agentId),
-          eq(topics.trigger, 'cron'),
-          // Check if metadata contains cronJobId (use ? operator to avoid Neon rt_fetch bug with ->>)
-          sql`${topics.metadata} ? 'cronJobId'`,
-        ),
-      )
-      .orderBy(desc(topics.updatedAt));
-
-    // Group topics by cronJobId
-    const groupedTopics = new Map<string, typeof cronTopics>();
-
-    cronTopics.forEach((topic) => {
-      const cronJobId = topic.metadata?.cronJobId;
-      if (cronJobId) {
-        if (!groupedTopics.has(cronJobId)) {
-          groupedTopics.set(cronJobId, []);
-        }
-        groupedTopics.get(cronJobId)!.push(topic);
-      }
-    });
-
-    // Convert Map to array of grouped objects
-    return Array.from(groupedTopics.entries()).map(([cronJobId, topicList]) => ({
-      cronJobId,
-      topics: topicList,
-    }));
   };
 }

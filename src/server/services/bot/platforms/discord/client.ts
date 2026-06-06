@@ -14,6 +14,7 @@ import {
   type BotPlatformRuntimeContext,
   type BotProviderConfig,
   ClientFactory,
+  messengerContentText,
   type PlatformClient,
   type PlatformMessenger,
   type UsageStats,
@@ -22,6 +23,7 @@ import {
 import { formatUsageStats } from '../utils';
 import { DiscordApi } from './api';
 import { patchDiscordForwardedInteractions, patchDiscordThreadRecovery } from './patch';
+import { batchDiscordFiles, materializeAttachmentsForDiscord } from './sendAttachments';
 
 const log = debug('bot-platform:discord:bot');
 
@@ -31,6 +33,14 @@ const DEFAULT_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
 export interface GatewayListenerOptions {
   durationMs?: number;
   waitUntil?: (task: Promise<any>) => void;
+  /**
+   * Override the URL the Gateway listener forwards events to. Defaults to
+   * `${appUrl}/api/agent/webhooks/discord/${applicationId}` (the per-agent
+   * bot path). Set when the same gateway connection should drive a different
+   * surface — e.g. the LobeHub Messenger forwards to
+   * `/api/agent/messenger/webhooks/discord`.
+   */
+  webhookUrl?: string;
 }
 
 function extractChannelId(platformThreadId: string): string {
@@ -116,7 +126,9 @@ class DiscordGatewayClient implements PlatformClient {
       const discordAdapter = (bot as any).adapters.get('discord') as DiscordAdapter;
       const waitUntil = options?.waitUntil ?? ((task: Promise<any>) => task.catch(() => {}));
 
-      const webhookUrl = `${(this.context.appUrl || '').trim()}/api/agent/webhooks/discord/${this.applicationId}`;
+      const webhookUrl =
+        options?.webhookUrl ??
+        `${(this.context.appUrl || '').trim()}/api/agent/webhooks/discord/${this.applicationId}`;
 
       await discordAdapter.startGatewayListener(
         { waitUntil },
@@ -125,7 +137,15 @@ class DiscordGatewayClient implements PlatformClient {
         webhookUrl,
       );
 
-      if (!options) {
+      // Auto-refresh by default. Skip ONLY when an explicit `waitUntil` is
+      // passed (the serverless / GatewayManager call sites manage their own
+      // lifecycle). Persist `webhookUrl` across the refresh cycle so callers
+      // that overrode the forwarding target keep their override.
+      const shouldAutoRefresh = !options?.waitUntil;
+      if (shouldAutoRefresh) {
+        const refreshOptions: GatewayListenerOptions | undefined = options?.webhookUrl
+          ? { webhookUrl: options.webhookUrl }
+          : undefined;
         this.refreshTimer = setTimeout(() => {
           if (this.abort.signal.aborted || this.stopped) return;
 
@@ -135,7 +155,7 @@ class DiscordGatewayClient implements PlatformClient {
             durationMs / 3_600_000,
           );
           this.abort.abort();
-          this.start().catch((err) => {
+          this.start(refreshOptions).catch((err) => {
             log('Failed to refresh DiscordBot appId=%s: %O', this.applicationId, err);
           });
         }, durationMs);
@@ -210,8 +230,29 @@ class DiscordGatewayClient implements PlatformClient {
     const discord = this.discord;
     return {
       addReaction: (messageId, emoji) => discord.createReaction(channelId, messageId, emoji),
-      createMessage: (content) => discord.createMessage(channelId, content).then(() => {}),
-      editMessage: (messageId, content) => discord.editMessage(channelId, messageId, content),
+      createMessage: async (content) => {
+        const text = messengerContentText(content);
+        const attachments = typeof content === 'string' ? undefined : content.attachments;
+        if (!attachments?.length) {
+          await discord.createMessage(channelId, text);
+          return;
+        }
+        const files = await materializeAttachmentsForDiscord(attachments);
+        if (files.length === 0) {
+          await discord.createMessage(channelId, text);
+          return;
+        }
+        const batches = batchDiscordFiles(files);
+        for (const [i, batch] of batches.entries()) {
+          await discord.createMessage(channelId, i === 0 ? text : '', batch);
+        }
+      },
+      // editMessage: keep the text-only contract. Editing a message to add
+      // attachments is an advanced flow (PATCH with `attachments[]` keep-set
+      // + `files[]` adds) that isn't worth the complexity for the bot reply
+      // path — new chunks with attachments flow through `createMessage`.
+      editMessage: (messageId, content) =>
+        discord.editMessage(channelId, messageId, messengerContentText(content)),
       removeReaction: (messageId, emoji) => discord.removeOwnReaction(channelId, messageId, emoji),
       replaceReaction: async (messageId, prevEmoji, nextEmoji) => {
         if (prevEmoji === nextEmoji) return;
@@ -302,6 +343,40 @@ class DiscordGatewayClient implements PlatformClient {
     return extractChannelId(platformThreadId);
   }
 
+  /**
+   * Resolve the message sender's preferred Discord locale.
+   *
+   * Discord intentionally does **not** include `User.locale` in MESSAGE_CREATE
+   * Gateway events: the field is only populated by `GET /users/@me` for the
+   * authenticated user and is gated behind the `identify` OAuth2 scope. There
+   * is no member-, presence-, or guild-membership event that surfaces another
+   * user's preferred language either. So for DMs and group `@mentions` we
+   * cannot detect locale at all — the router will fall back to the channel's
+   * platform default.
+   *
+   * The two fields we *can* read both live on `INTERACTION_CREATE` payloads
+   * (slash commands, message components):
+   * - `raw.locale` — the invoking user's client locale (`pt-BR`, `zh-CN`, …)
+   * - `raw.guild_locale` — the guild's `preferred_locale`; used as a soft
+   *   fallback for community guilds when the user-level field is missing
+   *
+   * Returns `undefined` outside those interaction paths so the router can
+   * apply the platform default.
+   */
+  extractAuthorLocale(message: Message): string | undefined {
+    const raw = (message as any).raw as Record<string, any> | undefined;
+    if (!raw) return undefined;
+    const interactionLocale = raw.locale;
+    if (typeof interactionLocale === 'string' && interactionLocale.length > 0) {
+      return interactionLocale;
+    }
+    const guildLocale = raw.guild_locale;
+    if (typeof guildLocale === 'string' && guildLocale.length > 0) {
+      return guildLocale;
+    }
+    return undefined;
+  }
+
   formatReply(body: string, stats?: UsageStats): string {
     if (!stats || !this.config.settings?.showUsageStats) return body;
     return `${body}\n\n-# ${formatUsageStats(stats)}`;
@@ -325,6 +400,24 @@ class DiscordGatewayClient implements PlatformClient {
     return threadId;
   }
 
+  /**
+   * Surface the parent channel for the group allowlist. When the bot is
+   * @-mentioned in a parent channel, Discord spawns an auto-reply thread
+   * and `thread.channelId` resolves to the **thread** (segment 3 of the
+   * composite). Operators, however, paste the *parent* channel ID
+   * (segment 2 — what Discord's "Copy Channel ID" returns). Returning the
+   * parent here lets `shouldHandleGroup` accept either form.
+   */
+  extraGroupAllowlistChannels(platformThreadId: string): string[] {
+    const parts = platformThreadId.split(':');
+    // Format: discord:guildId:channelId[:discordThreadId]
+    // Only when there's a thread segment is the parent distinct from
+    // `thread.channelId` (which already maps to the thread). For
+    // top-level channels the router already supplies `parts[2]`.
+    if (parts.length === 4 && parts[2]) return [parts[2]];
+    return [];
+  }
+
   sanitizeUserInput(text: string): string {
     return text.replaceAll(new RegExp(`<@!?${this.applicationId}>\\s*`, 'g'), '').trim();
   }
@@ -333,8 +426,70 @@ class DiscordGatewayClient implements PlatformClient {
     return isSubscribableThread(threadId);
   }
 
+  /**
+   * Spawn a Discord thread off the triggering message when the bot wakes
+   * in a top-level guild channel via a watch-keyword match. The chat-sdk
+   * adapter only auto-creates a thread on @-mention (see chat-adapter
+   * discord/handleForwardedMessageEvent), so without this hook the
+   * keyword path would reply directly in the parent channel and clutter
+   * it with bot output.
+   *
+   * Returns the upgraded composite threadId (`discord:guildId:channelId:newThreadId`)
+   * so the caller can swap `thread.id` and have all downstream chat-sdk
+   * calls — `setReaction`, `subscribe`, `post`, `startTyping` — target
+   * the new sub-thread. The reaction call still lands on the parent
+   * channel because `resolveReactionThreadId` strips the thread segment
+   * when the message ID equals the thread starter.
+   *
+   * Skipped for DMs (`guildId === '@me'`) and for already-spawned threads
+   * (4-segment IDs); both deliver replies in the right context as-is.
+   * Best-effort: any API failure logs and returns undefined so the
+   * router falls back to the parent channel rather than dropping the
+   * message.
+   */
+  async openThreadForChannelWake(
+    threadId: string,
+    messageRaw: unknown,
+  ): Promise<string | undefined> {
+    const parts = threadId.split(':');
+    if (parts.length !== 3 || parts[0] !== 'discord' || parts[1] === '@me') return undefined;
+    const [, guildId, channelId] = parts;
+    if (!channelId) return undefined;
+    const raw = messageRaw as Record<string, unknown> | undefined;
+    const messageId = typeof raw?.id === 'string' ? raw.id : undefined;
+    if (!messageId) return undefined;
+
+    // Mirror chat-sdk's @-mention auto-thread name format (see
+    // chat-adapter discord/createDiscordThread) so operators see a
+    // consistent thread title regardless of which path opened it.
+    const threadName = `Thread ${new Date().toLocaleString()}`;
+    try {
+      const result = await this.discord.startThreadFromMessage(channelId, messageId, threadName);
+      const newThreadId = `discord:${guildId}:${channelId}:${result.id}`;
+      log(
+        'openThreadForChannelWake: spawned thread for keyword wake, channel=%s, msg=%s, thread=%s',
+        channelId,
+        messageId,
+        result.id,
+      );
+      return newThreadId;
+    } catch (error) {
+      log(
+        'openThreadForChannelWake failed; falling back to channel %s for msg %s: %O',
+        channelId,
+        messageId,
+        error,
+      );
+      return undefined;
+    }
+  }
+
   async registerBotCommands(
-    commands: Array<{ command: string; description: string }>,
+    commands: Array<{
+      command: string;
+      description: string;
+      options?: Array<{ description: string; name: string; required?: boolean }>;
+    }>,
   ): Promise<void> {
     await this.discord.registerCommands(this.applicationId, commands);
     log('DiscordBot appId=%s registered %d commands', this.applicationId, commands.length);

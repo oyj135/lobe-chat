@@ -68,12 +68,44 @@ export const useStyles = createStaticStyles(({ css, cssVar }) => ({
     &:hover {
       background-color: ${cssVar.colorFillTertiary};
     }
+
+    & + &::before {
+      content: '';
+
+      position: absolute;
+      inset-block-start: 50%;
+      inset-inline-start: 0;
+      transform: translateY(-50%);
+
+      width: 1px;
+      height: 16px;
+
+      background-color: ${cssVar.colorBorderSecondary};
+
+      transition: opacity 0.15s ${cssVar.motionEaseInOut};
+    }
+
+    &:hover::before,
+    &[data-active='true']::before,
+    &:hover + &::before,
+    &[data-active='true'] + &::before {
+      opacity: 0;
+    }
   `,
   tabActive: css`
     background-color: ${cssVar.colorBgElevated};
 
     &:hover {
       background-color: ${cssVar.colorBgElevated};
+    }
+
+    html.desktop[data-theme='dark'] & {
+      background-color: ${cssVar.colorFillSecondary};
+      box-shadow: inset 0 0 0 1px ${cssVar.colorBorderSecondary};
+
+      &:hover {
+        background-color: ${cssVar.colorFillSecondary};
+      }
     }
   `,
   tabIcon: css`

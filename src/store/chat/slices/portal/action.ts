@@ -1,3 +1,4 @@
+import { localFileService } from '@/services/electron/localFileService';
 import { type ChatStore } from '@/store/chat/store';
 import { type StoreSetter } from '@/store/types';
 import { type PortalArtifact } from '@/types/artifact';
@@ -50,6 +51,95 @@ export class ChatPortalActionImpl {
     }
   };
 
+  closeLocalFile = (): void => {
+    const { portalStack } = this.#get();
+    if (getCurrentViewType(portalStack) === PortalViewType.LocalFile) {
+      this.#get().popPortalView();
+    }
+  };
+
+  closeLocalFileTab = (filePath: string): void => {
+    const { openLocalFiles, activeLocalFilePath, dirtyLocalFileContents } = this.#get();
+    const idx = openLocalFiles.findIndex((f) => f.filePath === filePath);
+    if (idx === -1) return;
+
+    const nextFiles = openLocalFiles.filter((_, i) => i !== idx);
+
+    let nextActive: string | undefined;
+    if (activeLocalFilePath === filePath) {
+      const neighbor = nextFiles[idx] ?? nextFiles[idx - 1];
+      nextActive = neighbor?.filePath;
+    } else {
+      nextActive = activeLocalFilePath;
+    }
+
+    let nextDirty = dirtyLocalFileContents;
+    if (filePath in dirtyLocalFileContents) {
+      const { [filePath]: _, ...rest } = dirtyLocalFileContents;
+      nextDirty = rest;
+    }
+
+    this.#set(
+      {
+        activeLocalFilePath: nextActive,
+        dirtyLocalFileContents: nextDirty,
+        openLocalFiles: nextFiles,
+      },
+      false,
+      'closeLocalFileTab',
+    );
+
+    if (nextFiles.length === 0) {
+      this.#get().closeLocalFile();
+    }
+  };
+
+  closeLeftLocalFileTabs = (filePath: string): void => {
+    const { openLocalFiles, activeLocalFilePath } = this.#get();
+    const idx = openLocalFiles.findIndex((f) => f.filePath === filePath);
+    if (idx <= 0) return;
+
+    const nextFiles = openLocalFiles.slice(idx);
+    const nextActive = nextFiles.some((f) => f.filePath === activeLocalFilePath)
+      ? activeLocalFilePath
+      : filePath;
+
+    this.#set(
+      { activeLocalFilePath: nextActive, openLocalFiles: nextFiles },
+      false,
+      'closeLeftLocalFileTabs',
+    );
+  };
+
+  closeOtherLocalFileTabs = (filePath: string): void => {
+    const { openLocalFiles } = this.#get();
+    const target = openLocalFiles.find((f) => f.filePath === filePath);
+    if (!target) return;
+
+    this.#set(
+      { activeLocalFilePath: filePath, openLocalFiles: [target] },
+      false,
+      'closeOtherLocalFileTabs',
+    );
+  };
+
+  closeRightLocalFileTabs = (filePath: string): void => {
+    const { openLocalFiles, activeLocalFilePath } = this.#get();
+    const idx = openLocalFiles.findIndex((f) => f.filePath === filePath);
+    if (idx < 0 || idx >= openLocalFiles.length - 1) return;
+
+    const nextFiles = openLocalFiles.slice(0, idx + 1);
+    const nextActive = nextFiles.some((f) => f.filePath === activeLocalFilePath)
+      ? activeLocalFilePath
+      : filePath;
+
+    this.#set(
+      { activeLocalFilePath: nextActive, openLocalFiles: nextFiles },
+      false,
+      'closeRightLocalFileTabs',
+    );
+  };
+
   closeMessageDetail = (): void => {
     const { portalStack } = this.#get();
     if (getCurrentViewType(portalStack) === PortalViewType.MessageDetail) {
@@ -90,12 +180,55 @@ export class ChatPortalActionImpl {
     this.#get().pushPortalView({ artifact, type: PortalViewType.Artifact });
   };
 
-  openDocument = (documentId: string): void => {
-    this.#get().pushPortalView({ documentId, type: PortalViewType.Document });
+  openDocument = (documentId: string, agentDocumentId?: string): void => {
+    this.#get().pushPortalView({ agentDocumentId, documentId, type: PortalViewType.Document });
   };
 
   openFilePreview = (file: PortalFile): void => {
     this.#get().pushPortalView({ file, type: PortalViewType.FilePreview });
+  };
+
+  openLocalFile = ({
+    filePath,
+    workingDirectory,
+  }: {
+    filePath: string;
+    workingDirectory: string;
+  }): void => {
+    const { openLocalFiles } = this.#get();
+    const exists = openLocalFiles.some((f) => f.filePath === filePath);
+    const nextFiles = exists ? openLocalFiles : [...openLocalFiles, { filePath, workingDirectory }];
+    this.#set({ activeLocalFilePath: filePath, openLocalFiles: nextFiles }, false, 'openLocalFile');
+    this.#get().pushPortalView({ type: PortalViewType.LocalFile });
+  };
+
+  setActiveLocalFile = (filePath: string): void => {
+    this.#set({ activeLocalFilePath: filePath }, false, 'setActiveLocalFile');
+  };
+
+  setLocalFileBuffer = (filePath: string, content: string | undefined): void => {
+    const { dirtyLocalFileContents } = this.#get();
+    if (content === undefined) {
+      if (!(filePath in dirtyLocalFileContents)) return;
+
+      const { [filePath]: _, ...rest } = dirtyLocalFileContents;
+      this.#set({ dirtyLocalFileContents: rest }, false, 'setLocalFileBuffer/clear');
+      return;
+    }
+    if (dirtyLocalFileContents[filePath] === content) return;
+    this.#set(
+      { dirtyLocalFileContents: { ...dirtyLocalFileContents, [filePath]: content } },
+      false,
+      'setLocalFileBuffer',
+    );
+  };
+
+  saveLocalFile = async (filePath: string): Promise<string | undefined> => {
+    const { dirtyLocalFileContents } = this.#get();
+    const buffer = dirtyLocalFileContents[filePath];
+    if (buffer === undefined) return undefined;
+    await localFileService.writeFile({ content: buffer, path: filePath });
+    return buffer;
   };
 
   openMessageDetail = (messageId: string): void => {

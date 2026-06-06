@@ -1,4 +1,5 @@
 import type { UserAgentOnboardingDraft, UserAgentOnboardingNode } from '@lobechat/types';
+import { isRecord, pickTrimmedString } from '@lobechat/utils';
 
 type FieldType = 'string' | 'string[]';
 
@@ -68,10 +69,7 @@ export const NODE_SCHEMAS: Partial<Record<UserAgentOnboardingNode, NodeSchema>> 
   },
 };
 
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-export const sanitizeText = (value?: string) => value?.trim() || undefined;
+export const sanitizeText = (value?: string) => pickTrimmedString(value);
 
 const sanitizeTextList = (items?: unknown[], max = 8) =>
   (items ?? [])
@@ -165,12 +163,6 @@ export const getNodeDraftState = (
   draft: UserAgentOnboardingDraft,
 ): NodeDraftState | undefined => {
   if (!node || node === 'summary') return undefined;
-
-  if (node === 'responseLanguage') {
-    return draft.responseLanguage
-      ? { status: 'complete' }
-      : { missingFields: ['responseLanguage'], status: 'empty' };
-  }
 
   const currentDraft = draft[node];
 

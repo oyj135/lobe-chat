@@ -3,15 +3,15 @@ import type {
   UserAgentOnboardingDraft,
   UserAgentOnboardingNode,
 } from '@lobechat/types';
+import { isRecord } from '@lobechat/utils';
 
-import { getScopedPatch, isRecord, normalizeFromSchema, sanitizeText } from './nodeSchema';
+import { getScopedPatch, normalizeFromSchema } from './nodeSchema';
 
 type OnboardingPatchInput = Record<string, unknown>;
-type DraftKey = keyof Omit<UserAgentOnboardingDraft, 'responseLanguage'>;
+type DraftKey = keyof UserAgentOnboardingDraft;
 
 interface CommitSideEffects {
   updateInterests?: string[];
-  updateResponseLanguage?: string;
   updateUserName?: string;
 }
 
@@ -20,7 +20,7 @@ export interface NodeHandler {
     state: UserAgentOnboarding,
     draft: UserAgentOnboardingDraft,
   ) => { errorMessage?: string; sideEffects?: CommitSideEffects; success: boolean };
-  readonly draftKey: DraftKey | 'responseLanguage';
+  readonly draftKey: DraftKey;
   extractDraft: (patch: OnboardingPatchInput) => Partial<UserAgentOnboardingDraft> | undefined;
   getDraftValue: (draft: UserAgentOnboardingDraft) => unknown;
   mergeDraft: (draft: UserAgentOnboardingDraft, patch: unknown) => UserAgentOnboardingDraft;
@@ -76,27 +76,6 @@ const makeProfileNodeHandler = (
   },
 });
 
-const responseLanguageHandler: NodeHandler = {
-  draftKey: 'responseLanguage',
-  commitToState: (_state, draft) => {
-    if (draft.responseLanguage === undefined) {
-      return { errorMessage: 'Response language has not been captured yet.', success: false };
-    }
-    return {
-      sideEffects: { updateResponseLanguage: draft.responseLanguage },
-      success: true,
-    };
-  },
-  extractDraft: (patch) => {
-    const responseLanguage = sanitizeText(
-      typeof patch.responseLanguage === 'string' ? patch.responseLanguage : undefined,
-    );
-    return responseLanguage ? { responseLanguage } : undefined;
-  },
-  getDraftValue: (draft) => draft.responseLanguage,
-  mergeDraft: (draft, patch) => ({ ...draft, responseLanguage: patch as string }),
-};
-
 export const NODE_HANDLERS: Partial<Record<UserAgentOnboardingNode, NodeHandler>> = {
   agentIdentity: makeProfileNodeHandler('agentIdentity', 'agentIdentity', {
     key: 'agentIdentity',
@@ -105,7 +84,6 @@ export const NODE_HANDLERS: Partial<Record<UserAgentOnboardingNode, NodeHandler>
     key: 'profile',
     profileKey: 'painPoints',
   }),
-  responseLanguage: responseLanguageHandler,
   userIdentity: makeProfileNodeHandler(
     'userIdentity',
     'userIdentity',

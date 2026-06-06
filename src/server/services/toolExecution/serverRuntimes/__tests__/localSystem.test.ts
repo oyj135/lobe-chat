@@ -1,12 +1,12 @@
 import { LocalSystemIdentifier, LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ToolExecutionContext } from '../../types';
 
-// Mock deviceProxy
+// Mock deviceGateway
 const mockExecuteToolCall = vi.fn();
-vi.mock('../../deviceProxy', () => ({
-  deviceProxy: {
+vi.mock('../../deviceGateway', () => ({
+  deviceGateway: {
     executeToolCall: (...args: any[]) => mockExecuteToolCall(...args),
   },
 }));
@@ -15,6 +15,10 @@ vi.mock('../../deviceProxy', () => ({
 const { localSystemRuntime } = await import('../localSystem');
 
 describe('localSystemRuntime', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('should have the correct identifier', () => {
     expect(localSystemRuntime.identifier).toBe(LocalSystemIdentifier);
   });
@@ -57,7 +61,7 @@ describe('localSystemRuntime', () => {
       }
     });
 
-    it('should call deviceProxy.executeToolCall with correct arguments when a proxy function is invoked', async () => {
+    it('should call deviceGateway.executeToolCall with correct arguments when a proxy function is invoked', async () => {
       const context: ToolExecutionContext = {
         activeDeviceId: 'device-1',
         toolManifestMap: {},
@@ -80,6 +84,7 @@ describe('localSystemRuntime', () => {
           arguments: JSON.stringify(args),
           identifier: LocalSystemIdentifier,
         },
+        undefined,
       );
       expect(result).toEqual(expectedResult);
     });
@@ -104,6 +109,7 @@ describe('localSystemRuntime', () => {
         expect.objectContaining({
           arguments: JSON.stringify(complexArgs),
         }),
+        undefined,
       );
     });
   });

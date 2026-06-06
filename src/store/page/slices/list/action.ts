@@ -1,18 +1,40 @@
+import { CUSTOM_DOCUMENT_FILE_TYPE } from '@lobechat/const';
+import { type DocumentItem } from '@lobechat/database/schemas';
 import { type SWRResponse } from 'swr';
 
 import { useClientDataSWRWithSync } from '@/libs/swr';
 import { documentService } from '@/services/document';
+import { documentSWRKeys } from '@/services/document/swrKeys';
 import { useGlobalStore } from '@/store/global';
 import { type StoreSetter } from '@/store/types';
-import { type LobeDocument } from '@/types/document';
+import { DocumentSourceType, type LobeDocument } from '@/types/document';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type PageStore } from '../../store';
 
+const documentItemToLobeDocument = (document: DocumentItem): LobeDocument => ({
+  content: document.content || null,
+  createdAt: document.createdAt ? new Date(document.createdAt) : new Date(),
+  editorData:
+    typeof document.editorData === 'string'
+      ? JSON.parse(document.editorData)
+      : document.editorData || null,
+  fileType: document.fileType,
+  filename: document.title || document.filename || 'Untitled',
+  id: document.id,
+  metadata: document.metadata || {},
+  source: 'document',
+  sourceType: DocumentSourceType.EDITOR,
+  title: document.title || '',
+  totalCharCount: document.content?.length || 0,
+  totalLineCount: 0,
+  updatedAt: document.updatedAt ? new Date(document.updatedAt) : new Date(),
+});
+
 const n = setNamespace('page/list');
 
 const ALLOWED_PAGE_SOURCE_TYPES = new Set(['editor', 'file', 'api']);
-const ALLOWED_PAGE_FILE_TYPES = new Set(['custom/document', 'application/pdf']);
+const ALLOWED_PAGE_FILE_TYPES = new Set([CUSTOM_DOCUMENT_FILE_TYPE, 'application/pdf']);
 
 /**
  * Check if a page should be displayed in the page list
@@ -122,9 +144,20 @@ export class ListActionImpl {
     this.#set({ showOnlyPagesNotInLibrary: show }, false, n('setShowOnlyPagesNotInLibrary'));
   };
 
+  upsertDocument = (document: DocumentItem): void => {
+    const lobeDoc = documentItemToLobeDocument(document);
+    const { documents } = this.#get();
+    const exists = documents?.some((doc) => doc.id === document.id);
+    this.#get().internal_dispatchDocuments(
+      exists
+        ? { document: lobeDoc, id: document.id, type: 'updateDocument' }
+        : { document: lobeDoc, type: 'addDocument' },
+    );
+  };
+
   useFetchDocuments = (): SWRResponse<LobeDocument[]> => {
     return useClientDataSWRWithSync<LobeDocument[]>(
-      ['pageDocuments'],
+      documentSWRKeys.pageDocuments(),
       async () => {
         const pageSize = useGlobalStore.getState().status.pagePageSize || 20;
         return (await documentService.getPageDocuments(pageSize)) as LobeDocument[];

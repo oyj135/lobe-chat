@@ -18,6 +18,7 @@ export interface SendNewMessage {
   editorData?: Record<string, any>;
   // if message has attached with files, then add files to message and the agent
   files?: string[];
+  metadata?: MessageMetadata;
   /** Page selections attached to this message (for Ask AI functionality) */
   pageSelections?: PageSelection[];
   parentId?: string;
@@ -82,8 +83,23 @@ export interface SendMessageServerParams {
   preloadMessages?: SendPreloadMessage[];
   sessionId?: string;
   threadId?: string;
+  /**
+   * Filters applied to the topic list returned alongside the message.
+   * Callers pass whatever filter the active sidebar is using so the server
+   * doesn't echo back topics the UI was already excluding (e.g. completed
+   * status), which would overwrite the filtered list in `topicDataMap`.
+   */
+  topicFilter?: {
+    excludeStatuses?: string[];
+    excludeTriggers?: string[];
+    includeTriggers?: string[];
+  };
   // if there is activeTopicId, then add topicId to message
   topicId?: string;
+  /**
+   * Page size for the topic list returned after creating a new topic.
+   */
+  topicPageSize?: number;
 }
 
 export const CreateThreadWithMessageSchema = z.object({
@@ -131,11 +147,20 @@ export const AiSendMessageServerSchema = z.object({
     content: z.string(),
     editorData: z.record(z.unknown()).optional(),
     files: z.array(z.string()).optional(),
+    metadata: MessageMetadataSchema.optional(),
     pageSelections: z.array(PageSelectionSchema).optional(),
     parentId: z.string().optional(),
   }),
   sessionId: z.string().optional(),
   threadId: z.string().optional(),
+  topicFilter: z
+    .object({
+      excludeStatuses: z.array(z.string()).optional(),
+      excludeTriggers: z.array(z.string()).optional(),
+      includeTriggers: z.array(z.string()).optional(),
+    })
+    .optional(),
+  topicPageSize: z.number().int().min(1).max(100).optional(),
   topicId: z.string().optional(),
 });
 
@@ -169,6 +194,11 @@ export const StructureSchema = z.object({
 });
 
 export const StructureOutputSchema = z.object({
+  /**
+   * Free-form context forwarded to non-tracing hooks (e.g. billing). Use
+   * `tracing` for `llm_generation_tracing` config.
+   */
+  metadata: z.record(z.string(), z.unknown()).optional(),
   messages: z.array(z.any()),
   model: z.string(),
   provider: z.string(),
@@ -176,10 +206,22 @@ export const StructureOutputSchema = z.object({
   tools: z
     .array(z.object({ function: LobeUniformToolSchema, type: z.literal('function') }))
     .optional(),
+  /**
+   * Structured tracing config (scenario / promptVersion / schemaName /
+   * agentId / topicId / inputHint / ...). See `TracingOptions` from
+   * `@lobechat/llm-generation-tracing` for the typed shape.
+   *
+   * `tracingId` is validated as UUID here because the value is reused as the
+   * `llm_generation_tracing.id` primary key (uuid column) and is also accepted
+   * back through `llmGenerationTracing.recordFeedback` (`z.string().uuid()`).
+   * Letting a malformed value through would echo a tracingId the client can't
+   * use for the feedback flow. Other fields stay free-form via `catchall`.
+   */
+  tracing: z.object({ tracingId: z.string().uuid().optional() }).catchall(z.unknown()).optional(),
 });
 
 interface IStructureSchema {
-  description: string;
+  description?: string;
   name: string;
   schema: {
     additionalProperties?: boolean;
@@ -191,8 +233,12 @@ interface IStructureSchema {
 }
 
 export interface StructureOutputParams {
-  keyVaultsPayload: string;
   messages: OpenAIChatMessage[];
+  /**
+   * Free-form context forwarded to non-tracing hooks (e.g. billing). Use
+   * `tracing` for `llm_generation_tracing` config.
+   */
+  metadata?: Record<string, unknown>;
   model: string;
   provider: string;
   schema?: IStructureSchema;
@@ -201,4 +247,10 @@ export interface StructureOutputParams {
     function: LobeUniformTool;
     type: 'function';
   }[];
+  /**
+   * Structured tracing config (scenario / promptVersion / schemaName /
+   * agentId / topicId / inputHint / ...). See `TracingOptions` from
+   * `@lobechat/llm-generation-tracing` for the typed shape.
+   */
+  tracing?: Record<string, unknown>;
 }

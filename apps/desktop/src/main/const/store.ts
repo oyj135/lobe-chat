@@ -26,6 +26,7 @@ export const defaultProxySettings: NetworkProxySettings = {
  * Storage default values
  */
 export const STORE_DEFAULTS: ElectronMainStore = {
+  appTrayVisible: true,
   dataSyncConfig: { storageMode: 'cloud' },
   encryptedTokens: {},
   gatewayDeviceDescription: '',
@@ -33,8 +34,12 @@ export const STORE_DEFAULTS: ElectronMainStore = {
   gatewayDeviceName: '',
   gatewayEnabled: true,
   gatewayUrl: 'https://device-gateway.lobehub.com',
+  heteroTracingEnabled: false,
+  imessageBridgeConfigs: [],
   locale: 'auto',
+  localFileWorkspaceRoots: [],
   networkProxy: defaultProxySettings,
+  pendingRestoreRoute: '',
   shortcuts: DEFAULT_ELECTRON_DESKTOP_SHORTCUTS,
   storagePath: appStorageDir,
   themeMode: 'system',

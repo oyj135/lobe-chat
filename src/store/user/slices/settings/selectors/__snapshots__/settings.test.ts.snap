@@ -51,20 +51,29 @@ exports[`settingsSelectors > currentSettings > should merge DEFAULT_SETTINGS and
 exports[`settingsSelectors > currentSystemAgent > should merge DEFAULT_SYSTEM_AGENT_CONFIG and s.settings.systemAgent correctly 1`] = `
 {
   "agentMeta": {
-    "model": "claude-sonnet-4-6",
-    "provider": "anthropic",
+    "model": "deepseek-v4-pro",
+    "provider": "deepseek",
   },
   "enableAutoReply": true,
+  "followUpAction": {
+    "enabled": false,
+    "model": "gpt-5.4-mini",
+    "provider": "openai",
+  },
   "generationTopic": {
     "model": "gpt-5.4-mini",
     "provider": "openai",
   },
   "historyCompress": {
-    "model": "claude-sonnet-4-6",
-    "provider": "anthropic",
+    "model": "deepseek-v4-pro",
+    "provider": "deepseek",
   },
   "inputCompletion": {
     "enabled": false,
+    "model": "gpt-5.4-mini",
+    "provider": "openai",
+  },
+  "memoryAnalysisAgentConfig": {
     "model": "gpt-5.4-mini",
     "provider": "openai",
   },
@@ -73,21 +82,24 @@ exports[`settingsSelectors > currentSystemAgent > should merge DEFAULT_SYSTEM_AG
     "model": "gpt-5.4-mini",
     "provider": "openai",
   },
-  "queryRewrite": {
-    "enabled": true,
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
-  },
   "replyMessage": "Custom auto reply",
   "thread": {
-    "model": "claude-sonnet-4-6",
-    "provider": "anthropic",
+    "model": "deepseek-v4-pro",
+    "provider": "deepseek",
   },
   "topic": {
     "model": "gpt-5.4-mini",
     "provider": "openai",
   },
   "translation": {
+    "model": "gpt-5.4-mini",
+    "provider": "openai",
+  },
+  "userMemoryEmbedding": {
+    "model": "text-embedding-3-small",
+    "provider": "openai",
+  },
+  "userMemoryPersonaWriter": {
     "model": "gpt-5.4-mini",
     "provider": "openai",
   },
@@ -109,20 +121,22 @@ exports[`settingsSelectors > defaultAgent > should merge DEFAULT_AGENT and s.set
 {
   "config": {
     "chatConfig": {
-      "autoCreateTopicThreshold": 2,
-      "enableAutoCreateTopic": true,
+      "enableAgentMode": true,
       "enableCompressHistory": true,
       "enableContextCompression": true,
+      "enableFollowUpChips": false,
       "enableHistoryCount": false,
-      "enableReasoning": false,
       "enableStreaming": true,
       "historyCount": 20,
       "reasoningBudgetToken": 1024,
       "searchFCModel": {
-        "model": "claude-sonnet-4-6",
-        "provider": "anthropic",
+        "model": "deepseek-v4-pro",
+        "provider": "deepseek",
       },
       "searchMode": "auto",
+      "selfIteration": {
+        "enabled": false,
+      },
     },
     "model": "gpt-3.5-turbo",
     "openingQuestions": [],
@@ -133,7 +147,7 @@ exports[`settingsSelectors > defaultAgent > should merge DEFAULT_AGENT and s.set
       "top_p": 1,
     },
     "plugins": [],
-    "provider": "anthropic",
+    "provider": "deepseek",
     "systemRole": "user",
     "tts": {
       "showAllLocaleVoice": false,
@@ -154,20 +168,22 @@ exports[`settingsSelectors > defaultAgent > should merge DEFAULT_AGENT and s.set
 exports[`settingsSelectors > defaultAgentConfig > should merge DEFAULT_AGENT_CONFIG and defaultAgent(s).config correctly 1`] = `
 {
   "chatConfig": {
-    "autoCreateTopicThreshold": 2,
-    "enableAutoCreateTopic": true,
+    "enableAgentMode": true,
     "enableCompressHistory": true,
     "enableContextCompression": true,
+    "enableFollowUpChips": false,
     "enableHistoryCount": false,
-    "enableReasoning": false,
     "enableStreaming": true,
     "historyCount": 20,
     "reasoningBudgetToken": 1024,
     "searchFCModel": {
-      "model": "claude-sonnet-4-6",
-      "provider": "anthropic",
+      "model": "deepseek-v4-pro",
+      "provider": "deepseek",
     },
     "searchMode": "auto",
+    "selfIteration": {
+      "enabled": false,
+    },
   },
   "model": "gpt-4",
   "openingQuestions": [],
@@ -178,7 +194,7 @@ exports[`settingsSelectors > defaultAgentConfig > should merge DEFAULT_AGENT_CON
     "top_p": 1,
   },
   "plugins": [],
-  "provider": "anthropic",
+  "provider": "deepseek",
   "systemRole": "custom role",
   "tts": {
     "showAllLocaleVoice": false,

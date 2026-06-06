@@ -6,7 +6,7 @@ import { documents } from '../../schemas';
 import type { NewAgent } from '../../schemas/agent';
 import { agents } from '../../schemas/agent';
 import type { NewFile } from '../../schemas/file';
-import { files } from '../../schemas/file';
+import { files, knowledgeBaseFiles, knowledgeBases } from '../../schemas/file';
 import { messages } from '../../schemas/message';
 import type { NewTopic } from '../../schemas/topic';
 import { topics } from '../../schemas/topic';
@@ -567,6 +567,84 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
       expect(agentIds.has(otherAgentId)).toBe(true);
     });
 
+    it('should populate agent metadata on topic results', async () => {
+      // Add avatar/background to an existing agent so we can assert join output
+      const [decoratedAgent] = await serverDB
+        .insert(agents)
+        .values({
+          avatar: '🤖',
+          backgroundColor: '#123456',
+          slug: 'decorated-agent',
+          title: 'Decorated Agent',
+          userId,
+        })
+        .returning();
+
+      await serverDB.insert(topics).values({
+        agentId: decoratedAgent.id,
+        title: 'Testing Decorated Agent',
+        userId,
+      });
+
+      const results = await searchRepo.search({ query: 'decorated' });
+      const topicResults = results.filter((r) => r.type === 'topic');
+      const decoratedTopic = topicResults.find(
+        (t) => t.type === 'topic' && t.agentId === decoratedAgent.id,
+      );
+
+      expect(decoratedTopic).toBeDefined();
+      if (decoratedTopic && decoratedTopic.type === 'topic') {
+        expect(decoratedTopic.agent).toEqual({
+          avatar: '🤖',
+          backgroundColor: '#123456',
+          title: 'Decorated Agent',
+        });
+      }
+
+      // Topic without an agent should have a null agent field
+      const orphanTopic = topicResults.find((t) => t.type === 'topic' && t.agentId === null);
+      if (orphanTopic && orphanTopic.type === 'topic') {
+        expect(orphanTopic.agent).toBeNull();
+      }
+    });
+
+    it('should not leak agent metadata when topic.agentId points to another user', async () => {
+      // Foreign agent owned by a different user
+      const [foreignAgent] = await serverDB
+        .insert(agents)
+        .values({
+          avatar: '🕵️',
+          backgroundColor: '#abcdef',
+          slug: 'foreign-agent',
+          title: 'Foreign Agent',
+          userId: otherUserId,
+        })
+        .returning();
+
+      // Topic owned by the current user but carrying the foreign agent id —
+      // simulates state reachable via crafted/migrated rows (e.g. topic
+      // creation persists input.agentId even when resolveContext fails).
+      await serverDB.insert(topics).values({
+        agentId: foreignAgent.id,
+        title: 'Cross-tenant probe',
+        userId,
+      });
+
+      const results = await searchRepo.search({ query: 'cross-tenant' });
+      const topicResults = results.filter((r) => r.type === 'topic');
+      const probeTopic = topicResults.find(
+        (t) => t.type === 'topic' && t.title === 'Cross-tenant probe',
+      );
+
+      expect(probeTopic).toBeDefined();
+      if (probeTopic && probeTopic.type === 'topic') {
+        // The raw agentId is preserved (used for navigation), but no
+        // foreign agent metadata is surfaced to the renderer.
+        expect(probeTopic.agentId).toBe(foreignAgent.id);
+        expect(probeTopic.agent).toBeNull();
+      }
+    });
+
     it('should return 6 topics in agent context', async () => {
       // Create additional topics to test limit
       await serverDB.insert(topics).values(
@@ -770,6 +848,245 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
       expect(page.relevance).toBeGreaterThan(0);
       expect(page.createdAt).toBeInstanceOf(Date);
       expect(page.updatedAt).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('searchKnowledgeBaseDocuments', () => {
+    const kbA = 'kb-search-a';
+    const kbB = 'kb-search-b';
+
+    beforeEach(async () => {
+      // Create two KBs for the test user + one for the other user
+      await serverDB.insert(knowledgeBases).values([
+        { id: kbA, name: 'Knowledge Base A', userId },
+        { id: kbB, name: 'Knowledge Base B', userId },
+        { id: 'kb-other-1', name: 'Other User KB', userId: otherUserId },
+      ]);
+
+      // Documents in KB-A
+      await serverDB.insert(documents).values([
+        {
+          content:
+            'Machine learning algorithms can be supervised, unsupervised, or reinforcement-based. ' +
+            'Common supervised methods include linear regression, decision trees, and neural networks.',
+          fileType: 'custom/document',
+          filename: 'ml-overview.md',
+          knowledgeBaseId: kbA,
+          source: 'internal://document/placeholder',
+          sourceType: 'api',
+          title: 'Machine Learning Overview',
+          totalCharCount: 200,
+          totalLineCount: 5,
+          userId,
+        },
+        {
+          content: 'Documentation about cooking — completely unrelated topic.',
+          fileType: 'custom/document',
+          filename: 'cooking.md',
+          knowledgeBaseId: kbA,
+          source: 'internal://document/placeholder',
+          sourceType: 'api',
+          title: 'Cooking Notes',
+          totalCharCount: 50,
+          totalLineCount: 2,
+          userId,
+        },
+        // Document in KB-B (must NOT be returned when searching KB-A)
+        {
+          content:
+            'This document is in a different knowledge base and should not match KB-A scope.',
+          fileType: 'custom/document',
+          filename: 'ml-other-kb.md',
+          knowledgeBaseId: kbB,
+          source: 'internal://document/placeholder',
+          sourceType: 'api',
+          title: 'Machine Learning in KB-B',
+          totalCharCount: 100,
+          totalLineCount: 3,
+          userId,
+        },
+        // Document for other user (cross-user isolation check)
+        {
+          content: 'Machine learning notes from another user.',
+          fileType: 'custom/document',
+          filename: 'ml-other-user.md',
+          knowledgeBaseId: 'kb-other-1',
+          source: 'internal://document/placeholder',
+          sourceType: 'api',
+          title: 'Other user ML notes',
+          totalCharCount: 50,
+          totalLineCount: 2,
+          userId: otherUserId,
+        },
+      ]);
+    });
+
+    it('should return [] for empty query', async () => {
+      const results = await searchRepo.searchKnowledgeBaseDocuments('', [kbA]);
+      expect(results).toEqual([]);
+    });
+
+    it('should return [] when no knowledgeBaseIds provided', async () => {
+      const results = await searchRepo.searchKnowledgeBaseDocuments('machine learning', []);
+      expect(results).toEqual([]);
+    });
+
+    it('should match documents within KB scope by content', async () => {
+      const results = await searchRepo.searchKnowledgeBaseDocuments('machine learning', [kbA]);
+      expect(results.length).toBeGreaterThan(0);
+      // Should hit ML overview, not cooking
+      expect(results.some((r) => r.title === 'Machine Learning Overview')).toBe(true);
+      expect(results.every((r) => r.knowledgeBaseId === kbA)).toBe(true);
+    });
+
+    it('should respect KB scope (KB-A query does not return KB-B docs)', async () => {
+      const results = await searchRepo.searchKnowledgeBaseDocuments('machine learning', [kbA]);
+      expect(results.every((r) => r.title !== 'Machine Learning in KB-B')).toBe(true);
+    });
+
+    it('should isolate across users', async () => {
+      // Searching with otherUserId's KB should not leak to current user
+      const results = await searchRepo.searchKnowledgeBaseDocuments('machine learning', [
+        'kb-other-1',
+      ]);
+      // Current user (`userId`) does not own kb-other-1, so query against it returns []
+      expect(results).toEqual([]);
+    });
+
+    it('should produce snippet ≤ 300 characters', async () => {
+      const results = await searchRepo.searchKnowledgeBaseDocuments('machine learning', [kbA]);
+      results.forEach((r) => {
+        expect(r.snippet.length).toBeLessThanOrEqual(303); // 300 + '...' suffix
+      });
+    });
+
+    it('should produce relevance in [1, 3] range', async () => {
+      const results = await searchRepo.searchKnowledgeBaseDocuments('machine learning', [kbA]);
+      results.forEach((r) => {
+        expect(r.relevance).toBeGreaterThanOrEqual(1);
+        expect(r.relevance).toBeLessThanOrEqual(3);
+      });
+    });
+
+    describe('file-backed documents (PDF / parsed files)', () => {
+      const pdfFileId = 'file-bm25-pdf-1';
+      const pdfDocId = 'docs-bm25-pdf-1';
+      const folderDocId = 'docs-bm25-folder-1';
+      const otherUserFileId = 'file-bm25-other-1';
+      const otherUserDocId = 'docs-bm25-other-1';
+
+      beforeEach(async () => {
+        await serverDB.insert(files).values([
+          {
+            fileType: 'application/pdf',
+            id: pdfFileId,
+            name: 'transformers-paper.pdf',
+            size: 2048,
+            url: 's3://bucket/transformers-paper.pdf',
+            userId,
+          },
+          {
+            fileType: 'application/pdf',
+            id: otherUserFileId,
+            name: 'leak-check.pdf',
+            size: 2048,
+            url: 's3://bucket/leak-check.pdf',
+            userId: otherUserId,
+          },
+        ]);
+
+        await serverDB.insert(knowledgeBaseFiles).values([
+          { fileId: pdfFileId, knowledgeBaseId: kbA, userId },
+          { fileId: otherUserFileId, knowledgeBaseId: 'kb-other-1', userId: otherUserId },
+        ]);
+
+        await serverDB.insert(documents).values([
+          {
+            content:
+              'Attention is all you need. The Transformer architecture relies on self-attention ' +
+              'and replaces recurrence with parallel multi-head attention layers.',
+            fileId: pdfFileId,
+            fileType: 'application/pdf',
+            filename: 'transformers-paper.pdf',
+            id: pdfDocId,
+            source: 's3://bucket/transformers-paper.pdf',
+            sourceType: 'file',
+            title: 'Attention Is All You Need',
+            totalCharCount: 200,
+            totalLineCount: 5,
+            userId,
+          },
+          {
+            content: '',
+            fileType: 'custom/folder',
+            filename: 'a folder',
+            id: folderDocId,
+            knowledgeBaseId: kbA,
+            source: 'internal://folder/placeholder',
+            sourceType: 'api',
+            title: 'Transformer Folder',
+            totalCharCount: 0,
+            totalLineCount: 0,
+            userId,
+          },
+          {
+            content:
+              'Attention paper in another user knowledge base — must never surface for current user.',
+            fileId: otherUserFileId,
+            fileType: 'application/pdf',
+            filename: 'leak-check.pdf',
+            id: otherUserDocId,
+            source: 's3://bucket/leak-check.pdf',
+            sourceType: 'file',
+            title: 'Attention Leak Check',
+            totalCharCount: 100,
+            totalLineCount: 3,
+            userId: otherUserId,
+          },
+        ]);
+      });
+
+      it('returns a PDF-backed document hit via knowledge_base_files join', async () => {
+        const results = await searchRepo.searchKnowledgeBaseDocuments('attention transformer', [
+          kbA,
+        ]);
+        const pdfHit = results.find((r) => r.documentId === pdfDocId);
+        expect(pdfHit).toBeDefined();
+        expect(pdfHit?.knowledgeBaseId).toBe(kbA);
+        expect(pdfHit?.fileId).toBe(pdfFileId);
+        expect(pdfHit?.title).toBe('Attention Is All You Need');
+      });
+
+      it('still matches inline custom/document hits in the same call', async () => {
+        await serverDB.insert(documents).values({
+          content: 'Attention transformer notes written inline for KB-A',
+          fileType: 'custom/document',
+          filename: 'inline-notes.md',
+          knowledgeBaseId: kbA,
+          source: 'internal://document/placeholder',
+          sourceType: 'api',
+          title: 'Inline Attention Notes',
+          totalCharCount: 60,
+          totalLineCount: 2,
+          userId,
+        });
+
+        const results = await searchRepo.searchKnowledgeBaseDocuments('attention', [kbA]);
+        expect(results.some((r) => r.title === 'Inline Attention Notes')).toBe(true);
+        expect(results.some((r) => r.documentId === pdfDocId)).toBe(true);
+      });
+
+      it('excludes folder documents even when they match the query', async () => {
+        const results = await searchRepo.searchKnowledgeBaseDocuments('transformer folder', [kbA]);
+        expect(results.every((r) => r.documentId !== folderDocId)).toBe(true);
+      });
+
+      it('does not surface another user PDF when querying their KB', async () => {
+        const results = await searchRepo.searchKnowledgeBaseDocuments('attention', [
+          'kb-other-1',
+        ]);
+        expect(results).toEqual([]);
+      });
     });
   });
 

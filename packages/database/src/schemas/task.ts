@@ -1,3 +1,5 @@
+import type { BriefArtifacts, BriefMetadata } from '@lobechat/types';
+import { isNotNull, isNull } from 'drizzle-orm';
 import {
   foreignKey,
   index,
@@ -16,6 +18,7 @@ import { agentCronJobs } from './agentCronJob';
 import { documents } from './file';
 import { topics } from './topic';
 import { users } from './user';
+import { workspaces } from './workspace';
 
 // ── Tasks ────────────────────────────────────────────────
 
@@ -34,6 +37,7 @@ export const tasks = pgTable(
     createdByUserId: text('created_by_user_id')
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
     createdByAgentId: text('created_by_agent_id').references(() => agents.id, {
       onDelete: 'set null',
     }),
@@ -51,6 +55,10 @@ export const tasks = pgTable(
     name: text('name'),
     description: varchar255('description'),
     instruction: text('instruction').notNull(),
+    // Rich editor JSON state (Lexical). Mirrors the markdown `instruction`
+    // but preserves details that markdown drops — image sizes, custom nodes, etc.
+    // Optional: when null, callers fall back to parsing `instruction` markdown.
+    editorData: jsonb('editor_data'),
 
     // Lifecycle (same state machine for user and agent)
     // 'backlog' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled'
@@ -92,7 +100,9 @@ export const tasks = pgTable(
       foreignColumns: [t.id],
       name: 'tasks_parent_task_id_tasks_id_fk',
     }).onDelete('set null'),
-    uniqueIndex('tasks_identifier_idx').on(t.identifier, t.createdByUserId),
+    uniqueIndex('tasks_identifier_idx')
+      .on(t.identifier, t.createdByUserId)
+      .where(isNull(t.workspaceId)),
     index('tasks_created_by_user_id_idx').on(t.createdByUserId),
     index('tasks_created_by_agent_id_idx').on(t.createdByAgentId),
     index('tasks_assignee_user_id_idx').on(t.assigneeUserId),
@@ -102,6 +112,10 @@ export const tasks = pgTable(
     index('tasks_priority_idx').on(t.priority),
     index('tasks_automation_mode_idx').on(t.automationMode),
     index('tasks_heartbeat_idx').on(t.status, t.lastHeartbeatAt),
+    index('tasks_workspace_id_idx').on(t.workspaceId),
+    uniqueIndex('tasks_identifier_workspace_id_unique')
+      .on(t.workspaceId, t.identifier)
+      .where(isNotNull(t.workspaceId)),
   ],
 );
 
@@ -121,6 +135,7 @@ export const taskDependencies = pgTable(
     userId: text('user_id')
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
 
     // 'blocks' | 'relates'
     type: text('type').notNull().default('blocks'),
@@ -135,6 +150,7 @@ export const taskDependencies = pgTable(
     index('task_deps_task_id_idx').on(t.taskId),
     index('task_deps_depends_on_id_idx').on(t.dependsOnId),
     index('task_deps_user_id_idx').on(t.userId),
+    index('task_dependencies_workspace_id_idx').on(t.workspaceId),
   ],
 );
 
@@ -156,6 +172,7 @@ export const taskDocuments = pgTable(
     userId: text('user_id')
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
 
     // 'agent' | 'user' | 'system'
     pinnedBy: text('pinned_by').notNull().default('agent'),
@@ -167,6 +184,7 @@ export const taskDocuments = pgTable(
     index('task_docs_task_id_idx').on(t.taskId),
     index('task_docs_document_id_idx').on(t.documentId),
     index('task_docs_user_id_idx').on(t.userId),
+    index('task_documents_workspace_id_idx').on(t.workspaceId),
   ],
 );
 
@@ -186,6 +204,7 @@ export const taskTopics = pgTable(
     userId: text('user_id')
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
 
     seq: integer('seq').notNull(), // topic sequence within task (1, 2, 3...)
     operationId: text('operation_id'), // agent execution operation ID
@@ -211,6 +230,7 @@ export const taskTopics = pgTable(
     index('task_topics_topic_id_idx').on(t.topicId),
     index('task_topics_user_id_idx').on(t.userId),
     index('task_topics_status_idx').on(t.taskId, t.status),
+    index('task_topics_workspace_id_idx').on(t.workspaceId),
   ],
 );
 
@@ -229,6 +249,7 @@ export const briefs = pgTable(
     userId: text('user_id')
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
 
     // Source (polymorphic, fill as needed)
     taskId: text('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
@@ -241,7 +262,7 @@ export const briefs = pgTable(
     priority: text('priority').default('info'), // 'urgent' | 'normal' | 'info'
     title: text('title').notNull(),
     summary: text('summary').notNull(),
-    artifacts: jsonb('artifacts'), // document ids
+    artifacts: jsonb('artifacts').$type<BriefArtifacts>(), // programmatically collected at synthesis
     actions: jsonb('actions'), // BriefAction[]
 
     // Resolution
@@ -249,6 +270,9 @@ export const briefs = pgTable(
     resolvedComment: text('resolved_comment'),
     readAt: timestamptz('read_at'),
     resolvedAt: timestamptz('resolved_at'),
+
+    trigger: varchar255('trigger'), // field for which module triggered the brief, e.g. task, agent, signal, etc.
+    metadata: jsonb('metadata').$type<BriefMetadata>(), // freeform field for business and states.
 
     createdAt: createdAt(),
   },
@@ -260,6 +284,8 @@ export const briefs = pgTable(
     index('briefs_type_idx').on(t.type),
     index('briefs_priority_idx').on(t.priority),
     index('briefs_unresolved_idx').on(t.userId, t.resolvedAt),
+    index('briefs_trigger_idx').on(t.trigger),
+    index('briefs_workspace_id_idx').on(t.workspaceId),
   ],
 );
 
@@ -281,6 +307,7 @@ export const taskComments = pgTable(
     userId: text('user_id')
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
 
     // Author (user or agent, both nullable)
     authorUserId: text('author_user_id').references(() => users.id, { onDelete: 'set null' }),
@@ -303,6 +330,7 @@ export const taskComments = pgTable(
     index('task_comments_agent_id_idx').on(t.authorAgentId),
     index('task_comments_brief_id_idx').on(t.briefId),
     index('task_comments_topic_id_idx').on(t.topicId),
+    index('task_comments_workspace_id_idx').on(t.workspaceId),
   ],
 );
 

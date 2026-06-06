@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import {
   agents,
@@ -66,6 +66,11 @@ export interface ChatGroupSearchResult extends BaseSearchResult {
 }
 
 export interface TopicSearchResult extends BaseSearchResult {
+  agent: {
+    avatar: string | null;
+    backgroundColor: string | null;
+    title: string | null;
+  } | null;
   agentId: string | null;
   favorite: boolean | null;
   sessionId: string | null;
@@ -128,6 +133,25 @@ export interface KnowledgeBaseSearchResult extends BaseSearchResult {
   type: 'knowledgeBase';
 }
 
+/**
+ * BM25 hit for KB-scoped documents used by chunkRouter.semanticSearchForChat.
+ * Covers both inline `custom/document` pages and file-backed documents
+ * (e.g. parsed PDFs) joined through `knowledge_base_files`.
+ *
+ * `fileId` is present when the hit comes from a parsed-file document, letting
+ * the agent fetch the original via readKnowledge with either docs_* or file_*.
+ * `relevance` is normalized to [1, 3] (lower = better, matches BaseSearchResult semantics).
+ */
+export interface KnowledgeBaseDocumentHit {
+  documentId: string;
+  fileId?: string;
+  knowledgeBaseId: string;
+  relevance: number;
+  snippet: string;
+  title: string;
+  updatedAt: Date;
+}
+
 export interface AssistantSearchResult extends BaseSearchResult {
   author: string;
   avatar?: string | null;
@@ -160,6 +184,14 @@ export interface SearchOptions {
   query: string;
   type?: SearchResultType;
 }
+
+/**
+ * Topics and messages are ordered by recency rather than BM25 score, so we fetch
+ * a larger candidate pool first (most relevant matches), then keep the most recent
+ * ones. This prevents newly created/updated items from being buried under older
+ * high-scoring matches that would otherwise fill the small per-type limit.
+ */
+const RECENCY_CANDIDATE_MULTIPLIER = 4;
 
 /**
  * Search Repository - provides unified search across Agents, Topics, and Files
@@ -220,10 +252,11 @@ export class SearchRepo {
 
     const results = await Promise.all(searchPromises);
 
-    // Flatten and sort by relevance ASC, then by updatedAt DESC
-    return results
-      .flat()
-      .sort((a, b) => a.relevance - b.relevance || b.updatedAt.getTime() - a.updatedAt.getTime());
+    // Each search method already returns its results in the intended display order
+    // (topics/messages by recency, other types by BM25 score). The command palette
+    // groups results by type, so we only need to preserve each type's internal order
+    // here rather than re-sorting the merged list by relevance.
+    return results.flat();
   }
 
   /**
@@ -405,7 +438,16 @@ export class SearchRepo {
 
     const rows = await this.db
       .select({
+        // agents.id is selected as a sentinel: non-null only when the JOIN
+        // matched an agent owned by this user. Topics carrying an agentId
+        // that points to another user's agent (possible via migrated/crafted
+        // data) yield null here, so the renderer falls back to the
+        // agent-less subtitle and never surfaces foreign metadata.
+        agentAvatar: agents.avatar,
+        agentBackgroundColor: agents.backgroundColor,
         agentId: topics.agentId,
+        agentMatchedId: agents.id,
+        agentTitle: agents.title,
         content: topics.content,
         createdAt: topics.createdAt,
         favorite: topics.favorite,
@@ -416,6 +458,7 @@ export class SearchRepo {
         updatedAt: topics.updatedAt,
       })
       .from(topics)
+      .leftJoin(agents, and(eq(topics.agentId, agents.id), eq(agents.userId, this.userId)))
       .where(
         and(
           eq(topics.userId, this.userId),
@@ -424,20 +467,30 @@ export class SearchRepo {
         ),
       )
       .orderBy(sql`paradedb.score(${topics.id}) DESC`)
-      .limit(limit);
+      .limit(limit * RECENCY_CANDIDATE_MULTIPLIER);
 
-    return this.mapScoresToRelevance(rows).map((row) => ({
-      agentId: row.agentId,
-      createdAt: row.createdAt,
-      description: this.truncate(row.content),
-      favorite: row.favorite,
-      id: row.id,
-      relevance: row.relevance,
-      sessionId: row.sessionId,
-      title: row.title || '',
-      type: 'topic' as const,
-      updatedAt: row.updatedAt,
-    }));
+    return this.mapScoresToRelevance(rows)
+      .map((row) => ({
+        agent: row.agentMatchedId
+          ? {
+              avatar: row.agentAvatar,
+              backgroundColor: row.agentBackgroundColor,
+              title: row.agentTitle,
+            }
+          : null,
+        agentId: row.agentId,
+        createdAt: row.createdAt,
+        description: this.truncate(row.content),
+        favorite: row.favorite,
+        id: row.id,
+        relevance: row.relevance,
+        sessionId: row.sessionId,
+        title: row.title || '',
+        type: 'topic' as const,
+        updatedAt: row.updatedAt,
+      }))
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+      .slice(0, limit);
   }
 
   /**
@@ -474,22 +527,25 @@ export class SearchRepo {
         ),
       )
       .orderBy(sql`paradedb.score(${messages.id}) DESC`)
-      .limit(limit);
+      .limit(limit * RECENCY_CANDIDATE_MULTIPLIER);
 
-    return this.mapScoresToRelevance(rows).map((row) => ({
-      agentId: row.agentId,
-      content: row.content || '',
-      createdAt: row.createdAt,
-      description: row.agentTitle || 'General Chat',
-      id: row.id,
-      model: row.model,
-      relevance: row.relevance,
-      role: row.role,
-      title: this.truncate(row.content) || '',
-      topicId: row.topicId,
-      type: 'message' as const,
-      updatedAt: row.updatedAt,
-    }));
+    return this.mapScoresToRelevance(rows)
+      .map((row) => ({
+        agentId: row.agentId,
+        content: row.content || '',
+        createdAt: row.createdAt,
+        description: row.agentTitle || 'General Chat',
+        id: row.id,
+        model: row.model,
+        relevance: row.relevance,
+        role: row.role,
+        title: this.truncate(row.content) || '',
+        topicId: row.topicId,
+        type: 'message' as const,
+        updatedAt: row.updatedAt,
+      }))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
   }
 
   /**
@@ -625,6 +681,107 @@ export class SearchRepo {
         updatedAt: row.updatedAt,
       };
     });
+  }
+
+  /**
+   * KB-scoped BM25 search over documents.
+   *
+   * Covers two routes to the KB scope, executed as two separate ParadeDB
+   * scoring queries that we merge in JS:
+   *   - inline pages: `documents.knowledge_base_id` directly references the KB
+   *   - file-backed docs (e.g. parsed PDFs): joined through `knowledge_base_files`
+   *     via `documents.file_id`
+   *
+   * Two queries instead of an `OR`-ed WHERE clause because `paradedb.score()`
+   * requires a tantivy index scan, and ParadeDB rejects disjunctive shapes
+   * spanning bm25 and non-bm25 predicates ("Unsupported query shape").
+   *
+   * Folder rows (DOCUMENT_FOLDER_TYPE) are excluded — they carry no content.
+   */
+  async searchKnowledgeBaseDocuments(
+    query: string,
+    knowledgeBaseIds: string[],
+    limit: number = 20,
+  ): Promise<KnowledgeBaseDocumentHit[]> {
+    if (!query || query.trim() === '') return [];
+    if (!knowledgeBaseIds || knowledgeBaseIds.length === 0) return [];
+
+    const bm25Query = sanitizeBm25Query(query);
+
+    const matchClause = sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.content} @@@ ${bm25Query})`;
+    const folderClause = ne(documents.fileType, DOCUMENT_FOLDER_TYPE);
+    const userClause = eq(documents.userId, this.userId);
+
+    const inlineRowsPromise = this.db
+      .select({
+        content: documents.content,
+        fileId: documents.fileId,
+        filename: documents.filename,
+        id: documents.id,
+        knowledgeBaseId: documents.knowledgeBaseId,
+        score: sql<number>`paradedb.score(${documents.id})`,
+        title: documents.title,
+        updatedAt: documents.updatedAt,
+      })
+      .from(documents)
+      .where(
+        and(
+          userClause,
+          folderClause,
+          inArray(documents.knowledgeBaseId, knowledgeBaseIds),
+          matchClause,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+      .limit(limit);
+
+    const fileBackedRowsPromise = this.db
+      .select({
+        content: documents.content,
+        fileId: documents.fileId,
+        filename: documents.filename,
+        id: documents.id,
+        knowledgeBaseId: knowledgeBaseFiles.knowledgeBaseId,
+        score: sql<number>`paradedb.score(${documents.id})`,
+        title: documents.title,
+        updatedAt: documents.updatedAt,
+      })
+      .from(documents)
+      .innerJoin(
+        knowledgeBaseFiles,
+        and(
+          eq(knowledgeBaseFiles.fileId, documents.fileId),
+          eq(knowledgeBaseFiles.userId, this.userId),
+          inArray(knowledgeBaseFiles.knowledgeBaseId, knowledgeBaseIds),
+        ),
+      )
+      .where(and(userClause, folderClause, matchClause))
+      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+      .limit(limit);
+
+    const [inlineRows, fileBackedRows] = await Promise.all([
+      inlineRowsPromise,
+      fileBackedRowsPromise,
+    ]);
+
+    const byId = new Map<string, (typeof inlineRows)[number]>();
+    for (const row of [...inlineRows, ...fileBackedRows]) {
+      const prev = byId.get(row.id);
+      if (!prev || row.score > prev.score) byId.set(row.id, row);
+    }
+    const merged = Array.from(byId.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    return this.mapScoresToRelevance(merged).map((row) => ({
+      documentId: row.id,
+      fileId: row.fileId ?? undefined,
+      knowledgeBaseId: row.knowledgeBaseId ?? '',
+      relevance: row.relevance,
+      snippet: this.truncate(row.content, 300) ?? '',
+      title: row.title || row.filename || 'Untitled',
+      updatedAt: row.updatedAt,
+    }));
   }
 
   /**

@@ -1,12 +1,29 @@
 'use client';
 
+import {
+  BrainCircuit,
+  FilePenIcon,
+  Home,
+  Image,
+  LibraryBigIcon,
+  Settings,
+  ShapesIcon,
+} from 'lucide-react';
 import { type RouteObject } from 'react-router-dom';
 
 import {
   BusinessDesktopRoutesWithMainLayout,
   BusinessDesktopRoutesWithoutMainLayout,
 } from '@/business/client/BusinessDesktopRoutes';
+import { taskRouteMeta, tasksRouteMeta } from '@/features/AgentTasks/routeMeta';
+import { pageRouteMeta } from '@/features/Pages/routeMeta';
+import { agentRouteMeta } from '@/routes/(main)/agent/features/routeMeta';
+import { groupRouteMeta } from '@/routes/(main)/group/features/routeMeta';
+import { settingsRouteMeta } from '@/routes/(main)/settings/features/routeMeta';
+import { routeMeta } from '@/spa/router/routeMeta';
 import { dynamicElement, dynamicLayout, ErrorBoundary, redirectElement } from '@/utils/router';
+
+const agentChatElement = dynamicElement(() => import('@/routes/(main)/agent'), 'Desktop > Chat');
 
 // Desktop router configuration (declarative mode)
 export const desktopRoutes: RouteObject[] = [
@@ -22,8 +39,22 @@ export const desktopRoutes: RouteObject[] = [
           {
             children: [
               {
-                element: dynamicElement(() => import('@/routes/(main)/agent'), 'Desktop > Chat'),
-                index: true,
+                children: [
+                  {
+                    element: agentChatElement,
+                    handle: { meta: agentRouteMeta },
+                    index: true,
+                  },
+                  {
+                    element: agentChatElement,
+                    handle: { meta: agentRouteMeta },
+                    path: ':topicId',
+                  },
+                ],
+                element: dynamicLayout(
+                  () => import('@/routes/(main)/agent/(chat)/_layout'),
+                  'Desktop > Chat > ChatLayout',
+                ),
               },
               {
                 element: dynamicElement(
@@ -34,40 +65,25 @@ export const desktopRoutes: RouteObject[] = [
               },
               {
                 element: dynamicElement(
-                  () => import('@/routes/(main)/agent/cron/[cronId]'),
-                  'Desktop > Chat > Cron Detail',
-                ),
-                path: 'cron/:cronId',
-              },
-              {
-                element: dynamicElement(
                   () => import('@/routes/(main)/agent/channel'),
                   'Desktop > Chat > Channel',
                 ),
                 path: 'channel',
               },
               {
-                children: [
-                  {
-                    element: dynamicElement(
-                      () => import('@/routes/(main)/agent/tasks'),
-                      'Desktop > Chat > Tasks',
-                    ),
-                    index: true,
-                  },
-                  {
-                    element: dynamicElement(
-                      () => import('@/routes/(main)/agent/tasks/[taskId]'),
-                      'Desktop > Chat > Task Detail',
-                    ),
-                    path: ':taskId',
-                  },
-                ],
-                element: dynamicLayout(
-                  () => import('@/routes/(main)/agent/tasks/_layout'),
-                  'Desktop > Chat > Tasks > Layout',
+                element: dynamicElement(
+                  () => import('@/routes/(main)/agent/topics'),
+                  'Desktop > Chat > Topics',
                 ),
-                path: 'tasks',
+                path: 'topics',
+              },
+              {
+                element: dynamicElement(
+                  () => import('@/routes/(main)/agent/task/[taskId]'),
+                  'Desktop > Chat > Task Detail',
+                ),
+                handle: { meta: taskRouteMeta },
+                path: 'task/:taskId',
               },
             ],
             element: dynamicLayout(
@@ -95,6 +111,7 @@ export const desktopRoutes: RouteObject[] = [
                   () => import('@/routes/(main)/group'),
                   'Desktop > Agent Group',
                 ),
+                handle: { meta: groupRouteMeta },
                 index: true,
               },
               {
@@ -129,6 +146,12 @@ export const desktopRoutes: RouteObject[] = [
                       () => import('@/routes/(main)/community/(list)/agent'),
                       'Desktop > Discover > List > Agent',
                     ),
+                    handle: {
+                      meta: routeMeta({
+                        icon: ShapesIcon,
+                        titleKey: 'navigation.discoverAssistants',
+                      }),
+                    },
                     index: true,
                   },
                 ],
@@ -145,6 +168,9 @@ export const desktopRoutes: RouteObject[] = [
                       () => import('@/routes/(main)/community/(list)/model'),
                       'Desktop > Discover > List > Model',
                     ),
+                    handle: {
+                      meta: routeMeta({ icon: ShapesIcon, titleKey: 'navigation.discoverModels' }),
+                    },
                     index: true,
                   },
                 ],
@@ -159,6 +185,9 @@ export const desktopRoutes: RouteObject[] = [
                   () => import('@/routes/(main)/community/(list)/provider'),
                   'Desktop > Discover > List > Provider',
                 ),
+                handle: {
+                  meta: routeMeta({ icon: ShapesIcon, titleKey: 'navigation.discoverProviders' }),
+                },
                 path: 'provider',
               },
               {
@@ -168,6 +197,9 @@ export const desktopRoutes: RouteObject[] = [
                       () => import('@/routes/(main)/community/(list)/skill'),
                       'Desktop > Discover > List > Skill',
                     ),
+                    handle: {
+                      meta: routeMeta({ icon: ShapesIcon, titleKey: 'navigation.discover' }),
+                    },
                     index: true,
                   },
                 ],
@@ -184,6 +216,9 @@ export const desktopRoutes: RouteObject[] = [
                       () => import('@/routes/(main)/community/(list)/mcp'),
                       'Desktop > Discover > List > MCP',
                     ),
+                    handle: {
+                      meta: routeMeta({ icon: ShapesIcon, titleKey: 'navigation.discoverMcp' }),
+                    },
                     index: true,
                   },
                 ],
@@ -198,6 +233,9 @@ export const desktopRoutes: RouteObject[] = [
                   () => import('@/routes/(main)/community/(list)/(home)'),
                   'Desktop > Discover > List > Home',
                 ),
+                handle: {
+                  meta: routeMeta({ icon: ShapesIcon, titleKey: 'navigation.discover' }),
+                },
                 index: true,
               },
             ],
@@ -284,6 +322,9 @@ export const desktopRoutes: RouteObject[] = [
                   () => import('@/routes/(main)/resource/(home)'),
                   'Desktop > Resource > Home',
                 ),
+                handle: {
+                  meta: routeMeta({ icon: LibraryBigIcon, titleKey: 'navigation.resources' }),
+                },
                 index: true,
               },
             ],
@@ -300,6 +341,9 @@ export const desktopRoutes: RouteObject[] = [
                   () => import('@/routes/(main)/resource/library'),
                   'Desktop > Resource > Library',
                 ),
+                handle: {
+                  meta: routeMeta({ icon: LibraryBigIcon, titleKey: 'navigation.knowledgeBase' }),
+                },
                 index: true,
               },
               {
@@ -307,6 +351,9 @@ export const desktopRoutes: RouteObject[] = [
                   () => import('@/routes/(main)/resource/library/[slug]'),
                   'Desktop > Resource > Library > Slug',
                 ),
+                handle: {
+                  meta: routeMeta({ icon: LibraryBigIcon, titleKey: 'navigation.knowledgeBase' }),
+                },
                 path: ':slug',
               },
             ],
@@ -345,6 +392,9 @@ export const desktopRoutes: RouteObject[] = [
                     import('@/routes/(main)/settings/provider').then((m) => m.ProviderDetailPage),
                   'Desktop > Settings > Provider > Detail',
                 ),
+                handle: {
+                  meta: routeMeta({ icon: Settings, titleKey: 'navigation.provider' }),
+                },
                 path: ':providerId',
               },
             ],
@@ -352,6 +402,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/settings/provider').then((m) => m.ProviderLayout),
               'Desktop > Settings > Provider > Layout',
             ),
+            handle: {
+              meta: routeMeta({ icon: Settings, titleKey: 'navigation.provider' }),
+            },
             path: 'provider',
           },
           // Other settings tabs
@@ -360,7 +413,18 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/settings'),
               'Desktop > Settings > Tab',
             ),
+            handle: { meta: settingsRouteMeta },
             path: ':tab',
+          },
+          // Tabs that need a sub-segment (e.g. /settings/messenger/discord) reuse
+          // the same tab page; nested feature components read `:sub` via useParams.
+          {
+            element: dynamicElement(
+              () => import('@/routes/(main)/settings'),
+              'Desktop > Settings > Tab > Sub',
+            ),
+            handle: { meta: settingsRouteMeta },
+            path: ':tab/:sub',
           },
         ],
         element: dynamicElement(
@@ -379,6 +443,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/memory/(home)'),
               'Desktop > Memory > Home',
             ),
+            handle: {
+              meta: routeMeta({ icon: BrainCircuit, titleKey: 'navigation.memory' }),
+            },
             index: true,
           },
           {
@@ -386,6 +453,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/memory/identities'),
               'Desktop > Memory > Identities',
             ),
+            handle: {
+              meta: routeMeta({ icon: BrainCircuit, titleKey: 'navigation.memoryIdentities' }),
+            },
             path: 'identities',
           },
           {
@@ -393,6 +463,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/memory/contexts'),
               'Desktop > Memory > Contexts',
             ),
+            handle: {
+              meta: routeMeta({ icon: BrainCircuit, titleKey: 'navigation.memoryContexts' }),
+            },
             path: 'contexts',
           },
           {
@@ -400,6 +473,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/memory/preferences'),
               'Desktop > Memory > Preferences',
             ),
+            handle: {
+              meta: routeMeta({ icon: BrainCircuit, titleKey: 'navigation.memoryPreferences' }),
+            },
             path: 'preferences',
           },
           {
@@ -407,6 +483,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/memory/experiences'),
               'Desktop > Memory > Experiences',
             ),
+            handle: {
+              meta: routeMeta({ icon: BrainCircuit, titleKey: 'navigation.memoryExperiences' }),
+            },
             path: 'experiences',
           },
           {
@@ -414,6 +493,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/memory/activities'),
               'Desktop > Memory > Activities',
             ),
+            handle: {
+              meta: routeMeta({ icon: BrainCircuit, titleKey: 'navigation.memory' }),
+            },
             path: 'activities',
           },
         ],
@@ -452,6 +534,9 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/(create)/image'),
               'Desktop > Image',
             ),
+            handle: {
+              meta: routeMeta({ icon: Image, titleKey: 'navigation.image' }),
+            },
             index: true,
           },
         ],
@@ -537,20 +622,39 @@ export const desktopRoutes: RouteObject[] = [
         path: 'eval',
       },
 
-      // Tasks routes (cross-agent)
+      // Task workspace routes (cross-agent)
       {
         children: [
           {
-            element: dynamicElement(() => import('@/routes/(main)/tasks'), 'Desktop > Tasks'),
-            index: true,
+            children: [
+              {
+                element: dynamicElement(() => import('@/routes/(main)/tasks'), 'Desktop > Tasks'),
+                handle: { meta: tasksRouteMeta },
+                index: true,
+              },
+            ],
+            errorElement: <ErrorBoundary resetPath="/" />,
+            path: 'tasks',
+          },
+          {
+            children: [
+              {
+                element: dynamicElement(
+                  () => import('@/routes/(main)/task/[taskId]'),
+                  'Desktop > Task Detail',
+                ),
+                handle: { meta: taskRouteMeta },
+                path: ':taskId',
+              },
+            ],
+            errorElement: <ErrorBoundary resetPath="/tasks" />,
+            path: 'task',
           },
         ],
         element: dynamicLayout(
-          () => import('@/routes/(main)/tasks/_layout'),
-          'Desktop > Tasks > Layout',
+          () => import('@/routes/(main)/(task-workspace)/_layout'),
+          'Desktop > Task Workspace > Layout',
         ),
-        errorElement: <ErrorBoundary resetPath="/" />,
-        path: 'tasks',
       },
 
       // Pages routes
@@ -558,6 +662,9 @@ export const desktopRoutes: RouteObject[] = [
         children: [
           {
             element: dynamicElement(() => import('@/routes/(main)/page'), 'Desktop > Page'),
+            handle: {
+              meta: routeMeta({ icon: FilePenIcon, titleKey: 'navigation.pages' }),
+            },
             index: true,
           },
           {
@@ -565,6 +672,7 @@ export const desktopRoutes: RouteObject[] = [
               () => import('@/routes/(main)/page/[id]'),
               'Desktop > Page > Detail',
             ),
+            handle: { meta: pageRouteMeta },
             path: ':id',
           },
         ],
@@ -578,6 +686,9 @@ export const desktopRoutes: RouteObject[] = [
 
       // Default route - home page (handled by persistent layout)
       {
+        handle: {
+          meta: routeMeta({ icon: Home, titleKey: 'navigation.home' }),
+        },
         index: true,
       },
       // Catch-all route
@@ -608,6 +719,47 @@ export const desktopRoutes: RouteObject[] = [
     ),
     path: '/share/t',
   },
+
+  // Share page route (outside main layout)
+  {
+    children: [
+      {
+        element: dynamicElement(() => import('@/routes/share/page/[id]'), 'Desktop > Share > Page'),
+        path: ':id',
+      },
+    ],
+    path: '/share/page',
+  },
+
+  // Devtools route (outside main layout, dev-only)
+  ...(__DEV__
+    ? [
+        {
+          children: [
+            {
+              element: dynamicElement(
+                () => import('@/routes/(main)/devtools'),
+                'Desktop > Devtools > Index',
+              ),
+              index: true,
+            },
+            {
+              element: dynamicElement(
+                () => import('@/routes/(main)/devtools/[identifier]'),
+                'Desktop > Devtools > Toolset',
+              ),
+              path: ':identifier',
+            },
+          ],
+          element: dynamicLayout(
+            () => import('@/routes/(main)/devtools/_layout'),
+            'Desktop > Devtools > Layout',
+          ),
+          errorElement: <ErrorBoundary />,
+          path: '/devtools',
+        },
+      ]
+    : []),
 ];
 
 desktopRoutes.push({

@@ -88,6 +88,7 @@ export const formatTaskCreated = (
 export interface TaskListFilters {
   assigneeAgentId?: string;
   isDefaultScope?: boolean;
+  isForAllAgents?: boolean;
   isForCurrentAgent?: boolean;
   parentIdentifier?: string;
   priorities?: number[];
@@ -96,6 +97,7 @@ export interface TaskListFilters {
 
 const buildTaskListLabel = (filters: TaskListFilters): string => {
   if (filters.isDefaultScope) {
+    if (filters.isForAllAgents) return 'top-level unfinished tasks across all agents';
     return filters.isForCurrentAgent
       ? 'top-level unfinished tasks of the current agent'
       : 'top-level unfinished tasks';
@@ -249,7 +251,7 @@ export const formatTaskDetail = (t: TaskDetailData): string => {
         const author = act.agentId ? '🤖 agent' : '👤 user';
         const content = act.content || '';
         const truncated = content.length > 80 ? content.slice(0, 80) + '...' : content;
-        lines.push(`  💭 ${act.time || ''} ${author} ${truncated}`);
+        lines.push(`  💭 ${act.time || ''} ${author} ${truncated}${idSuffix}`);
       }
     }
   }
@@ -298,10 +300,21 @@ export const formatCheckpointCreated = (reason: string): string =>
 
 // ── Task Run Prompt Builder ──
 
+export interface TaskRunPromptAttachment {
+  fileType?: string;
+  id: string;
+  name: string;
+}
+
 export interface TaskRunPromptComment {
   agentId?: string | null;
   content: string;
   createdAt?: string;
+  /** Lightweight metadata of files attached to this comment. The actual file
+   * content (image bytes / parsed text) is passed to the agent runtime as
+   * multimodal `fileIds`; this list is just so the LLM knows what files exist
+   * and which comment they were attached to. */
+  files?: TaskRunPromptAttachment[];
   id?: string;
 }
 
@@ -371,6 +384,9 @@ export interface TaskRunPromptInput {
     assigneeAgentId?: string | null;
     dependencies?: Array<{ dependsOn: string; type: string }>;
     description?: string | null;
+    /** Lightweight metadata of files attached to the task instruction. Actual
+     * content is forwarded to the agent runtime via `fileIds` on execAgent. */
+    files?: TaskRunPromptAttachment[];
     id: string;
     identifier: string;
     instruction: string;
@@ -451,7 +467,11 @@ export const buildTaskRunPrompt = (input: TaskRunPromptInput, now?: Date): strin
       const ago = c.createdAt ? timeAgo(c.createdAt, now) : '';
       const timeAttr = ago ? ` time="${ago}"` : '';
       const idAttr = c.id ? ` id="${c.id}"` : '';
-      return `<comment${idAttr}${timeAttr}>${c.content}</comment>`;
+      const attachments =
+        c.files && c.files.length > 0
+          ? `\n<attachments>\n${c.files.map((f) => `  - ${f.name}${f.fileType ? ` (${f.fileType})` : ''}`).join('\n')}\n</attachments>`
+          : '';
+      return `<comment${idAttr}${timeAttr}>${c.content}${attachments}</comment>`;
     });
     sections.push(`<user_feedback>\n${lines.join('\n')}\n</user_feedback>`);
   }
@@ -465,6 +485,12 @@ export const buildTaskRunPrompt = (input: TaskRunPromptInput, now?: Date): strin
     `Instruction: ${task.instruction}`,
   ];
   if (task.description) taskLines.push(`Description: ${task.description}`);
+  if (task.files && task.files.length > 0) {
+    taskLines.push('Attachments (contents provided separately as multimodal inputs):');
+    for (const f of task.files) {
+      taskLines.push(`  - ${f.name}${f.fileType ? ` (${f.fileType})` : ''}`);
+    }
+  }
   if (task.assigneeAgentId) taskLines.push(`Agent: ${task.assigneeAgentId}`);
   if (task.parentIdentifier) taskLines.push(`Parent: ${task.parentIdentifier}`);
 
@@ -615,3 +641,5 @@ export type { BuildTaskDetailPromptInput } from './buildTaskDetailPrompt';
 export { buildTaskDetailPrompt } from './buildTaskDetailPrompt';
 export type { BuildTaskListPromptInput } from './buildTaskListPrompt';
 export { buildTaskListPrompt } from './buildTaskListPrompt';
+export type { TaskManagerPromptDefaults } from './taskManagerDefaults';
+export { buildTaskManagerDefaultsPrompt } from './taskManagerDefaults';

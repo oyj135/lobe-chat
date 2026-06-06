@@ -1,5 +1,5 @@
 import type { ChatModelCard } from '@lobechat/types';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   detectModelProvider,
@@ -10,7 +10,8 @@ import {
 } from './modelParse';
 
 // Mock the imported LOBE_DEFAULT_MODEL_LIST
-const { mockDefaultModelList } = vi.hoisted(() => ({
+const { loadModelsMock, mockDefaultModelList } = vi.hoisted(() => ({
+  loadModelsMock: vi.fn(),
   mockDefaultModelList: [
     {
       contextWindowTokens: 8192,
@@ -114,6 +115,8 @@ vi.mock('model-bank', () => ({
     options: ['chat', 'embedding', 'tts', 'stt', 'image', 'video', 'text2music', 'realtime'],
   },
   LOBE_DEFAULT_MODEL_LIST: mockDefaultModelList,
+  loadModels: vi.fn().mockResolvedValue(mockDefaultModelList),
+  ModelProvider: { LobeHub: 'lobehub' },
   // 新增 provider 专用清单，供 findKnownModelByProvider 使用
   google: [
     {
@@ -124,9 +127,17 @@ vi.mock('model-bank', () => ({
   ],
 }));
 
+vi.mock('@lobechat/business-model-bank/model-config', () => ({
+  loadModels: loadModelsMock,
+}));
+
 describe('modelParse', () => {
+  beforeEach(() => {
+    loadModelsMock.mockResolvedValue(mockDefaultModelList);
+  });
+
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('detectModelProvider', () => {
@@ -322,16 +333,24 @@ describe('modelParse', () => {
 
     it('xiaomimimo: should infer multimodal abilities for omni', async () => {
       const out = await processModelList(
-        [{ id: 'mimo-v2-flash' }, { id: 'mimo-v2-pro' }, { id: 'mimo-v2-omni' }],
+        [
+          { id: 'mimo-v2-flash' },
+          { id: 'mimo-v2-pro' },
+          { id: 'mimo-v2-omni' },
+          { id: 'mimo-v2.5-pro' },
+          { id: 'mimo-v2.5' },
+        ],
         MODEL_LIST_CONFIGS.xiaomimimo,
         'xiaomimimo',
       );
 
-      expect(out).toHaveLength(3);
+      expect(out).toHaveLength(5);
 
       const flash = out.find((m) => m.id === 'mimo-v2-flash')!;
       const pro = out.find((m) => m.id === 'mimo-v2-pro')!;
       const omni = out.find((m) => m.id === 'mimo-v2-omni')!;
+      const v25Pro = out.find((m) => m.id === 'mimo-v2.5-pro')!;
+      const v25 = out.find((m) => m.id === 'mimo-v2.5')!;
 
       expect(flash.functionCall).toBe(true);
       expect(flash.reasoning).toBe(true);
@@ -344,6 +363,14 @@ describe('modelParse', () => {
       expect(omni.functionCall).toBe(true);
       expect(omni.reasoning).toBe(true);
       expect(omni.vision).toBe(true);
+
+      expect(v25Pro.functionCall).toBe(true);
+      expect(v25Pro.reasoning).toBe(true);
+      expect(v25Pro.vision).toBe(false);
+
+      expect(v25.functionCall).toBe(true);
+      expect(v25.reasoning).toBe(true);
+      expect(v25.vision).toBe(true);
 
       const tts = await processModelList(
         [{ id: 'mimo-v2-tts' }],
@@ -535,6 +562,41 @@ describe('modelParse', () => {
       expect(unknown.functionCall).toBe(false);
       expect(unknown.reasoning).toBe(false);
       expect(unknown.vision).toBe(false);
+    });
+
+    it('should use business model metadata when parsing mixed provider models', async () => {
+      loadModelsMock.mockResolvedValueOnce([
+        ...mockDefaultModelList,
+        {
+          abilities: {
+            functionCall: true,
+            reasoning: true,
+            vision: true,
+          },
+          contextWindowTokens: 131_072,
+          displayName: 'Business Only Model',
+          enabled: true,
+          id: 'business-only-model',
+          maxOutput: 8192,
+          source: 'builtin',
+          type: 'chat',
+        },
+      ]);
+
+      const result = await processMultiProviderModelList([{ id: 'business-only-model' }]);
+
+      expect(loadModelsMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual([
+        expect.objectContaining({
+          contextWindowTokens: 131_072,
+          displayName: 'Business Only Model',
+          functionCall: true,
+          id: 'business-only-model',
+          maxOutput: 8192,
+          reasoning: true,
+          vision: true,
+        }),
+      ]);
     });
 
     it('should ignore invalid remote type values in mixed provider processing', async () => {
@@ -743,6 +805,18 @@ describe('modelParse', () => {
         expect(results[2][0].reasoning).toBe(true); // Google 'thinking'
         expect(results[3][0].reasoning).toBe(true); // Deepseek 'r1'
         expect(results[4][0].reasoning).toBe(true); // Volcengine 'thinking'
+      });
+
+      it('should detect v4 keyword for deepseek model capabilities', async () => {
+        // Cover the new 'v4' keyword added to the deepseek config so unknown
+        // model IDs like deepseek-v4-custom still get functionCall + reasoning.
+        const result = await processModelList(
+          [{ id: 'deepseek-v4-custom' }],
+          MODEL_LIST_CONFIGS.deepseek,
+        );
+
+        expect(result[0].functionCall).toBe(true);
+        expect(result[0].reasoning).toBe(true);
       });
     });
 

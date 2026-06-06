@@ -179,6 +179,29 @@ describe('DocumentModel', () => {
       expect(result.total).toBe(2);
     });
 
+    it('should exclude agent-owned documents unless sourceTypes explicitly requests them', async () => {
+      await createTestDocument(documentModel, fileModel, 'Visible document');
+      await documentModel.create({
+        content: 'Agent document',
+        fileType: 'agent/document',
+        filename: 'agent-document',
+        source: 'agent-document://agent-1/agent-document',
+        sourceType: 'agent',
+        totalCharCount: 14,
+        totalLineCount: 1,
+      });
+
+      const defaultResult = await documentModel.query();
+
+      expect(defaultResult.items).toHaveLength(1);
+      expect(defaultResult.items[0].sourceType).not.toBe('agent');
+
+      const agentResult = await documentModel.query({ sourceTypes: ['agent'] });
+
+      expect(agentResult.items).toHaveLength(1);
+      expect(agentResult.items[0].sourceType).toBe('agent');
+    });
+
     it('should only return documents for the current user', async () => {
       await createTestDocument(documentModel, fileModel, 'User 1 document');
       await createTestDocument(documentModel2, fileModel2, 'User 2 document');
@@ -427,6 +450,68 @@ describe('DocumentModel', () => {
 
     it('should return undefined for non-existent slug', async () => {
       const found = await documentModel.findBySlug('non-existent-slug');
+      expect(found).toBeUndefined();
+    });
+  });
+
+  describe('findBySource', () => {
+    // Crawl dedupe () leans on this finder — same URL + sourceType
+    // must always return the existing row so repeated crawls update in place
+    // instead of stacking new rows.
+    it('finds a document by (source, sourceType)', async () => {
+      const url = 'https://example.com/pull/1';
+      const { id } = await documentModel.create({
+        content: 'pr body',
+        fileType: 'article',
+        filename: 'pr',
+        source: url,
+        sourceType: 'web',
+        title: 'PR title',
+        totalCharCount: 7,
+        totalLineCount: 1,
+      });
+
+      const found = await documentModel.findBySource(url, 'web');
+      expect(found?.id).toBe(id);
+    });
+
+    it('is scoped to the current user', async () => {
+      const url = 'https://example.com/shared-url';
+      await documentModel.create({
+        content: 'mine',
+        fileType: 'article',
+        filename: 'mine',
+        source: url,
+        sourceType: 'web',
+        totalCharCount: 4,
+        totalLineCount: 1,
+      });
+
+      const otherUserFound = await documentModel2.findBySource(url, 'web');
+      expect(otherUserFound).toBeUndefined();
+    });
+
+    it('distinguishes by sourceType so an api-source URL is not returned as a web crawl', async () => {
+      const url = 'https://example.com/cross-type';
+      const { id: apiId } = await documentModel.create({
+        content: 'api',
+        fileType: 'article',
+        filename: 'api',
+        source: url,
+        sourceType: 'api',
+        totalCharCount: 3,
+        totalLineCount: 1,
+      });
+
+      const webHit = await documentModel.findBySource(url, 'web');
+      expect(webHit).toBeUndefined();
+
+      const apiHit = await documentModel.findBySource(url, 'api');
+      expect(apiHit?.id).toBe(apiId);
+    });
+
+    it('returns undefined when no matching document exists', async () => {
+      const found = await documentModel.findBySource('https://example.com/missing', 'web');
       expect(found).toBeUndefined();
     });
   });

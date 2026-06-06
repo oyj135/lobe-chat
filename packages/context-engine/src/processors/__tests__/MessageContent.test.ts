@@ -148,7 +148,7 @@ describe('MessageContentProcessor', () => {
       );
     });
 
-    // LOBE-7214 regression: historical messages are often persisted in the
+    // regression: historical messages are often persisted in the
     // multimodal parts form (content is an array of {type: 'text' | 'image_url'}).
     // They bypass the legacy `imageList` code path. Switching to a non-vision
     // model (e.g. deepseek-chat) previously caused the processor to forward the
@@ -357,6 +357,12 @@ describe('MessageContentProcessor', () => {
       expect(content[0].type).toBe('text');
       expect(content[0].text).toContain('SYSTEM CONTEXT');
       expect(content[0].text).toContain('Hello');
+      expect(content[0].text).toContain('<image ref="msg_1cs5ql.image_1" name="test.png"></image>');
+      expect(content[0].text).toContain(
+        '<file id="file1" name="test.txt" type="text/plain" size="100"></file>',
+      );
+      expect(content[0].text).not.toContain('http://example.com/image.jpg');
+      expect(content[0].text).not.toContain('http://example.com/test.txt');
     });
 
     it('should not add file context when disabled', async () => {
@@ -948,7 +954,7 @@ describe('MessageContentProcessor', () => {
       });
     });
 
-    // LOBE-7214: assistant multimodal content (image generation output) must
+    // assistant multimodal content (image generation output) must
     // also be downgraded when the target model lacks vision. Without this,
     // image parts get serialized back to `image_url` and DeepSeek 400s.
     it('should downgrade assistant multimodal image parts to placeholder text when vision is disabled', async () => {

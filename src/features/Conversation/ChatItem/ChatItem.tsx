@@ -4,6 +4,8 @@ import { Flexbox } from '@lobehub/ui';
 import { cx } from 'antd-style';
 import { memo } from 'react';
 
+import FollowUpChips from '../FollowUp/FollowUpChips';
+import { contextSelectors, useConversationStore } from '../store';
 import Actions from './components/Actions';
 import Avatar from './components/Avatar';
 import ErrorContent from './components/ErrorContent';
@@ -42,6 +44,7 @@ const ChatItem = memo<ChatItemProps>(
     ...rest
   }) => {
     const isUser = placement === 'right';
+    const conversationKey = useConversationStore(contextSelectors.conversationKey);
     const isEmptyMessage =
       !message || String(message).trim() === '' || message === placeholderMessage;
     const errorContent = error && (
@@ -115,6 +118,9 @@ const ChatItem = memo<ChatItemProps>(
           )}
           {belowMessage}
         </Flexbox>
+        {id && conversationKey && (
+          <FollowUpChips conversationKey={conversationKey} messageId={id} />
+        )}
         {actions && <Actions actions={actions} placement={placement} />}
       </Flexbox>
     );

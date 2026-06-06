@@ -30,9 +30,12 @@ export const FeatureFlagsSchema = z.object({
   rag_eval: FeatureFlagValue.optional(),
 
   // internal flag
+  agent_self_iteration: FeatureFlagValue.optional(),
   agent_onboarding: FeatureFlagValue.optional(),
-  agent_task: FeatureFlagValue.optional(),
+  // Cloud feature flag. Keep here until cloud owns a separate runtime flag domain.
+  auth_captcha: FeatureFlagValue.optional(),
   cloud_promotion: FeatureFlagValue.optional(),
+  storage_overage: FeatureFlagValue.optional(),
 
   // the flags below can only be used with commercial license
   // if you want to use it in the commercial usage
@@ -78,9 +81,11 @@ export const DEFAULT_FEATURE_FLAGS: IFeatureFlags = {
   knowledge_base: true,
   rag_eval: false,
 
+  agent_self_iteration: isDev,
   agent_onboarding: isDev,
-  agent_task: isDev,
+  auth_captcha: true,
   cloud_promotion: false,
+  storage_overage: true,
 
   market: true,
   speech_to_text: true,
@@ -111,8 +116,10 @@ export const mapFeatureFlagsEnvToState = (config: IFeatureFlags, userId?: string
 
     enableKnowledgeBase: evaluateFeatureFlag(config.knowledge_base, userId),
     enableRAGEval: evaluateFeatureFlag(config.rag_eval, userId),
+    enableAgentSelfIteration: evaluateFeatureFlag(config.agent_self_iteration, userId),
     enableAgentOnboarding: evaluateFeatureFlag(config.agent_onboarding, userId),
-    enableAgentTask: evaluateFeatureFlag(config.agent_task, userId),
+    enableAuthCaptcha: evaluateFeatureFlag(config.auth_captcha, userId),
+    enableStorageOverage: evaluateFeatureFlag(config.storage_overage, userId),
 
     showCloudPromotion: evaluateFeatureFlag(config.cloud_promotion, userId),
 

@@ -6,10 +6,11 @@ import type {
   WorkspaceDocNode,
   WorkspaceTreeNode,
 } from '@lobechat/types';
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm';
 
 import { merge } from '@/utils/merge';
 
+import { documents } from '../schemas/file';
 import type { NewTaskComment, TaskCommentItem } from '../schemas/task';
 import { taskComments, taskDependencies, taskDocuments, tasks } from '../schemas/task';
 import type { LobeChatDatabase } from '../type';
@@ -36,7 +37,6 @@ export class TaskModel {
     const maxRetries = 5;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        // Get next seq for this user
         const seqResult = await this.db
           .select({ maxSeq: sql<number>`COALESCE(MAX(${tasks.seq}), 0)` })
           .from(tasks)
@@ -45,7 +45,7 @@ export class TaskModel {
         const nextSeq = Number(seqResult[0].maxSeq) + 1;
         const identifier = `${identifierPrefix}-${nextSeq}`;
 
-        const result = await this.db
+        const [task] = await this.db
           .insert(tasks)
           .values({
             ...rest,
@@ -55,7 +55,7 @@ export class TaskModel {
           } as NewTask)
           .returning();
 
-        return result[0];
+        return task;
       } catch (error: any) {
         // Retry on unique constraint violation (concurrent seq conflict)
         // Check error itself, cause, and stringified message for PG error code 23505
@@ -113,13 +113,14 @@ export class TaskModel {
     id: string,
     data: Partial<Omit<NewTask, 'id' | 'identifier' | 'seq' | 'createdByUserId'>>,
   ): Promise<TaskItem | null> {
-    const result = await this.db
+    if (Object.keys(data).length === 0) return this.findById(id);
+
+    const updated = await this.db
       .update(tasks)
       .set({ ...data, updatedAt: new Date() })
       .where(and(eq(tasks.id, id), eq(tasks.createdByUserId, this.userId)))
       .returning();
-
-    return result[0] || null;
+    return updated[0] || null;
   }
 
   async delete(id: string): Promise<boolean> {
@@ -412,6 +413,22 @@ export class TaskModel {
     return this.update(id, { config });
   }
 
+  // ========== Context (runtime state) ==========
+
+  /**
+   * Deep-merge into the task's context JSONB. Used by the heartbeat scheduler
+   * to update `context.scheduler.{tickMessageId, consecutiveFailures, ...}`
+   * without disturbing other namespaces under context.
+   */
+  async updateContext(id: string, partial: Record<string, unknown>): Promise<TaskItem | null> {
+    const task = await this.findById(id);
+    if (!task) return null;
+
+    const current = (task.context as Record<string, unknown>) || {};
+    const context = merge(current, partial);
+    return this.update(id, { context });
+  }
+
   // ========== Checkpoint ==========
 
   getCheckpointConfig(task: TaskItem): CheckpointConfig {
@@ -460,6 +477,22 @@ export class TaskModel {
       .update(tasks)
       .set({ lastHeartbeatAt: new Date(), updatedAt: new Date() })
       .where(eq(tasks.id, id));
+  }
+
+  // Tasks eligible for cron-based dispatch.
+  // Excludes terminal/paused/running — `paused` requires user attention,
+  // `running` is already in flight (and `runTask` would CONFLICT anyway).
+  static async getScheduledTasks(db: LobeChatDatabase): Promise<TaskItem[]> {
+    return db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.automationMode, 'schedule'),
+          isNotNull(tasks.schedulePattern),
+          notInArray(tasks.status, ['canceled', 'completed', 'failed', 'paused', 'running']),
+        ),
+      );
   }
 
   // Find stuck tasks (running but heartbeat timed out)
@@ -587,6 +620,40 @@ export class TaskModel {
       .orderBy(taskDocuments.createdAt);
   }
 
+  /**
+   * Documents pinned to a task at or after a given timestamp, joined with the
+   * `documents` table so callers receive `{ id, kind, title }` directly.
+   *
+   * Used by topic-brief synthesis to attribute artifacts to the topic that
+   * just completed: pass the topic's start time as `since`.
+   */
+  async getDocumentsPinnedSince(
+    taskId: string,
+    since: Date,
+  ): Promise<{ id: string; kind: string | null; title: string | null }[]> {
+    const rows = await this.db
+      .select({
+        fileType: documents.fileType,
+        id: documents.id,
+        title: documents.title,
+      })
+      .from(taskDocuments)
+      .innerJoin(documents, eq(taskDocuments.documentId, documents.id))
+      .where(
+        and(
+          eq(taskDocuments.taskId, taskId),
+          eq(taskDocuments.userId, this.userId),
+          gte(taskDocuments.createdAt, since),
+        ),
+      );
+
+    return rows.map((row) => ({
+      id: row.id,
+      kind: row.fileType ?? null,
+      title: row.title ?? null,
+    }));
+  }
+
   // Get all pinned docs from a task tree (recursive), returns nodeMap + tree structure
   async getTreePinnedDocuments(rootTaskId: string): Promise<WorkspaceData> {
     const result = await this.db.execute(sql`
@@ -619,6 +686,7 @@ export class TaskModel {
         fileType: row.document_file_type,
         parentId: row.document_parent_id,
         pinnedBy: row.pinned_by,
+        sourceTaskId: row.source_task_id,
         sourceTaskIdentifier: row.source_task_id !== rootTaskId ? row.source_task_identifier : null,
         title: row.document_title || 'Untitled',
         updatedAt: row.document_updated_at,
@@ -674,8 +742,6 @@ export class TaskModel {
     return comment;
   }
 
-  // ========== Comments ==========
-
   async getComments(taskId: string): Promise<TaskCommentItem[]> {
     return this.db
       .select()
@@ -688,15 +754,22 @@ export class TaskModel {
     const result = await this.db
       .delete(taskComments)
       .where(and(eq(taskComments.id, id), eq(taskComments.userId, this.userId)))
-
       .returning();
     return result.length > 0;
   }
 
-  async updateComment(id: string, content: string): Promise<TaskCommentItem | undefined> {
+  async updateComment(
+    id: string,
+    content: string,
+    opts?: { editorData?: unknown },
+  ): Promise<TaskCommentItem | undefined> {
     const [comment] = await this.db
       .update(taskComments)
-      .set({ content, updatedAt: new Date() })
+      .set({
+        content,
+        ...(opts?.editorData !== undefined ? { editorData: opts.editorData as never } : {}),
+        updatedAt: new Date(),
+      })
       .where(and(eq(taskComments.id, id), eq(taskComments.userId, this.userId)))
       .returning();
     return comment;

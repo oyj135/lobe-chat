@@ -322,6 +322,29 @@ Content 2 still going`;
 
 <lobeArtifact identifier="generating" type="text/markdown" title="Generating">Content 2 still going`);
   });
+
+  it('should keep HTML script blocks inside flattened artifact markup', () => {
+    const input = `<lobeArtifact identifier="snake-game" type="text/html" title="Snake Game">
+<!DOCTYPE html>
+<html>
+<body>
+<script>
+// Move the snake every frame
+const url = " // keep string content untouched";
+window.snakeStarted = true;
+</script${'\t'}
+ bar>
+</body>
+</html>
+</lobeArtifact>`;
+
+    const output = processWithArtifact(input);
+
+    expect(output).toContain(
+      '<lobeArtifact identifier="snake-game" type="text/html" title="Snake Game"><!DOCTYPE html><html><body><script>// Move the snake every frameconst url = " // keep string content untouched";window.snakeStarted = true;</script\t bar></body></html></lobeArtifact>',
+    );
+    expect(output).not.toContain('<script>\n');
+  });
 });
 
 describe('outer code block removal', () => {
@@ -542,6 +565,50 @@ This HTML document includes the temperature converter with the requested feature
       // Should still have the space and not convert it to newlines
       expect(output).toContain('</lobeThinking> <lobeArtifact');
       expect(output).not.toContain('</lobeThinking>\n\n<lobeArtifact');
+    });
+  });
+
+  describe('lobeAgents tag', () => {
+    it('strips newlines inside a self-closing tag whose attributes span lines', () => {
+      const input = `<lobeAgents
+  identifier="session-abc"
+  title="高密度信息图生成器"
+/>`;
+
+      const output = processWithArtifact(input);
+
+      expect(output).toEqual('<lobeAgents  identifier="session-abc"  title="高密度信息图生成器"/>');
+    });
+
+    it('preserves trailing block-level Markdown after a self-closing tag', () => {
+      const input = `<lobeAgents identifier="session-abc" title="高密度信息图生成器" />
+
+---
+### 这个 Agent 的核心能力：
+
+| 维度 | 说明 |
+|------|------|
+| 风格 | 实验室精密手册感 |`;
+
+      const output = processWithArtifact(input);
+
+      expect(output).toEqual(input);
+    });
+
+    it('does not swallow trailing Markdown when the model omits the self-closing slash', () => {
+      // Some models (e.g. deepseek) emit a bare opening tag without `/>`.
+      // The newline stripper must still only touch the tag, not the rest.
+      const input = `<lobeAgents identifier="session-abc" title="高密度信息图生成器">
+
+---
+### 这个 Agent 的核心能力：
+
+| 维度 | 说明 |
+|------|------|`;
+
+      const output = processWithArtifact(input);
+
+      expect(output).toEqual(input);
     });
   });
 });

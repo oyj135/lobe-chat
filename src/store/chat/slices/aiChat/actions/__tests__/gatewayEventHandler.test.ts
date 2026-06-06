@@ -2,6 +2,8 @@ import type { AgentStreamEvent } from '@lobechat/agent-gateway-client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { messageService } from '@/services/message';
+import { emitClientAgentSignalSourceEvent } from '@/store/chat/slices/aiChat/actions/agentSignalBridge';
+import { notifyDesktopHumanApprovalRequired } from '@/store/chat/utils/desktopNotification';
 
 import { createGatewayEventHandler } from '../gatewayEventHandler';
 
@@ -11,10 +13,22 @@ vi.mock('@/services/message', () => ({
     updateMessageError: vi.fn().mockResolvedValue({ success: true }),
   },
 }));
+vi.mock('@/store/chat/utils/desktopNotification', () => ({
+  notifyDesktopHumanApprovalRequired: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@/store/chat/slices/aiChat/actions/agentSignalBridge', () => ({
+  emitClientAgentSignalSourceEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
+const getExecutorMock = vi.fn();
+vi.mock('@/store/tool/slices/builtin/executors', () => ({
+  getExecutor: (...args: unknown[]) => getExecutorMock(...args),
+}));
 
 // ─── Test Helpers ───
 
 function createMockStore() {
+  let reasoningCounter = 0;
   return {
     associateMessageWithOperation: vi.fn(),
     completeOperation: vi.fn(),
@@ -26,6 +40,13 @@ function createMockStore() {
       'op-1': { context: { agentId: 'agent-1', scope: 'session', topicId: 'topic-1' } },
     } as Record<string, any>,
     replaceMessages: vi.fn(),
+    startOperation: vi.fn(() => {
+      reasoningCounter += 1;
+      return {
+        abortController: new AbortController(),
+        operationId: `op-reasoning-${reasoningCounter}`,
+      };
+    }),
   };
 }
 
@@ -61,7 +82,7 @@ describe('createGatewayEventHandler', () => {
   });
 
   describe('stream_start', () => {
-    it('should associate new message with operation', async () => {
+    it('should associate new message with operation and skip the DB refetch', async () => {
       const store = createMockStore();
       const handler = createHandler(store);
 
@@ -69,7 +90,23 @@ describe('createGatewayEventHandler', () => {
       await flush();
 
       expect(store.associateMessageWithOperation).toHaveBeenCalledWith('msg-step2', 'op-1');
-      expect(store.replaceMessages).toHaveBeenCalled();
+      // Native gateway streams carry the new assistant id directly + a SoT
+      // uiMessages snapshot on the preceding step_start, so stream_start must
+      // NOT trigger a DB refetch (the refetch is what clobbered the streamed
+      // assistantGroup with a stale placeholder).
+      expect(messageService.getMessages).not.toHaveBeenCalled();
+      expect(store.replaceMessages).not.toHaveBeenCalled();
+      expect(emitClientAgentSignalSourceEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            anchorMessageId: 'msg-step2',
+            assistantMessageId: 'msg-step2',
+            operationId: 'op-1',
+            stepIndex: 0,
+          }),
+          sourceType: 'client.gateway.stream_start',
+        }),
+      );
     });
 
     it('should keep current ID if event data has no assistantMessage', async () => {
@@ -82,6 +119,30 @@ describe('createGatewayEventHandler', () => {
       // No new message to associate, but fetch still happens
       expect(store.associateMessageWithOperation).not.toHaveBeenCalled();
       expect(store.replaceMessages).toHaveBeenCalled();
+    });
+
+    it('should resolve the new assistant from DB on hetero newStep when the event has no assistantMessage id', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      vi.mocked(messageService.getMessages).mockResolvedValueOnce([
+        { id: 'msg-initial', role: 'assistant' } as any,
+        { id: 'tool-1', role: 'tool' } as any,
+        { id: 'msg-step2', role: 'assistant' } as any,
+      ]);
+
+      handler(makeEvent('stream_start', { newStep: true }));
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'world' }));
+      await flush();
+
+      expect(store.associateMessageWithOperation).toHaveBeenCalledWith('msg-step2', 'op-1');
+      expect(store.internal_dispatchMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          id: 'msg-step2',
+          value: { content: 'world' },
+        }),
+        { operationId: 'op-1' },
+      );
     });
 
     it('should reset accumulators on each stream_start', async () => {
@@ -183,6 +244,131 @@ describe('createGatewayEventHandler', () => {
     });
   });
 
+  describe('reasoning operation lifecycle', () => {
+    it('starts a reasoning op on the first reasoning chunk and associates it with the current assistant', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'pondering' }));
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: '...' }));
+      await flush();
+
+      // Only one startOperation call — second chunk reuses the existing op
+      expect(store.startOperation).toHaveBeenCalledTimes(1);
+      expect(store.startOperation).toHaveBeenCalledWith({
+        context: expect.objectContaining({
+          agentId: 'agent-1',
+          messageId: 'msg-initial',
+          topicId: 'topic-1',
+        }),
+        parentOperationId: 'op-1',
+        type: 'reasoning',
+      });
+      expect(store.associateMessageWithOperation).toHaveBeenCalledWith(
+        'msg-initial',
+        'op-reasoning-1',
+      );
+      // The reasoning op is NOT completed while only reasoning chunks have arrived
+      expect(store.completeOperation).not.toHaveBeenCalled();
+    });
+
+    it('completes the reasoning op when text starts streaming', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'thinking' }));
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'answer' }));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('completes the reasoning op when tools_calling starts', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'thinking' }));
+      handler(
+        makeEvent('stream_chunk', {
+          chunkType: 'tools_calling',
+          toolsCalling: [{ id: 'tc-1' }],
+        }),
+      );
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('starts a new reasoning op when reasoning resumes after text in the same stream', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'first pass' }));
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'partial' }));
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'second pass' }));
+      await flush();
+
+      expect(store.startOperation).toHaveBeenCalledTimes(2);
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+      expect(store.completeOperation).not.toHaveBeenCalledWith('op-reasoning-2');
+    });
+
+    it('completes any open reasoning op on stream_end', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'thinking' }));
+      handler(makeEvent('stream_end'));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('completes any open reasoning op on stream_start (carry-over between steps)', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'thinking' }));
+      handler(makeEvent('stream_start', { assistantMessage: { id: 'msg-step2' } }));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('completes any open reasoning op on agent_runtime_end', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'thinking' }));
+      handler(makeEvent('agent_runtime_end'));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('completes any open reasoning op on error', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'reasoning', reasoning: 'thinking' }));
+      handler(makeEvent('error', { message: 'boom' }));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-reasoning-1');
+    });
+
+    it('does not start a reasoning op for text-only streams', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'hello' }));
+      handler(makeEvent('stream_end'));
+      await flush();
+
+      expect(store.startOperation).not.toHaveBeenCalled();
+    });
+  });
+
   describe('stream_end', () => {
     it('should clear tool streaming only', async () => {
       const store = createMockStore();
@@ -208,6 +394,29 @@ describe('createGatewayEventHandler', () => {
 
       expect(store.internal_dispatchMessage).not.toHaveBeenCalled();
       expect(store.replaceMessages).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('step_start', () => {
+    it('should notify desktop when human approval is required', () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(
+        makeEvent('step_start', {
+          pendingToolsCalling: [{ id: 'tool-1' }],
+          phase: 'human_approval',
+          requiresApproval: true,
+        }),
+      );
+
+      expect(notifyDesktopHumanApprovalRequired).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({
+          agentId: 'agent-1',
+          topicId: 'topic-1',
+        }),
+      );
     });
   });
 
@@ -287,6 +496,109 @@ describe('createGatewayEventHandler', () => {
 
       expect(store.replaceMessages).toHaveBeenCalled();
     });
+
+    it('should dispatch onAfterCall when payload is wrapped as { parentMessageId, toolCalling } (real gateway shape)', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+      const onAfterCall = vi.fn().mockResolvedValue(undefined);
+      getExecutorMock.mockReturnValueOnce({ onAfterCall });
+
+      handler(
+        makeEvent('tool_end', {
+          isSuccess: true,
+          payload: {
+            parentMessageId: 'msg-parent',
+            toolCalling: {
+              apiName: 'deleteTask',
+              arguments: JSON.stringify({ identifier: 'T-3' }),
+              id: 'tc-1',
+              identifier: 'lobe-task',
+            },
+          },
+          result: { content: 'Task deleted', success: true },
+        }),
+      );
+      await flush();
+
+      expect(getExecutorMock).toHaveBeenCalledWith('lobe-task');
+      expect(onAfterCall).toHaveBeenCalledWith({
+        apiName: 'deleteTask',
+        identifier: 'lobe-task',
+        params: { identifier: 'T-3' },
+        result: { content: 'Task deleted', success: true },
+        toolCallId: 'tc-1',
+      });
+    });
+
+    it('should also dispatch onAfterCall when payload is the flat ChatToolPayload', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+      const onAfterCall = vi.fn().mockResolvedValue(undefined);
+      getExecutorMock.mockReturnValueOnce({ onAfterCall });
+
+      handler(
+        makeEvent('tool_end', {
+          isSuccess: true,
+          payload: {
+            apiName: 'createTask',
+            arguments: JSON.stringify({ name: 'New', instruction: 'do thing' }),
+            id: 'tc-2',
+            identifier: 'lobe-task',
+          },
+          result: { success: true },
+        }),
+      );
+      await flush();
+
+      expect(onAfterCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiName: 'createTask',
+          identifier: 'lobe-task',
+          toolCallId: 'tc-2',
+        }),
+      );
+    });
+
+    it('should skip onAfterCall when payload identifier/apiName are missing', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+      const onAfterCall = vi.fn();
+      getExecutorMock.mockReturnValue({ onAfterCall });
+
+      handler(makeEvent('tool_end', { isSuccess: true, payload: { parentMessageId: 'x' } }));
+      await flush();
+
+      expect(onAfterCall).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tool_start', () => {
+    it('should dispatch onBeforeCall with the unwrapped ChatToolPayload', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+      const onBeforeCall = vi.fn().mockResolvedValue(undefined);
+      getExecutorMock.mockReturnValueOnce({ onBeforeCall });
+
+      handler(
+        makeEvent('tool_start', {
+          parentMessageId: 'msg-parent',
+          toolCalling: {
+            apiName: 'editTask',
+            arguments: JSON.stringify({ identifier: 'T-5', name: 'renamed' }),
+            id: 'tc-3',
+            identifier: 'lobe-task',
+          },
+        }),
+      );
+      await flush();
+
+      expect(onBeforeCall).toHaveBeenCalledWith({
+        apiName: 'editTask',
+        identifier: 'lobe-task',
+        params: { identifier: 'T-5', name: 'renamed' },
+        toolCallId: 'tc-3',
+      });
+    });
   });
 
   describe('step_complete', () => {
@@ -321,6 +633,97 @@ describe('createGatewayEventHandler', () => {
 
       expect(store.completeOperation).toHaveBeenCalledWith('op-1');
       expect(store.replaceMessages).toHaveBeenCalled();
+    });
+
+    it('should emit runtime end signal with the current assistant message id', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_start', { assistantMessage: { id: 'msg-step2' } }));
+      handler(makeEvent('agent_runtime_end'));
+      await flush();
+
+      expect(emitClientAgentSignalSourceEvent).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            anchorMessageId: 'msg-step2',
+            assistantMessageId: 'msg-step2',
+            operationId: 'op-1',
+          }),
+          sourceType: 'client.gateway.runtime_end',
+        }),
+      );
+    });
+
+    // MID-stream cancel. The server-side coordinator skips the
+    // uiMessages snapshot when state.status='interrupted' to avoid pushing
+    // a LOADING_FLAT placeholder. The client must mirror that intent: when
+    // `reason='interrupted'` arrives without uiMessages AND we already have
+    // server-confirmed streamed state, do NOT fall back to a DB refetch —
+    // the executor's partial-finalize catch is still racing to write the
+    // real content, and a fetch here would return placeholder and clobber
+    // in-memory streamed content.
+    it('should NOT refetch from DB when reason=interrupted AND stream had progressed', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      // Simulate a stream that had progressed: server-assigned assistant id
+      // arrived via stream_start, then a text chunk landed.
+      handler(makeEvent('stream_start', { assistantMessage: { id: 'msg-server' } }));
+      handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'partial answer' }));
+      await flush();
+      vi.mocked(messageService.getMessages).mockClear();
+      store.replaceMessages.mockClear();
+
+      handler(makeEvent('agent_runtime_end', { reason: 'interrupted' }));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-1');
+      expect(messageService.getMessages).not.toHaveBeenCalled();
+      expect(store.replaceMessages).not.toHaveBeenCalled();
+    });
+
+    // Reviewer feedback on PR #15173: if cancel arrives BEFORE any
+    // stream activity (no server-assigned assistant id, no chunks), the
+    // optimistic `tmp_*` placeholder messages are the only client-side
+    // state and they need the DB refetch to be reconciled with the
+    // server-side rows. Skipping the fallback would leave the tmp_*
+    // ids stuck in the store indefinitely.
+    it('should refetch from DB when reason=interrupted but stream never progressed', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      // No stream_start / stream_chunk before the cancel — only optimistic
+      // local state exists, no server-confirmed assistant id, no chunks.
+      handler(makeEvent('agent_runtime_end', { reason: 'interrupted' }));
+      await flush();
+
+      expect(store.completeOperation).toHaveBeenCalledWith('op-1');
+      // Refetch IS called so the tmp_* placeholders get reconciled.
+      expect(messageService.getMessages).toHaveBeenCalled();
+      expect(store.replaceMessages).toHaveBeenCalled();
+    });
+
+    it('should still use uiMessages SoT when reason=interrupted but server included a snapshot', async () => {
+      const store = createMockStore();
+      const handler = createHandler(store);
+      const uiMessages = [{ id: 'msg-initial', role: 'assistant', content: 'partial' }];
+
+      handler(
+        makeEvent('agent_runtime_end', {
+          reason: 'interrupted',
+          uiMessages,
+        }),
+      );
+      await flush();
+
+      // uiMessages present takes precedence over the interrupted skip — the
+      // SoT push is authoritative when server chose to send it.
+      expect(store.replaceMessages).toHaveBeenCalledWith(uiMessages, {
+        action: 'gateway/agent_runtime_end',
+        context: expect.any(Object),
+      });
+      expect(messageService.getMessages).not.toHaveBeenCalled();
     });
   });
 
@@ -516,17 +919,14 @@ describe('createGatewayEventHandler', () => {
   });
 
   describe('sequential processing', () => {
-    it('should process stream_chunk only after stream_start refresh completes', async () => {
+    it('should dispatch stream_chunk to the new assistant id after stream_start switches it', async () => {
+      // Native gateway streams no longer await a DB fetch on stream_start
+      // — but stream_chunk must still queue behind stream_start
+      // so the chunk targets the NEW assistant id (from stream_start.data),
+      // not the previous one.
       const store = createMockStore();
       const callOrder: string[] = [];
 
-      const { messageService } = await import('@/services/message');
-      (messageService.getMessages as any).mockImplementation(async () => {
-        callOrder.push('refresh_start');
-        await new Promise((r) => setTimeout(r, 10));
-        callOrder.push('refresh_end');
-        return [];
-      });
       store.internal_dispatchMessage.mockImplementation(() => {
         callOrder.push('dispatch');
       });
@@ -540,10 +940,34 @@ describe('createGatewayEventHandler', () => {
       handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'Hello' }));
       await flush();
 
-      const refreshEndIdx = callOrder.indexOf('refresh_end');
+      // associate (from stream_start) precedes dispatch (from stream_chunk)
+      const associateIdx = callOrder.indexOf('associate');
       const dispatchIdx = callOrder.indexOf('dispatch');
-      expect(refreshEndIdx).toBeGreaterThan(-1);
-      expect(dispatchIdx).toBeGreaterThan(refreshEndIdx);
+      expect(associateIdx).toBeGreaterThan(-1);
+      expect(dispatchIdx).toBeGreaterThan(associateIdx);
+
+      // Chunk targets the new id, proving the queue ordering held
+      expect(store.internal_dispatchMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: 'msg-new', value: { content: 'Hello' } }),
+        { operationId: 'op-1' },
+      );
+      // And no DB refetch was issued for the native stream
+      expect(messageService.getMessages).not.toHaveBeenCalled();
+    });
+
+    it('should still fetch from DB on stream_start when assistantMessage id is absent (hetero CLI)', async () => {
+      // Hetero CLI adapters (Claude Code / Codex) never set
+      // `assistantMessage.id` on stream_start, so the DB read is still
+      // mandatory — it pulls the executor-created placeholder into
+      // `dbMessagesMap` so subsequent chunks have a target.
+      const store = createMockStore();
+      const handler = createHandler(store);
+
+      handler(makeEvent('stream_start', {}));
+      await flush();
+
+      expect(messageService.getMessages).toHaveBeenCalled();
+      expect(store.replaceMessages).toHaveBeenCalled();
     });
   });
 
@@ -574,18 +998,22 @@ describe('createGatewayEventHandler', () => {
       // Loading stays active between steps — only tool streaming is cleared
       expect(store.internal_toggleToolCallingStreaming).toHaveBeenCalledWith('msg-1', undefined);
 
-      // Tool execution
+      // Tool execution — tool_end still refreshes from DB to pick up the
+      // server-created tool message row.
       handler(makeEvent('tool_start', { parentMessageId: 'msg-1', toolCalling: tools[0] }));
       handler(makeEvent('tool_end', { isSuccess: true }));
       await flush();
       expect(store.replaceMessages).toHaveBeenCalled();
 
-      // Step 2: Next LLM call with new assistant message
+      // Step 2: Next LLM call with new assistant message — native stream_start
+      // carries the id directly, so it must NOT trigger a DB refetch
+      // Only the association switch happens.
       vi.clearAllMocks();
       handler(makeEvent('stream_start', { assistantMessage: { id: 'msg-2' } }));
       await flush();
-      expect(store.replaceMessages).toHaveBeenCalled();
       expect(store.associateMessageWithOperation).toHaveBeenCalledWith('msg-2', 'op-1');
+      expect(messageService.getMessages).not.toHaveBeenCalled();
+      expect(store.replaceMessages).not.toHaveBeenCalled();
 
       handler(makeEvent('stream_chunk', { chunkType: 'text', content: 'Here are the results.' }));
       await flush();

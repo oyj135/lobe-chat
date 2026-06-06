@@ -1,21 +1,23 @@
 import isEqual from 'fast-deep-equal';
 import { gt, parse, valid } from 'semver';
-import { type SWRResponse } from 'swr';
+import type { SWRResponse } from 'swr';
 
+import { SESSION_CHAT_TOPIC_URL } from '@/const/url';
 import { CURRENT_VERSION, isDesktop } from '@/const/version';
 import { useOnlyFetchOnceSWR } from '@/libs/swr';
 import { globalService } from '@/services/global';
 import { getElectronStoreState } from '@/store/electron';
 import { electronSyncSelectors } from '@/store/electron/selectors';
-import { type SystemStatus } from '@/store/global/initialState';
-import { type StoreSetter } from '@/store/types';
-import { type LocaleMode } from '@/types/locale';
+import type { SystemStatus } from '@/store/global/initialState';
+import { DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS } from '@/store/global/initialState';
+import type { StoreSetter } from '@/store/types';
+import type { LocaleMode } from '@/types/locale';
 import { switchLang } from '@/utils/client/switchLang';
 import { merge } from '@/utils/merge';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { DEFAULT_HIDDEN_SECTIONS, DEFAULT_SIDEBAR_ITEMS } from '../selectors/systemStatus';
-import { type GlobalStore } from '../store';
+import type { GlobalStore } from '../store';
 
 const n = setNamespace('g');
 
@@ -66,7 +68,7 @@ export class GlobalGeneralActionImpl {
 
   openTopicInNewWindow = async (agentId: string, topicId: string): Promise<void> => {
     const popupPath = `/popup/agent/${agentId}/${topicId}`;
-    const browserUrl = `/agent/${agentId}?topic=${topicId}`;
+    const browserUrl = SESSION_CHAT_TOPIC_URL(agentId, topicId);
 
     if (isDesktop) {
       try {
@@ -163,7 +165,11 @@ export class GlobalGeneralActionImpl {
 
   resetSidebarCustomization = (): void => {
     this.#get().updateSystemStatus(
-      { hiddenSidebarSections: DEFAULT_HIDDEN_SECTIONS, sidebarItems: DEFAULT_SIDEBAR_ITEMS },
+      {
+        hiddenSidebarSections: DEFAULT_HIDDEN_SECTIONS,
+        sidebarExpandedKeys: DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS,
+        sidebarItems: DEFAULT_SIDEBAR_ITEMS,
+      },
       n('resetSidebarCustomization'),
     );
   };
@@ -267,6 +273,7 @@ export class GlobalGeneralActionImpl {
             ...status,
             showCommandMenu: false,
             showHotkeyHelper: false,
+            workingSidebarRevealRequest: undefined,
           };
 
           this.#get().updateSystemStatus(statusWithResetTransientStates, 'initSystemStatus');

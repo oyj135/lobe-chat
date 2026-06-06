@@ -50,7 +50,12 @@ export const responsesAPIModels = new Set([
   'gpt-5.4-mini',
   'gpt-5.4-nano',
   'gpt-5.4-pro',
+  'gpt-5.5',
+  'gpt-5.5-pro',
 ]);
+
+export const isGPT5ProResponsesModel = (model: string): boolean =>
+  /(?:^|\/)gpt-5(?:\.\d+)?-pro(?:-|$)/.test(model);
 
 /**
  * Regex patterns for models that support context caching (3.5+)
@@ -122,15 +127,24 @@ export const hasTemperatureTopPConflict = (model: string): boolean => {
  * Ref: https://platform.claude.com/docs/en/about-claude/models/migration-guide
  */
 export const omitSamplingParamsModelPatterns: RegExp[] = [
-  // Claude Opus 4.7 - Anthropic API (also LobeHub provider pass-through)
-  /^claude-opus-4-7/,
+  // Claude Opus 4.7+ - Anthropic API (also LobeHub provider pass-through)
+  /^claude-opus-4-[78]/,
   // OpenRouter formats use dot notation (e.g. anthropic/claude-opus-4.7)
-  /^anthropic\/claude-opus-4\.7/,
-  /^anthropic\/claude-4\.7-opus/,
+  /^anthropic\/claude-opus-4\.[78]/,
+  /^anthropic\/claude-4\.[78]-opus/,
   // AWS Bedrock formats (e.g. anthropic.claude-opus-4-7, us.anthropic.claude-opus-4-7-v1)
-  /anthropic\.claude-opus-4-7/,
+  /anthropic\.claude-opus-4-[78]/,
 ];
 
 export const shouldOmitSamplingParams = (model: string): boolean => {
   return omitSamplingParamsModelPatterns.some((pattern) => pattern.test(model));
+};
+
+export const assistantPrefillUnsupportedModelPatterns: RegExp[] = [
+  /^claude-(opus|sonnet)-4-[678](\b|-)/,
+  /anthropic\.claude-(opus|sonnet)-4-[678](\b|-)/,
+];
+
+export const shouldDropUnsupportedClaudeAssistantPrefill = (model: string): boolean => {
+  return assistantPrefillUnsupportedModelPatterns.some((pattern) => pattern.test(model));
 };

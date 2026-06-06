@@ -23,7 +23,7 @@ const log = debug('context-engine:processor:MessageContentProcessor');
  * does not declare vision capability. Dropping the part silently loses the
  * conversational signal that an image ever existed, while leaving the raw part
  * in the payload causes provider-side 400s (e.g. DeepSeek rejects the
- * `image_url` variant outright — see LOBE-7214).
+ * `image_url` variant outright — see ).
  */
 export const VISION_DOWNGRADE_PLACEHOLDER = '[image omitted: not supported by this model]';
 
@@ -212,9 +212,13 @@ export class MessageContentProcessor extends BaseProcessor {
     // Add file context (if file context is enabled and has files, images or videos)
     if ((hasFiles || hasImages || hasVideos) && this.config.fileContext?.enabled) {
       const filesContext = filesPrompts({
-        addUrl: this.config.fileContext.includeFileUrl ?? true,
+        // Signed file URLs are volatile and can break provider-side prefix cache reuse.
+        // Keep file refs stable by default; structured multimodal parts still carry
+        // the fetchable URL when the target model supports the media type.
+        addUrl: this.config.fileContext.includeFileUrl ?? false,
         fileList: message.fileList,
         imageList: message.imageList || [],
+        messageId: message.id,
         videoList: message.videoList || [],
       });
 

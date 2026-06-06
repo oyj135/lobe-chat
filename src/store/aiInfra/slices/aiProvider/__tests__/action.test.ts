@@ -1,6 +1,6 @@
 import * as runtimeModule from '@lobechat/model-runtime';
-import { type AIImageModelCard, type EnabledAiModel, type ModelParamsSchema } from 'model-bank';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AIImageModelCard, EnabledAiModel, ModelParamsSchema, Pricing } from 'model-bank';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getChatModelList,
@@ -34,6 +34,10 @@ const createImageModel = (overrides: Partial<ImageEnabledModel> = {}): ImageEnab
 });
 
 describe('aiProvider action helpers', () => {
+  beforeEach(() => {
+    vi.spyOn(runtimeModule, 'getModelPropertyWithFallback').mockResolvedValue(undefined);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -54,6 +58,24 @@ describe('aiProvider action helpers', () => {
         displayName: '',
         id: 'chat-model',
       });
+    });
+
+    it('preserves inline metadata without loading fallback model config', async () => {
+      const fallbackSpy = vi.spyOn(runtimeModule, 'getModelPropertyWithFallback');
+      const pricing: Pricing = {
+        units: [{ name: 'textInput', rate: 1.25, strategy: 'fixed', unit: 'millionTokens' }],
+      };
+      const model = {
+        ...createChatModel({ id: 'online-chat-model', providerId: 'lobehub' }),
+        description: 'Inline description',
+        pricing,
+      };
+
+      const result = await normalizeChatModel(model);
+
+      expect(result.description).toBe('Inline description');
+      expect(result.pricing).toBe(pricing);
+      expect(fallbackSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -86,7 +108,7 @@ describe('aiProvider action helpers', () => {
 
     it('fetches fallback description/parameters/pricing when missing', async () => {
       const fallbackSpy = vi
-        .spyOn(runtimeModule, 'getModelPropertyWithFallback')
+        .mocked(runtimeModule.getModelPropertyWithFallback)
         .mockImplementation(async (_id, key) => {
           if (key === 'parameters')
             return {
@@ -147,6 +169,27 @@ describe('aiProvider action helpers', () => {
     it('returns empty array when provider has no chat models', async () => {
       const result = await getChatModelList(chatModels, 'nonexistent');
       expect(result).toEqual([]);
+    });
+
+    it('filters runtime-only hidden models from visible chat lists', async () => {
+      const result = await getChatModelList(
+        [
+          createChatModel({
+            displayName: 'Visible Model',
+            id: 'visible-model',
+            providerId: 'lobehub',
+          }),
+          createChatModel({
+            displayName: 'Onboarding Alias',
+            id: 'lobehub-onboarding-v1',
+            providerId: 'lobehub',
+            visible: false,
+          }),
+        ],
+        'lobehub',
+      );
+
+      expect(result.map((model) => model.id)).toEqual(['visible-model']);
     });
   });
 

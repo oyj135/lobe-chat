@@ -1,27 +1,31 @@
 'use client';
 
 import { Flexbox } from '@lobehub/ui';
+import { cssVar } from 'antd-style';
 import debug from 'debug';
 import { memo, Suspense, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import AgentHome from '@/features/AgentHome';
 import ChatMiniMap from '@/features/ChatMiniMap';
-import { ChatList, ConversationProvider, TodoProgress } from '@/features/Conversation';
+import { ChatList, ConversationProvider } from '@/features/Conversation';
+import { useChatFollowUp } from '@/features/Conversation/hooks/useChatFollowUp';
+import { mergeConversationHooks } from '@/features/Conversation/utils/mergeConversationHooks';
 import ZenModeToast from '@/features/ZenModeToast';
+import { useGatewayReconnect } from '@/hooks/useGatewayReconnect';
 import { useOperationState } from '@/hooks/useOperationState';
 import { useAgentStore } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentChatConfigSelectors, agentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
+import { threadSelectors, topicSelectors } from '@/store/chat/selectors';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
-import ChatHydration from './ChatHydration';
 import HeterogeneousChatInput from './HeterogeneousChatInput';
 import MainChatInput from './MainChatInput';
 import MessageFromUrl from './MainChatInput/MessageFromUrl';
 import ThreadHydration from './ThreadHydration';
 import { useActionsBarConfig } from './useActionsBarConfig';
 import { useAgentContext } from './useAgentContext';
-import { useGatewayReconnect } from './useGatewayReconnect';
 
 const log = debug('lobe-render:agent:ConversationArea');
 
@@ -32,6 +36,7 @@ const log = debug('lobe-render:agent:ConversationArea');
  * Uses ChatList from @/features/Conversation and MainChatInput for custom features.
  */
 const Conversation = memo(() => {
+  const { t } = useTranslation('chat');
   const context = useAgentContext();
 
   // Get raw dbMessages from ChatStore for this context
@@ -42,6 +47,7 @@ const Conversation = memo(() => {
   );
   const replaceMessages = useChatStore((s) => s.replaceMessages);
   const messages = useChatStore((s) => s.dbMessagesMap[chatKey]);
+
   log('contextKey %s: %o', chatKey, messages);
 
   // Get operation state from ChatStore for reactive updates
@@ -55,14 +61,34 @@ const Conversation = memo(() => {
   // model/tools/memory/KB/MCP/runtime-mode pickers don't apply.
   const isHeterogeneousAgent = useAgentStore(agentSelectors.isCurrentAgentHeterogeneous);
 
+  // Subagent threads (spawned by an external agent's subagent tool call) are
+  // read-only — the parent agent drives their execution, so hide the input.
+  const isSubagentThread = useChatStore(threadSelectors.isActiveThreadSubagent);
+
   // Auto-reconnect to running Gateway operation on topic load
-  useGatewayReconnect(context.topicId);
+  const runningOperation = useChatStore((s) =>
+    context.topicId
+      ? topicSelectors.getTopicById(context.topicId)(s)?.metadata?.runningOperation
+      : undefined,
+  );
+  useGatewayReconnect(context.topicId, runningOperation);
+
+  const agentChatConfig = useAgentStore(agentChatConfigSelectors.currentChatConfig);
+  const chatFollowUpHooks = useChatFollowUp({
+    agentChatConfig,
+    conversationKey: chatKey,
+    threadId: context.threadId ?? undefined,
+    topicId: context.topicId ?? undefined,
+  });
+
+  const hooks = useMemo(() => mergeConversationHooks(chatFollowUpHooks), [chatFollowUpHooks]);
 
   return (
     <ConversationProvider
       actionsBar={actionsBarConfig}
       context={context}
       hasInitMessages={!!messages}
+      hooks={hooks}
       messages={messages}
       operationState={operationState}
       onMessagesChange={(messages, ctx) => {
@@ -79,11 +105,33 @@ const Conversation = memo(() => {
           position: 'relative',
         }}
       >
-        <ChatList welcome={<AgentHome />} />
+        <ChatList
+          defaultWorkflowExpandLevel={isHeterogeneousAgent ? { streaming: 'full' } : undefined}
+          welcome={<AgentHome />}
+          footerSlot={
+            isSubagentThread ? (
+              <Flexbox
+                horizontal
+                align={'center'}
+                justify={'center'}
+                paddingBlock={6}
+                paddingInline={16}
+              >
+                <span
+                  style={{
+                    color: cssVar.colorTextDescription,
+                    fontSize: 12,
+                    textAlign: 'center',
+                  }}
+                >
+                  {t('thread.subagentReadOnlyHint')}
+                </span>
+              </Flexbox>
+            ) : undefined
+          }
+        />
       </Flexbox>
-      <TodoProgress />
-      {isHeterogeneousAgent ? <HeterogeneousChatInput /> : <MainChatInput />}
-      <ChatHydration />
+      {!isSubagentThread && (isHeterogeneousAgent ? <HeterogeneousChatInput /> : <MainChatInput />)}
       <ThreadHydration />
       <ChatMiniMap />
       <Suspense>

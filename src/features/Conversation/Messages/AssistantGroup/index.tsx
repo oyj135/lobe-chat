@@ -1,8 +1,9 @@
 'use client';
 
-import type { AssistantContentBlock, EmojiReaction } from '@lobechat/types';
+import type { AssistantContentBlock, EmojiReaction, UISignalCallbacksBlock } from '@lobechat/types';
+import { Flexbox } from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
-import type { MouseEventHandler } from 'react';
+import type { MouseEventHandler, ReactNode } from 'react';
 import { memo, Suspense, useCallback, useMemo } from 'react';
 
 import { MESSAGE_ACTION_BAR_PORTAL_ATTRIBUTES } from '@/const/messageActionPortal';
@@ -25,8 +26,10 @@ import {
   useSetMessageItemActionElementPortialContext,
   useSetMessageItemActionTypeContext,
 } from '../Contexts/message-action-context';
+import SignalCallbacks from '../SignalCallbacks';
 import FileListViewer from '../User/components/FileListViewer';
 import Group from './components/Group';
+import type { WorkflowExpandLevelDefault } from './components/WorkflowCollapse';
 
 const EditState = dynamic(() => import('./components/EditState'), {
   ssr: false,
@@ -39,20 +42,32 @@ const actionBarHolder = (
   />
 );
 interface GroupMessageProps {
-  defaultWorkflowExpanded?: boolean;
+  defaultWorkflowExpandLevel?: WorkflowExpandLevelDefault;
   disableEditing?: boolean;
+  footerRender?: ReactNode;
   id: string;
   index: number;
   isLatestItem?: boolean;
 }
 
 const GroupMessage = memo<GroupMessageProps>(
-  ({ defaultWorkflowExpanded, id, index, disableEditing }) => {
+  ({ defaultWorkflowExpandLevel, id, index, disableEditing, footerRender }) => {
     // Get message and actionsConfig from ConversationStore
     const item = useConversationStore(dataSelectors.getDisplayMessageById(id), isEqual)!;
 
-    const { agentId, usage, createdAt, children, performance, model, provider, branch, metadata } =
-      item;
+    const {
+      agentId,
+      usage,
+      createdAt,
+      children,
+      performance,
+      model,
+      provider,
+      branch,
+      metadata,
+      signalCallbacks,
+      taskCompletions,
+    } = item;
     const avatar = useAgentMeta(agentId);
 
     // Collect fileList from all children blocks
@@ -140,6 +155,7 @@ const GroupMessage = memo<GroupMessageProps>(
       <ChatItem
         showTitle
         avatar={avatar}
+        id={id}
         placement={'left'}
         time={createdAt}
         actions={
@@ -159,17 +175,41 @@ const GroupMessage = memo<GroupMessageProps>(
         onAvatarClick={onAvatarClick}
         onMouseEnter={onMouseEnter}
       >
-        {children && children.length > 0 && (
-          <Group
-            blocks={children}
-            content={lastAssistantMsg?.content}
-            contentId={contentId}
-            defaultWorkflowExpanded={defaultWorkflowExpanded}
-            disableEditing={disableEditing}
-            id={id}
-            messageIndex={index}
-          />
-        )}
+        {/*
+          Wrap main chain + signal callbacks + post-task summary in a tight
+          flex stack so the SignalCallbacks accordion sits visually inside
+          the same "agent reply" block. The ChatItem body gap (16px) would
+          otherwise stretch them apart and the natural narrative — initial
+          reply → callbacks → summary — reads as three disconnected
+          sections ().
+        */}
+        <Flexbox gap={4}>
+          {children && children.length > 0 && (
+            <Group
+              blocks={children}
+              content={lastAssistantMsg?.content}
+              contentId={contentId}
+              defaultWorkflowExpandLevel={defaultWorkflowExpandLevel}
+              disableEditing={disableEditing}
+              id={id}
+              messageIndex={index}
+            />
+          )}
+          {(signalCallbacks as UISignalCallbacksBlock[] | undefined)?.map((block) => (
+            <SignalCallbacks block={block} key={block.sourceToolMessageId} />
+          ))}
+          {taskCompletions && taskCompletions.length > 0 && (
+            <Group
+              blocks={taskCompletions}
+              contentId={taskCompletions.at(-1)?.id}
+              defaultWorkflowExpandLevel={defaultWorkflowExpandLevel}
+              disableEditing={disableEditing}
+              id={id}
+              messageIndex={index}
+            />
+          )}
+        </Flexbox>
+
         {aggregatedFileList.length > 0 && (
           <div style={{ marginTop: 8 }}>
             <FileListViewer items={aggregatedFileList} />
@@ -179,6 +219,7 @@ const GroupMessage = memo<GroupMessageProps>(
         {isDevMode && model && (
           <Usage model={model} performance={performance} provider={provider!} usage={usage} />
         )}
+        {footerRender}
         {reactions.length > 0 && (
           <ReactionDisplay
             isActive={isReactionActive}

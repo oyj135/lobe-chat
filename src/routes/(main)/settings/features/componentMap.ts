@@ -22,6 +22,9 @@ export const componentMap = {
   [SettingsTabs.Memory]: dynamic(() => import('../memory'), {
     loading: loading('Settings > Memory'),
   }),
+  [SettingsTabs.Messenger]: dynamic(() => import('../messenger'), {
+    loading: loading('Settings > Messenger'),
+  }),
   [SettingsTabs.Notification]: dynamic(
     () => import('@/business/client/BusinessSettingPages/Notification'),
     {
@@ -42,6 +45,9 @@ export const componentMap = {
   }),
   [SettingsTabs.Storage]: dynamic(() => import('../storage'), {
     loading: loading('Settings > Storage'),
+  }),
+  [SettingsTabs.Devices]: dynamic(() => import('../devices'), {
+    loading: loading('Settings > Devices'),
   }),
   // Profile related tabs
   [SettingsTabs.Profile]: dynamic(() => import('../profile'), {

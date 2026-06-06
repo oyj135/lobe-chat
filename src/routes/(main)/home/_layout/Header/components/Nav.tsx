@@ -10,7 +10,6 @@ import NavItem from '@/features/NavPanel/components/NavItem';
 import { useActiveTabKey } from '@/hooks/useActiveTabKey';
 import { useNavLayout } from '@/hooks/useNavLayout';
 import { isModifierClick } from '@/utils/navigation';
-import { prefetchRoute } from '@/utils/router';
 
 /** Keys that are rendered in the header; all others are managed by Body via sidebarSectionOrder */
 const HEADER_KEYS = new Set(['home', 'search']);
@@ -30,7 +29,7 @@ const Nav = memo(() => {
   return (
     <Flexbox gap={1} paddingInline={4}>
       {items
-        .filter((item) => HEADER_KEYS.has(item.key))
+        .filter((item) => HEADER_KEYS.has(item.key) && !item.hidden)
         .map((item) => {
           const extra = item.isNew ? newBadge : undefined;
 
@@ -51,7 +50,6 @@ const Nav = memo(() => {
             <Link
               key={item.key}
               to={item.url}
-              onMouseEnter={() => prefetchRoute(item.url!)}
               onClick={(e) => {
                 if (isModifierClick(e)) return;
                 e.preventDefault();

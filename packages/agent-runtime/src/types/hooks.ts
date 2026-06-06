@@ -11,16 +11,49 @@
  */
 export type AgentHookType =
   | 'afterStep' // After each step completes
+  | 'afterToolCall' // After a tool call completes (observation only)
   | 'beforeStep' // Before each step executes
+  | 'beforeToolCall' // Before a tool call executes (supports mocking via event.mock())
+  | 'beforeCallAgent' // Before calling a sub-agent
+  | 'afterCallAgent' // After sub-agent completes
+  | 'beforeCompact' // Before context compression starts
+  | 'beforeHumanIntervention' // Before agent pauses for human approval
+  | 'afterCompact' // After context compression completes
+  | 'afterHumanIntervention' // After human approves/rejects and agent resumes
+  | 'onCallAgentError' // Sub-agent execution failed
+  | 'onCompactError' // Context compression failed
   | 'onComplete' // Operation reaches terminal state (done/error/interrupted)
-  | 'onError'; // Error during execution
+  | 'onStopByHumanIntervention' // Human rejected and agent halted
+  | 'onError' // Error during execution
+  | 'onToolCallError'; // Tool call threw an exception (not just success=false)
 
 /**
  * Unified event payload passed to hook handlers and webhook payloads
  */
+/**
+ * Outbound attachment carried alongside the agent's final reply text.
+ * Populated only on `onComplete`. JSON-safe so it survives webhook delivery.
+ */
+export interface HookEventAttachment {
+  /** Base64-encoded bytes. Used when no fetchable URL exists. */
+  data?: string;
+  /** Remote URL the downstream consumer can GET to retrieve the bytes. */
+  fetchUrl?: string;
+  mimeType?: string;
+  name?: string;
+  type: 'image' | 'file' | 'video' | 'audio';
+}
+
 export interface AgentHookEvent {
   // Identification
   agentId: string;
+  /**
+   * Outbound attachments extracted from the final assistant message's
+   * multimodal `content` parts (or tool messages that produced image/file
+   * outputs). Set on `onComplete` events; downstream consumers (bot reply
+   * callbacks) forward these to platform messengers.
+   */
+  attachments?: HookEventAttachment[];
   /** LLM text output (afterStep only) */
   content?: string;
   // Statistics
@@ -32,6 +65,14 @@ export interface AgentHookEvent {
   errorDetail?: string;
 
   errorMessage?: string;
+
+  /**
+   * Stable error code (e.g. `NoAvailableProvider`, `InvalidProviderAPIKey`).
+   * Populated when the underlying error carries an `errorType` from
+   * `AgentRuntimeError.chat`. Hooks should switch on this code rather than
+   * pattern-matching `errorMessage`, which is free-form text.
+   */
+  errorType?: string;
 
   /** Step execution time in ms (afterStep only) */
   executionTimeMs?: number;
@@ -90,3 +131,145 @@ export interface AgentHookEvent {
 
   userId: string;
 }
+
+/**
+ * Event payload for beforeToolCall hooks.
+ * Call `mock()` to skip real tool execution and return a fake result.
+ */
+export interface ToolCallHookEvent {
+  apiName: string;
+  args: Record<string, any>;
+  callIndex: number;
+  identifier: string;
+  mock: (result: { content: string }) => void;
+  operationId: string;
+  stepIndex: number;
+}
+
+/**
+ * Event payload for beforeToolCall observation dispatch (webhook/logging).
+ * Same fields as ToolCallHookEvent but without mock() — used for production webhook delivery.
+ */
+export interface BeforeToolCallObservationEvent {
+  apiName: string;
+  args: Record<string, any>;
+  callIndex: number;
+  identifier: string;
+  operationId: string;
+  stepIndex: number;
+  userId?: string;
+}
+
+export interface AfterToolCallHookEvent {
+  apiName: string;
+  args: Record<string, any>;
+  callIndex: number;
+  content: string;
+  executionTimeMs: number;
+  identifier: string;
+  mocked: boolean;
+  operationId: string;
+  stepIndex: number;
+  success: boolean;
+  userId?: string;
+}
+
+export interface ToolCallErrorHookEvent {
+  apiName: string;
+  args: Record<string, any>;
+  callIndex: number;
+  error: string;
+  identifier: string;
+  operationId: string;
+  stepIndex: number;
+  userId?: string;
+}
+
+export interface BeforeCompactHookEvent {
+  messageCount: number;
+  operationId: string;
+  stepIndex: number;
+  tokenCount: number;
+  userId?: string;
+}
+
+export interface AfterCompactHookEvent {
+  groupId: string;
+  messagesAfter: number;
+  messagesBefore: number;
+  operationId: string;
+  stepIndex: number;
+  summary: string;
+  userId?: string;
+}
+
+export interface CompactErrorHookEvent {
+  error: string;
+  operationId: string;
+  stepIndex: number;
+  tokenCount: number;
+  userId?: string;
+}
+
+export interface BeforeHumanInterventionHookEvent {
+  operationId: string;
+  pendingTools: Array<{ apiName: string; identifier: string }>;
+  stepIndex: number;
+  userId?: string;
+}
+
+export interface AfterHumanInterventionHookEvent {
+  action: 'approve' | 'reject' | 'rejectAndContinue';
+  operationId: string;
+  rejectionReason?: string;
+  toolCallId?: string;
+  userId?: string;
+}
+
+export interface StopByHumanInterventionHookEvent {
+  operationId: string;
+  rejectionReason?: string;
+  toolCallId?: string;
+  userId?: string;
+}
+
+export interface BeforeCallAgentHookEvent {
+  agentId: string;
+  instruction: string;
+  operationId: string;
+  userId?: string;
+}
+
+export interface AfterCallAgentHookEvent {
+  agentId: string;
+  operationId: string;
+  subOperationId: string;
+  success: boolean;
+  threadId: string;
+  userId?: string;
+}
+
+export interface CallAgentErrorHookEvent {
+  agentId: string;
+  error: string;
+  operationId: string;
+  userId?: string;
+}
+
+/**
+ * Union of all hook event types for dispatch methods that accept any hook event.
+ */
+export type AnyHookEvent =
+  | AfterCallAgentHookEvent
+  | AfterCompactHookEvent
+  | AfterHumanInterventionHookEvent
+  | AfterToolCallHookEvent
+  | AgentHookEvent
+  | BeforeCallAgentHookEvent
+  | BeforeCompactHookEvent
+  | BeforeHumanInterventionHookEvent
+  | BeforeToolCallObservationEvent
+  | CallAgentErrorHookEvent
+  | CompactErrorHookEvent
+  | StopByHumanInterventionHookEvent
+  | ToolCallErrorHookEvent;

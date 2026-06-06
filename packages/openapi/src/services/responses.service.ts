@@ -227,8 +227,8 @@ export class ResponsesService extends BaseService {
   /**
    * Decode internal tool name format to display name.
    * - lobe-client-fn____get_weather → get_weather
-   * - lobe-cloud-sandbox____executeCode____builtin → lobe-cloud-sandbox/executeCode
-   * - my-plugin____myApi → my-plugin/myApi
+   * - lobe-cloud-sandbox____executeCode → lobe-cloud-sandbox/executeCode
+   * - my-plugin____myApi____mcp → my-plugin/myApi (legacy 3-segment still tolerated)
    */
   private decodeToolName(rawName: string): string {
     const SEPARATOR = '____';
@@ -301,6 +301,7 @@ export class ResponsesService extends BaseService {
         instructions,
         prompt,
         stream: false,
+        trigger: 'openapi',
       });
 
       if (!execResult.success) {
@@ -321,7 +322,7 @@ export class ResponsesService extends BaseService {
       const usage = this.extractUsage(finalState);
 
       const isClientToolInterrupt =
-        finalState.status === 'interrupted' &&
+        finalState.status === 'waiting_for_async_tool' &&
         finalState.interruption?.reason === 'client_tool_execution';
 
       return this.buildResponseObject({
@@ -399,6 +400,7 @@ export class ResponsesService extends BaseService {
         instructions,
         prompt,
         stream: true,
+        trigger: 'openapi',
       });
 
       if (!execResult.success) {
@@ -751,7 +753,7 @@ export class ResponsesService extends BaseService {
 
       // Determine if agent was interrupted for client tool execution
       const isClientToolInterrupt =
-        finalState?.status === 'interrupted' &&
+        finalState?.status === 'waiting_for_async_tool' &&
         finalState?.interruption?.reason === 'client_tool_execution';
 
       if (isClientToolInterrupt) {

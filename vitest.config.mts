@@ -3,10 +3,29 @@ import { dirname, join, resolve } from 'node:path';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import { coverageConfigDefaults, defineConfig } from 'vitest/config';
 
+if (process.env.NODE_ENV === 'production') {
+  Reflect.set(process.env, 'NODE_ENV', 'test');
+}
+
 const alias = {
+  // Downstream workspaces sometimes pnpm-override @lobechat/business-* packages to
+  // internal implementations whose source files import alias paths that only exist
+  // in the outer workspace, causing vite import-analysis to fail when running tests
+  // from this repo. Pin the package to the local stub so tests here stay hermetic.
+  '@lobechat/business-model-runtime': resolve(
+    __dirname,
+    './packages/business/model-runtime/src/index.ts',
+  ),
+  '@lobechat/business-model-bank/model-config': resolve(
+    __dirname,
+    './packages/business/model-bank/src/model-config.ts',
+  ),
+  '@lobechat/business-model-bank': resolve(
+    __dirname,
+    './packages/business/model-bank/src/index.ts',
+  ),
   '@emoji-mart/data': resolve(__dirname, './tests/mocks/emojiMartData.ts'),
   '@emoji-mart/react': resolve(__dirname, './tests/mocks/emojiMartReact.tsx'),
-  '@/database/_deprecated': resolve(__dirname, './src/database/_deprecated'),
   '@/utils/client/switchLang': resolve(__dirname, './src/utils/client/switchLang'),
   '@/const/locale': resolve(__dirname, './src/const/locale'),
   // TODO: after refactor the errorResponse, we can remove it
@@ -22,6 +41,13 @@ const alias = {
 };
 
 export default defineConfig({
+  define: {
+    '__CI__': process.env.CI === 'true' ? 'true' : 'false',
+    '__DEV__': process.env.NODE_ENV !== 'production' ? 'true' : 'false',
+    '__ELECTRON__': 'false',
+    '__MOBILE__': 'false',
+    '__TEST__': 'true',
+  },
   optimizeDeps: {
     exclude: ['crypto', 'util', 'tty'],
     include: ['@lobehub/tts'],
@@ -83,7 +109,6 @@ export default defineConfig({
         // just ignore the migration code
         // we will use pglite in the future
         // so the coverage of this file is not important
-        'src/database/client/core/db.ts',
         'src/utils/fetch/fetchEventSource/*.ts',
       ],
       provider: 'v8',

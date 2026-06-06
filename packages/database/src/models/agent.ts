@@ -1,6 +1,7 @@
 import { getAgentPersistConfig } from '@lobechat/builtin-agents';
 import { DEFAULT_INBOX_AVATAR, INBOX_SESSION_ID } from '@lobechat/const';
-import { and, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import type { AgentRankItem } from '@lobechat/types';
+import { and, count, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
@@ -15,6 +16,7 @@ import {
   files,
   knowledgeBases,
   sessions,
+  topics,
 } from '../schemas';
 import type { LobeChatDatabase } from '../type';
 
@@ -27,6 +29,34 @@ export class AgentModel {
     this.db = db;
   }
 
+  /**
+   * Rank the user's agents by topic count (agent usage ranking). Counts topics
+   * directly via `topics.agentId`, so it is agent-native — no sessionId. Mirrors
+   * the recents filter: real agents plus the inbox, excluding other virtual agents.
+   */
+  rank = async (limit: number = 10): Promise<AgentRankItem[]> => {
+    return this.db
+      .select({
+        avatar: agents.avatar,
+        backgroundColor: agents.backgroundColor,
+        count: count(topics.id).as('count'),
+        id: agents.id,
+        title: agents.title,
+      })
+      .from(agents)
+      .leftJoin(topics, eq(topics.agentId, agents.id))
+      .where(
+        and(
+          eq(agents.userId, this.userId),
+          or(eq(agents.slug, INBOX_SESSION_ID), ne(agents.virtual, true)),
+        ),
+      )
+      .groupBy(agents.id)
+      .having(({ count }) => gt(count, 0))
+      .orderBy(desc(sql`count`))
+      .limit(limit);
+  };
+
   getAgentConfigById = async (id: string) => {
     const agent = await this.db.query.agents.findFirst({
       where: and(eq(agents.id, id), eq(agents.userId, this.userId)),
@@ -37,13 +67,44 @@ export class AgentModel {
     return this.enrichAgentWithKnowledge(agent);
   };
 
+  existsById = async (id: string): Promise<boolean> => {
+    const rows = await this.db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, id), eq(agents.userId, this.userId)))
+      .limit(1);
+
+    return rows.length > 0;
+  };
+
   /**
-   * Query non-virtual agents with optional keyword filter.
-   * Returns minimal agent info (id, title, description, avatar, backgroundColor).
-   * Excludes virtual agents (like inbox, supervisors, etc).
+   * Lightweight lookup of an agent's currently-configured model + provider,
+   * used to snapshot the model into a task config so later changes to the
+   * agent's default model don't silently affect already-created tasks.
+   * Returns null when the agent has no model/provider set, or the agent
+   * cannot be found for this user.
    */
-  queryAgents = async (params?: { keyword?: string; limit?: number; offset?: number }) => {
-    const { keyword, limit = 9999, offset = 0 } = params ?? {};
+  getAgentModelConfig = async (
+    idOrSlug: string,
+  ): Promise<{ model: string; provider: string } | null> => {
+    const rows = await this.db
+      .select({ model: agents.model, provider: agents.provider })
+      .from(agents)
+      .where(
+        and(eq(agents.userId, this.userId), or(eq(agents.id, idOrSlug), eq(agents.slug, idOrSlug))),
+      )
+      .limit(1);
+
+    const row = rows[0];
+    if (!row || !row.model || !row.provider) return null;
+    return { model: row.model, provider: row.provider };
+  };
+
+  /**
+   * Build the where condition shared by queryAgents / countAgents:
+   * non-virtual agents of the current user, with optional keyword filter.
+   */
+  private buildQueryAgentsWhere = (keyword?: string) => {
     // Include agents where virtual is false OR null (legacy data without virtual field)
     const baseConditions = and(
       eq(agents.userId, this.userId),
@@ -51,12 +112,22 @@ export class AgentModel {
     );
 
     // Add keyword search condition if provided
-    const searchCondition = keyword
+    return keyword
       ? and(
           baseConditions,
           or(ilike(agents.title, `%${keyword}%`), ilike(agents.description, `%${keyword}%`)),
         )
       : baseConditions;
+  };
+
+  /**
+   * Query non-virtual agents with optional keyword filter.
+   * Returns minimal agent info (id, title, description, avatar, backgroundColor).
+   * Excludes virtual agents (like inbox, supervisors, etc).
+   */
+  queryAgents = async (params?: { keyword?: string; limit?: number; offset?: number }) => {
+    const { keyword, limit = 9999, offset = 0 } = params ?? {};
+    const searchCondition = this.buildQueryAgentsWhere(keyword);
 
     return this.db
       .select({
@@ -71,6 +142,19 @@ export class AgentModel {
       .orderBy(desc(agents.updatedAt))
       .limit(limit)
       .offset(offset);
+  };
+
+  /**
+   * Count non-virtual agents matching the same conditions as queryAgents.
+   * Used to report real totals (and pagination) when queryAgents is limited.
+   */
+  countAgents = async (params?: { keyword?: string }): Promise<number> => {
+    const result = await this.db
+      .select({ count: count() })
+      .from(agents)
+      .where(this.buildQueryAgentsWhere(params?.keyword));
+
+    return result[0]?.count ?? 0;
   };
 
   /**
@@ -94,7 +178,7 @@ export class AgentModel {
     return rows.map(({ slug, ...row }) => ({
       ...row,
       avatar: row.avatar || (slug === INBOX_SESSION_ID ? DEFAULT_INBOX_AVATAR : null),
-      title: row.title || (slug === INBOX_SESSION_ID ? 'LobeAI' : null),
+      title: row.title || (slug === INBOX_SESSION_ID ? 'Lobe AI' : null),
     }));
   };
 
@@ -583,7 +667,15 @@ export class AgentModel {
     const persistConfig = getAgentPersistConfig(slug);
     if (!persistConfig) return null;
 
-    // 4. Create the builtin agent with persist config
+    // 4. Create the builtin agent with persist config.
+    // Idempotent under concurrent callers: two parallel requests for the same
+    // (userId, slug) both see no existing row and race to insert. Without
+    // `onConflictDoNothing`, the loser hits the `agents_slug_user_id_unique`
+    // constraint; with it, the loser's `.returning()` is empty and we re-read
+    // the row that won.
+    // `agents_slug_user_id_unique` is a partial index (WHERE workspace_id IS
+    // NULL) since migration 0109, so the conflict arbiter must carry the same
+    // predicate; builtin agents are always workspace-less (workspace_id NULL).
     const result = await this.db
       .insert(agents)
       .values({
@@ -593,8 +685,18 @@ export class AgentModel {
         userId: this.userId,
         virtual: true,
       })
+      .onConflictDoNothing({
+        target: [agents.slug, agents.userId],
+        where: isNull(agents.workspaceId),
+      })
       .returning();
 
-    return result[0];
+    if (result[0]) return result[0];
+
+    return (
+      (await this.db.query.agents.findFirst({
+        where: and(eq(agents.slug, slug), eq(agents.userId, this.userId)),
+      })) ?? null
+    );
   };
 }

@@ -4,21 +4,15 @@ import {
   buildMappedBusinessModelFields,
   resolveBusinessModelMapping,
 } from '@lobechat/business-model-runtime';
-import { AgentRuntimeErrorType } from '@lobechat/model-runtime';
-import {
-  AsyncTaskError,
-  AsyncTaskErrorType,
-  AsyncTaskStatus,
-  RequestTrigger,
-} from '@lobechat/types';
+import { AsyncTaskError, AsyncTaskStatus, RequestTrigger } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 import { type RuntimeImageGenParams } from 'model-bank';
 import { z } from 'zod';
 
+import { getProviderContentPolicyErrorMessage } from '@/business/server/getProviderContentPolicyErrorMessage';
 import { chargeAfterGenerate } from '@/business/server/image-generation/chargeAfterGenerate';
-// TODO: temporarily disabled until notification UI is polished
-// import { notifyImageCompleted } from '@/business/server/image-generation/notifyImageCompleted';
+import { notifyImageCompleted } from '@/business/server/image-generation/notifyImageCompleted';
 import { createImageBusinessMiddleware } from '@/business/server/trpc-middlewares/async';
 import { AsyncTaskModel } from '@/database/models/asyncTask';
 import { FileModel } from '@/database/models/file';
@@ -28,6 +22,8 @@ import { asyncAuthedProcedure, asyncRouter as router } from '@/libs/trpc/async';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { GenerationService } from '@/server/services/generation';
 import { sanitizeFileName } from '@/utils/sanitizeFileName';
+
+import { categorizeImageGenerationError } from './imageError';
 
 const log = debug('lobe-image:async');
 
@@ -74,146 +70,6 @@ const checkAbortSignal = (signal: AbortSignal) => {
   if (signal.aborted) {
     throw new Error('Operation was aborted');
   }
-};
-
-/**
- * Categorizes errors into appropriate AsyncTaskErrorType
- * Returns the original error message if available, otherwise returns the error type as message
- * Client should handle localization based on errorType
- */
-const categorizeError = (
-  error: any,
-  isAborted: boolean,
-  isEditingImage: boolean,
-): { errorMessage: string; errorType: AsyncTaskErrorType } => {
-  log('🔥🔥🔥 [ASYNC] categorizeError called:', {
-    errorMessage: error?.message,
-    errorName: error?.name,
-    errorStatus: error?.status,
-    errorType: error?.errorType,
-    fullError: JSON.stringify(error, null, 2),
-    isAborted,
-    isEditingImage,
-  });
-  // Handle Comfy UI errors
-  if (error.errorType === AgentRuntimeErrorType.ComfyUIServiceUnavailable) {
-    return {
-      errorMessage:
-        error.error?.message || error.message || AgentRuntimeErrorType.ComfyUIServiceUnavailable,
-      errorType: AsyncTaskErrorType.InvalidProviderAPIKey,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.ComfyUIBizError) {
-    return {
-      errorMessage: error.error?.message || error.message || AgentRuntimeErrorType.ComfyUIBizError,
-      errorType: AsyncTaskErrorType.ServerError,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.ComfyUIWorkflowError) {
-    return {
-      errorMessage:
-        error.error?.message || error.message || AgentRuntimeErrorType.ComfyUIWorkflowError,
-      errorType: AsyncTaskErrorType.ServerError,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.ComfyUIModelError) {
-    return {
-      errorMessage:
-        error.error?.message || error.message || AgentRuntimeErrorType.ComfyUIModelError,
-      errorType: AsyncTaskErrorType.ModelNotFound,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.ConnectionCheckFailed) {
-    return {
-      errorMessage: error.message || AgentRuntimeErrorType.ConnectionCheckFailed,
-      errorType: AsyncTaskErrorType.ServerError,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.PermissionDenied) {
-    return {
-      errorMessage: error.error?.message || error.message || AgentRuntimeErrorType.PermissionDenied,
-      errorType: AsyncTaskErrorType.InvalidProviderAPIKey,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.ModelNotFound) {
-    return {
-      errorMessage: error.error?.message || error.message || AgentRuntimeErrorType.ModelNotFound,
-      errorType: AsyncTaskErrorType.ModelNotFound,
-    };
-  }
-
-  if (error.errorType === AgentRuntimeErrorType.ProviderNoImageGenerated) {
-    return {
-      errorMessage: isEditingImage
-        ? 'Provider returned no image (maybe content review). Try a safer source image or milder prompt.'
-        : 'Provider returned no image (maybe content review). Try a milder prompt or another model.',
-      errorType: AsyncTaskErrorType.ServerError,
-    };
-  }
-
-  // FIXME: 401 errors should be handled in agentRuntime for better practice
-  if (error.errorType === AgentRuntimeErrorType.InvalidProviderAPIKey || error?.status === 401) {
-    return {
-      errorMessage:
-        error.error?.message || error.message || AgentRuntimeErrorType.InvalidProviderAPIKey,
-      errorType: AsyncTaskErrorType.InvalidProviderAPIKey,
-    };
-  }
-
-  // Content moderation / policy violation — return a clean, generic message
-  const errorMsg: string = error.message || error.error?.message || '';
-  const errorCode: string = error.code || error.error?.code || '';
-  if (
-    errorCode === 'InputTextSensitiveContentDetected' ||
-    errorCode === 'content_policy_violation' ||
-    errorMsg.toLowerCase().includes('content policy') ||
-    errorMsg.toLowerCase().includes('sensitive information')
-  ) {
-    return {
-      errorMessage:
-        'The request content may violate content policy. Please modify your prompt and try again.',
-      errorType: AsyncTaskErrorType.ServerError,
-    };
-  }
-
-  if (error instanceof AsyncTaskError) {
-    return {
-      errorMessage: typeof error.body === 'string' ? error.body : error.body.detail,
-      errorType: error.name as AsyncTaskErrorType,
-    };
-  }
-
-  if (isAborted || error.message?.includes('aborted')) {
-    return {
-      errorMessage: AsyncTaskErrorType.Timeout,
-      errorType: AsyncTaskErrorType.Timeout,
-    };
-  }
-
-  if (error.message?.includes('timeout') || error.name === 'TimeoutError') {
-    return {
-      errorMessage: AsyncTaskErrorType.Timeout,
-      errorType: AsyncTaskErrorType.Timeout,
-    };
-  }
-
-  if (error.message?.includes('network') || error.name === 'NetworkError') {
-    return {
-      errorMessage: error.message || AsyncTaskErrorType.ServerError,
-      errorType: AsyncTaskErrorType.ServerError,
-    };
-  }
-
-  return {
-    errorMessage: error.message || error.error?.message || AsyncTaskErrorType.ServerError,
-    errorType: AsyncTaskErrorType.ServerError,
-  };
 };
 
 export const imageRouter = router({
@@ -282,7 +138,14 @@ export const imageRouter = router({
               model: resolvedModelId,
               params: params as unknown as RuntimeImageGenParams,
             },
-            { metadata: { trigger: RequestTrigger.Image } },
+            {
+              metadata: {
+                generationBatchId,
+                generationId,
+                taskId,
+                trigger: RequestTrigger.Image,
+              },
+            },
           );
 
           if (!response) {
@@ -376,15 +239,18 @@ export const imageRouter = router({
             status: AsyncTaskStatus.Success,
           });
 
-          // TODO: temporarily disabled until notification UI is polished
-          // notifyImageCompleted({
-          //   duration,
-          //   generationBatchId,
-          //   model,
-          //   prompt: params.prompt,
-          //   topicId: generationTopicId,
-          //   userId: ctx.userId,
-          // }).catch((err) => console.error('[image-async] notification failed:', err));
+          try {
+            await notifyImageCompleted({
+              duration,
+              generationBatchId,
+              model,
+              prompt: params.prompt,
+              topicId: generationTopicId,
+              userId: ctx.userId,
+            });
+          } catch (err) {
+            console.error('[image-async] notification failed:', err);
+          }
 
           if (ENABLE_BUSINESS_FEATURES) {
             await chargeAfterGenerate({
@@ -437,11 +303,18 @@ export const imageRouter = router({
         });
 
         // Improved error categorization logic
-        const { errorType, errorMessage } = categorizeError(
+        const providerContentPolicyMessage = await getProviderContentPolicyErrorMessage({
           error,
-          abortController.signal.aborted,
+          provider,
+          trigger: RequestTrigger.Image,
+          userId: ctx.userId,
+        });
+        const { errorType, errorMessage } = categorizeImageGenerationError({
+          error,
           isEditingImage,
-        );
+          isAborted: abortController.signal.aborted,
+          providerContentPolicyMessage,
+        });
 
         await ctx.asyncTaskModel.update(taskId, {
           error: new AsyncTaskError(errorType, errorMessage),

@@ -36,11 +36,25 @@ export interface EditFileParams {
 }
 
 export interface SearchFilesParams {
+  contentContains?: string;
+  createdAfter?: string;
+  createdBefore?: string;
+  detailed?: boolean;
   directory: string;
+  exclude?: string[];
+  /** @deprecated Prefer `fileTypes` (plural). Retained for cloud sandbox back-compat. */
   fileType?: string;
+  fileTypes?: string[];
+  /** @deprecated Prefer `keywords` (plural). Retained for cloud sandbox back-compat. */
   keyword?: string;
+  keywords?: string;
+  limit?: number;
+  liveUpdate?: boolean;
   modifiedAfter?: string;
   modifiedBefore?: string;
+  scope?: string;
+  sortBy?: 'name' | 'date' | 'size';
+  sortDirection?: 'asc' | 'desc';
 }
 
 export interface MoveFilesParams {
@@ -68,6 +82,12 @@ export interface RunCommandParams {
 
 export interface GetCommandOutputParams {
   commandId: string;
+  /**
+   * Max time to wait for this observation before returning (does not kill the
+   * process). Forwarded to the service so callers polling a running command can
+   * honor a per-call/gateway budget instead of the service's default wait.
+   */
+  timeout?: number;
 }
 
 export interface KillCommandParams {
@@ -174,8 +194,8 @@ export interface RunCommandState {
 
 export interface GetCommandOutputState {
   error?: string;
+  exitCode?: number;
   newOutput?: string;
-  running: boolean;
   success: boolean;
 }
 

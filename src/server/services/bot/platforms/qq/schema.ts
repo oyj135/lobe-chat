@@ -1,6 +1,13 @@
 import { MAX_BOT_DEBOUNCE_MS } from '@lobechat/const';
 
-import { displayToolCallsField, userIdField } from '../const';
+import {
+  allowFromField,
+  displayToolCallsField,
+  makeDmPolicyField,
+  makeGroupPolicyFields,
+  makeUserIdField,
+  watchKeywordsField,
+} from '../const';
 import type { FieldSchema } from '../types';
 import { DEFAULT_QQ_CONNECTION_MODE } from './const';
 
@@ -30,11 +37,16 @@ export const schema: FieldSchema[] = [
     key: 'settings',
     label: 'channel.settings',
     properties: [
+      makeUserIdField('qq'),
       {
         key: 'connectionMode',
         default: DEFAULT_QQ_CONNECTION_MODE,
         description: 'channel.connectionModeHint',
         enum: ['websocket', 'webhook'],
+        enumDescriptions: [
+          'channel.connectionModeWebSocketHint',
+          'channel.connectionModeWebhookHint',
+        ],
         enumLabels: ['channel.connectionModeWebSocket', 'channel.connectionModeWebhook'],
         label: 'channel.connectionMode',
         type: 'string',
@@ -53,6 +65,7 @@ export const schema: FieldSchema[] = [
         default: 'queue',
         description: 'channel.concurrencyHint',
         enum: ['queue', 'debounce'],
+        enumDescriptions: ['channel.concurrencyQueueHint', 'channel.concurrencyDebounceHint'],
         enumLabels: ['channel.concurrencyQueue', 'channel.concurrencyDebounce'],
         label: 'channel.concurrency',
         type: 'string',
@@ -75,36 +88,10 @@ export const schema: FieldSchema[] = [
         type: 'boolean',
       },
       displayToolCallsField,
-      userIdField,
-      // TODO: DM schema - not implemented yet
-      // {
-      //   key: 'dm',
-      //   label: 'channel.dm',
-      //   properties: [
-      //     {
-      //       key: 'enabled',
-      //       default: true,
-      //       description: 'channel.dmEnabledHint',
-      //       label: 'channel.dmEnabled',
-      //       type: 'boolean',
-      //     },
-      //     {
-      //       key: 'policy',
-      //       default: 'open',
-      //       enum: ['open', 'allowlist', 'disabled'],
-      //       enumLabels: [
-      //         'channel.dmPolicyOpen',
-      //         'channel.dmPolicyAllowlist',
-      //         'channel.dmPolicyDisabled',
-      //       ],
-      //       description: 'channel.dmPolicyHint',
-      //       label: 'channel.dmPolicy',
-      //       type: 'string',
-      //       visibleWhen: { field: 'enabled', value: true },
-      //     },
-      //   ],
-      //   type: 'object',
-      // },
+      makeDmPolicyField({ policy: 'open' }),
+      ...makeGroupPolicyFields({ policy: 'open' }),
+      allowFromField,
+      watchKeywordsField,
     ],
     type: 'object',
   },

@@ -10,10 +10,10 @@ import { useFetchChatTopics } from '@/hooks/useFetchChatTopics';
 import { useQueryRoute } from '@/hooks/useQueryRoute';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/selectors';
-import { useUserStore } from '@/store/user';
-import { preferenceSelectors } from '@/store/user/selectors';
 
+import { useAgentTopicGroupMode } from '../hooks/useAgentTopicGroupMode';
 import ByProjectMode from './ByProjectMode';
+import ByStatusMode from './ByStatusMode';
 import ByTimeMode from './ByTimeMode';
 import FlatMode from './FlatMode';
 import SearchResult from './SearchResult';
@@ -28,7 +28,7 @@ const TopicListContent = memo(() => {
     topicSelectors.isInSearchMode(s),
   ]);
 
-  const topicGroupMode = useUserStore(preferenceSelectors.topicGroupMode);
+  const { topicGroupMode } = useAgentTopicGroupMode();
 
   useFetchChatTopics();
 
@@ -51,6 +51,8 @@ const TopicListContent = memo(() => {
         <FlatMode />
       ) : topicGroupMode === 'byProject' ? (
         <ByProjectMode />
+      ) : topicGroupMode === 'byStatus' ? (
+        <ByStatusMode />
       ) : (
         <ByTimeMode />
       )}

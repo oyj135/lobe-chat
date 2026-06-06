@@ -1,18 +1,67 @@
 import { z } from 'zod';
 
+import { RequestTrigger } from '../../agentRuntime';
 import type { PageSelection } from './pageSelection';
 import { PageSelectionSchema } from './pageSelection';
+
+const LocalSystemToolSnapshotSchema = z.object({
+  apiName: z.enum(['readFile', 'listFiles', 'readLocalFile', 'listLocalFiles']),
+  arguments: z.record(z.string(), z.unknown()),
+  capturedAt: z.string(),
+  content: z.string().nullable(),
+  error: z.unknown().optional(),
+  identifier: z.literal('lobe-local-system'),
+  result: z.unknown().optional(),
+  snapshotId: z.string(),
+  state: z.unknown().optional(),
+  success: z.boolean(),
+  toolCallId: z.string(),
+});
+
+export interface LocalSystemToolSnapshot {
+  apiName: 'readFile' | 'listFiles' | 'readLocalFile' | 'listLocalFiles';
+  arguments: Record<string, unknown>;
+  capturedAt: string;
+  content: string | null;
+  error?: unknown;
+  identifier: 'lobe-local-system';
+  result?: unknown;
+  snapshotId: string;
+  state?: unknown;
+  success: boolean;
+  toolCallId: string;
+}
 
 export interface ModelTokensUsage {
   // Prediction tokens
   acceptedPredictionTokens?: number;
+  /**
+   * Total input audio tokens for the request. This is a modality breakdown, not
+   * a cache-miss count.
+   */
   inputAudioTokens?: number;
+  /**
+   * Cached audio tokens for the request.
+   */
+  inputCachedAudioTokens?: number;
+  /**
+   * Cached image tokens for the request.
+   */
+  inputCachedImageTokens?: number;
+  /**
+   * Cached text tokens for the request.
+   */
+  inputCachedTextTokens?: number;
   // Input tokens breakdown
   /**
    * user prompt input
    */
   // Input cache tokens
   inputCachedTokens?: number;
+  /**
+   * Cached video tokens for the request.
+   */
+  inputCachedVideoTokens?: number;
 
   inputCacheMissTokens?: number;
   /**
@@ -20,15 +69,25 @@ export interface ModelTokensUsage {
    */
   inputCitationTokens?: number;
   /**
-   * user prompt image
+   * Total user prompt image tokens for the request. This is a modality
+   * breakdown, not a cache-miss count.
    */
   inputImageTokens?: number;
+  /**
+   * Total user prompt text tokens for the request. This is a modality
+   * breakdown, not a cache-miss count.
+   */
   inputTextTokens?: number;
-
   /**
    * tool use prompt tokens (Google AI / Vertex AI)
    */
   inputToolTokens?: number;
+
+  /**
+   * Total user prompt video tokens for the request. This is a modality
+   * breakdown, not a cache-miss count.
+   */
+  inputVideoTokens?: number;
   inputWriteCacheTokens?: number;
   outputAudioTokens?: number;
   outputImageTokens?: number;
@@ -50,9 +109,14 @@ export const ModelUsageSchema = z.object({
   inputCachedTokens: z.number().optional(),
   inputCacheMissTokens: z.number().optional(),
   inputWriteCacheTokens: z.number().optional(),
+  inputCachedTextTokens: z.number().optional(),
+  inputCachedImageTokens: z.number().optional(),
+  inputCachedAudioTokens: z.number().optional(),
+  inputCachedVideoTokens: z.number().optional(),
   inputTextTokens: z.number().optional(),
   inputImageTokens: z.number().optional(),
   inputAudioTokens: z.number().optional(),
+  inputVideoTokens: z.number().optional(),
   inputCitationTokens: z.number().optional(),
   inputToolTokens: z.number().optional(),
 
@@ -96,11 +160,19 @@ export const EmojiReactionSchema = z.object({
   users: z.array(z.string()),
 });
 
+export const MessageSignalSchema = z.object({
+  sequence: z.number().optional(),
+  sourceToolCallId: z.string(),
+  sourceToolName: z.string(),
+  type: z.enum(['tool-stdout', 'tool-callback', 'task-completion']),
+});
+
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
   collapsed: z.boolean().optional(),
   inspectExpanded: z.boolean().optional(),
   isMultimodal: z.boolean().optional(),
   isSupervisor: z.boolean().optional(),
+  localSystemToolSnapshots: z.array(LocalSystemToolSnapshotSchema).optional(),
   pageSelections: z.array(PageSelectionSchema).optional(),
   // Canonical nested shape — flat fields above are deprecated. Must be listed
   // here so zod doesn't strip them from writes going through UpdateMessageParamsSchema
@@ -108,8 +180,13 @@ export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSche
   performance: ModelPerformanceSchema.optional(),
   reactions: z.array(EmojiReactionSchema).optional(),
   scope: z.string().optional(),
+  // External-signal lineage for Monitor-style callback turns ().
+  signal: MessageSignalSchema.optional(),
   subAgentId: z.string().optional(),
   toolExecutionTimeMs: z.number().optional(),
+  trigger: z.nativeEnum(RequestTrigger).optional(),
+  // @deprecated token usage moved to the top-level `usage` column. Still listed
+  // so zod doesn't strip `metadata.usage` from legacy writes during migration.
   usage: ModelUsageSchema.optional(),
 });
 
@@ -142,11 +219,12 @@ export interface ModelPerformance {
 export interface MessageMetadata {
   // ───────────────────────────────────────────────────────────────
   // Token usage + performance fields — DEPRECATED flat shape.
-  // New code must write to `metadata.usage` / `metadata.performance` (nested)
-  // instead. Kept here so legacy reads still type-check during migration;
-  // writers should stop populating them.
+  // Token usage now lives in the dedicated top-level `usage` column
+  // (`UIChatMessage.usage`); performance still lives in `metadata.performance`.
+  // These flat fields (and the nested `metadata.usage` below) are kept so legacy
+  // reads still type-check during migration; writers should stop populating them.
   // ───────────────────────────────────────────────────────────────
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   acceptedPredictionTokens?: number;
   activeBranchIndex?: number;
   activeColumn?: boolean;
@@ -156,26 +234,36 @@ export interface MessageMetadata {
    */
   collapsed?: boolean;
   compare?: boolean;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   cost?: number;
   /** @deprecated use `metadata.performance` instead */
   duration?: number;
   finishType?: string;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputAudioTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
+  inputCachedAudioTokens?: number;
+  /** @deprecated use the top-level message `usage` field instead */
+  inputCachedImageTokens?: number;
+  /** @deprecated use the top-level message `usage` field instead */
+  inputCachedTextTokens?: number;
+  /** @deprecated use the top-level message `usage` field instead */
   inputCachedTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
+  inputCachedVideoTokens?: number;
+  /** @deprecated use the top-level message `usage` field instead */
   inputCacheMissTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCitationTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputImageTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputTextTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputToolTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
+  inputVideoTokens?: number;
+  /** @deprecated use the top-level message `usage` field instead */
   inputWriteCacheTokens?: number;
   /**
    * Tool inspect expanded state
@@ -200,13 +288,17 @@ export interface MessageMetadata {
   isSupervisor?: boolean;
   /** @deprecated use `metadata.performance` instead */
   latency?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /**
+   * Local-system tool snapshots materialized when the user sent @file mentions.
+   */
+  localSystemToolSnapshots?: LocalSystemToolSnapshot[];
+  /** @deprecated use the top-level message `usage` field instead */
   outputAudioTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   outputImageTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   outputReasoningTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   outputTextTokens?: number;
   /**
    * Page selections attached to user message
@@ -222,7 +314,7 @@ export interface MessageMetadata {
    * Emoji reactions on this message
    */
   reactions?: EmojiReaction[];
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   rejectedPredictionTokens?: number;
   /**
    * Message scope - indicates the context in which this message was created
@@ -230,6 +322,24 @@ export interface MessageMetadata {
    * See MessageMapScope for available values
    */
   scope?: string;
+  /**
+   * External-signal lineage for messages produced as reactive replies
+   * to an out-of-band trigger (Monitor stdout push, webhook callback,
+   * scheduled tick, …) rather than a fresh user turn. Phase-1 storage —
+   * Phase 2 () promotes this to a dedicated `messages.signal`
+   * jsonb column.
+   *
+   * Conversation-flow groups signal-tagged TOOLLESS assistants into a
+   * SignalCallbacksNode under the source tool. Tool-using assistants
+   * may still carry this tag (the adapter clears the pending signal AT
+   * tool_use time, but the stream_start tag fired one event earlier);
+   * collectors must ignore the tag when `tools.length > 0`.
+   *
+   * Shape mirrors `ExternalSignalContext` in
+   * `packages/heterogeneous-agents/src/types.ts` — duplicated here so
+   * `@lobechat/types` stays free of an adapter-package dependency.
+   */
+  signal?: MessageSignal;
   /**
    * Sub Agent ID - behavior depends on scope
    * - scope: 'sub_agent': conversation-flow will transform message.agentId to this value for display
@@ -244,15 +354,51 @@ export interface MessageMetadata {
    * Tool execution time for tool messages (ms)
    */
   toolExecutionTimeMs?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   totalInputTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   totalOutputTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   totalTokens?: number;
   /** @deprecated use `metadata.performance` instead */
   tps?: number;
+  /**
+   * Request source used by runtime routing, billing, and logs.
+   */
+  trigger?: RequestTrigger;
   /** @deprecated use `metadata.performance` instead */
   ttft?: number;
+  /**
+   * @deprecated Token usage has been promoted to the dedicated top-level `usage`
+   * column / `UIChatMessage.usage` field. Reads fall back here for legacy rows,
+   * but new writers should target the top-level `usage` instead.
+   */
   usage?: ModelUsage;
+}
+
+/**
+ * Persisted form of an external-signal trigger context — stamped on
+ * messages produced as reactive replies to out-of-band events.
+ *
+ * Phase 1 lives under `MessageMetadata.signal`; Phase 2 ()
+ * promotes to a dedicated `messages.signal` column with the same
+ * shape (plus `rootSourceId` / `scopeKey` for agent-signal alignment).
+ */
+export interface MessageSignal {
+  /** Nth push from the same source (1 = first repeat result). */
+  sequence?: number;
+  /** Source `tool_use.id` (CC) / function call id whose repeat fired this signal. */
+  sourceToolCallId: string;
+  /** Tool name for UI labelling, e.g. `Monitor`. */
+  sourceToolName: string;
+  /**
+   * Discriminator for the trigger source.
+   *
+   * - `tool-stdout`: reactive turn driven by a long-running tool's stdout push.
+   * - `tool-callback`: (future) one-shot async callback variant.
+   * - `task-completion`: post-task summary turn after the long-running tool
+   *   ended; keeps the summary inside the same AssistantGroup as the
+   *   preceding callbacks.
+   */
+  type: 'tool-stdout' | 'tool-callback' | 'task-completion';
 }

@@ -206,31 +206,11 @@ const hasRunningOperationByContext =
  * Checks all AI runtime operation types (see AI_RUNTIME_OPERATION_TYPES)
  */
 const isAgentRuntimeRunningByContext =
-  (context: {
-    agentId?: string;
-    groupId?: string;
-    threadId?: string | null;
-    topicId?: string | null;
-  }) =>
+  (context: MessageMapKeyInput) =>
   (s: ChatStoreState): boolean => {
     if (!context.agentId) return false;
 
-    const contextKey = messageMapKey({
-      agentId: context.agentId,
-      groupId: context.groupId,
-      topicId: context.topicId,
-    });
-
-    const operationIds = s.operationsByContext[contextKey] || [];
-    const operations = operationIds
-      .map((id) => s.operations[id])
-      .filter((op): op is Operation => {
-        if (!op) return false;
-        // Also filter by threadId if provided
-        const opThreadId = op.context.threadId ?? null;
-        const contextThreadId = context.threadId ?? null;
-        return opThreadId === contextThreadId;
-      });
+    const operations = getOperationsByContext(context)(s);
 
     return operations.some(
       (op) =>
@@ -246,30 +226,11 @@ const isAgentRuntimeRunningByContext =
  * so the input stays in loading state from the moment user sends until AI finishes
  */
 const isInputLoadingByContext =
-  (context: {
-    agentId?: string;
-    groupId?: string;
-    threadId?: string | null;
-    topicId?: string | null;
-  }) =>
+  (context: MessageMapKeyInput) =>
   (s: ChatStoreState): boolean => {
     if (!context.agentId) return false;
 
-    const contextKey = messageMapKey({
-      agentId: context.agentId,
-      groupId: context.groupId,
-      topicId: context.topicId,
-    });
-
-    const operationIds = s.operationsByContext[contextKey] || [];
-    const operations = operationIds
-      .map((id) => s.operations[id])
-      .filter((op): op is Operation => {
-        if (!op) return false;
-        const opThreadId = op.context.threadId ?? null;
-        const contextThreadId = context.threadId ?? null;
-        return opThreadId === contextThreadId;
-      });
+    const operations = getOperationsByContext(context)(s);
 
     return operations.some(
       (op) =>
@@ -485,6 +446,50 @@ const isMessageInToolCalling =
   };
 
 /**
+ * Find a running tool operation start time by operation type.
+ */
+const getRunningToolOperationStartTime = (
+  type: OperationType,
+  toolCallId: string,
+  s: ChatStoreState,
+) => {
+  const operationIds = s.operationsByType[type] ?? [];
+  let startTime: number | undefined;
+
+  for (const id of operationIds) {
+    const operation = s.operations[id];
+    if (
+      !operation ||
+      operation.status !== 'running' ||
+      operation.metadata.tool_call_id !== toolCallId
+    ) {
+      continue;
+    }
+
+    startTime =
+      startTime === undefined
+        ? operation.metadata.startTime
+        : Math.min(startTime, operation.metadata.startTime);
+  }
+
+  return startTime;
+};
+
+/**
+ * Get the stable start time for a running tool call.
+ * Prefer the actual execution phase; fall back to the parent tool call while
+ * the execution operation has not been created yet.
+ */
+const getRunningToolCallStartTime =
+  (toolCallId: string) =>
+  (s: ChatStoreState): number | undefined => {
+    return (
+      getRunningToolOperationStartTime('executeToolCall', toolCallId, s) ??
+      getRunningToolOperationStartTime('toolCalling', toolCallId, s)
+    );
+  };
+
+/**
  * Check if currently aborting (cleaning up after user cancellation)
  * Used to show "Cleaning up tool calls..." message
  */
@@ -602,6 +607,7 @@ export const operationSelectors = {
   getOperationsByMessage,
   getOperationsByType,
   getRunningOperations,
+  getRunningToolCallStartTime,
   hasAnyRunningOperation,
   hasRunningOperationByContext,
   hasRunningOperationType,

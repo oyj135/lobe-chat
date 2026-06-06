@@ -88,11 +88,15 @@ vi.mock('@/server/modules/Mecha', () => ({
   serverMessagesEngine: vi.fn().mockResolvedValue([{ content: 'test', role: 'user' }]),
 }));
 
-vi.mock('@/server/services/toolExecution/deviceProxy', () => ({
-  deviceProxy: {
+vi.mock('@/server/services/toolExecution/deviceGateway', () => ({
+  deviceGateway: {
     isConfigured: false,
     queryDeviceList: vi.fn().mockResolvedValue([]),
   },
+}));
+
+vi.mock('@/server/modules/ModelRuntime', () => ({
+  initModelRuntimeFromDB: vi.fn(),
 }));
 
 vi.mock('model-bank', async (importOriginal) => {

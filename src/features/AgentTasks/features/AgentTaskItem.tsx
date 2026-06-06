@@ -1,117 +1,194 @@
-import { Block, Flexbox, Text } from '@lobehub/ui';
-import dayjs from 'dayjs';
+import type { TaskStatus } from '@lobechat/types';
+import { Block, ContextMenuTrigger, Flexbox, Text } from '@lobehub/ui';
 import { memo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
-import { useAgentStore } from '@/store/agent';
 import { useTaskStore } from '@/store/task';
 import type { TaskListItem } from '@/store/task/slices/list/initialState';
 
-import TaskScheduleConfig from '../AgentTaskDetail/TaskScheduleConfig';
+import { taskDetailPath } from '../shared/taskDetailPath';
 import AssigneeAgentSelector from './AssigneeAgentSelector';
 import AssigneeAvatar from './AssigneeAvatar';
+import { formatTaskItemDate } from './formatTaskItemDate';
 import TaskLatestActivity from './TaskLatestActivity';
 import TaskPriorityTag from './TaskPriorityTag';
 import TaskStatusTag from './TaskStatusTag';
 import TaskSubtaskProgressTag from './TaskSubtaskProgressTag';
 import TaskTriggerTag from './TaskTriggerTag';
+import { useTaskItemContextMenu } from './useTaskItemContextMenu';
 
 interface TaskItemProps {
   task: TaskListItem;
+  variant?: 'compact' | 'default';
 }
 
-const formatTime = (time?: string | Date | null) => {
-  if (!time) return '';
-  const d = dayjs(time);
-  return d.isSame(dayjs(), 'day') ? d.format('HH:mm') : d.fromNow();
-};
+const FLEX_MIN_WIDTH_0 = { minWidth: 0 };
 
-const TASK_STATUS_SET = new Set([
+const TASK_STATUS_SET = new Set<TaskStatus>([
   'backlog',
   'canceled',
   'completed',
   'failed',
   'paused',
   'running',
+  'scheduled',
 ]);
 
-type TaskStatus = 'backlog' | 'canceled' | 'completed' | 'failed' | 'paused' | 'running';
-
 const toTaskStatus = (status: string): TaskStatus =>
-  TASK_STATUS_SET.has(status) ? (status as TaskStatus) : 'backlog';
+  TASK_STATUS_SET.has(status as TaskStatus) ? (status as TaskStatus) : 'backlog';
 
-const AgentTaskItem = memo<TaskItemProps>(({ task }) => {
-  const activeAgentId = useAgentStore((s) => s.activeAgentId);
+const AgentTaskItem = memo<TaskItemProps>(({ task, variant = 'default' }) => {
+  const { t, i18n } = useTranslation('common');
+  const { t: tChat } = useTranslation('chat');
   const useFetchTaskDetail = useTaskStore((s) => s.useFetchTaskDetail);
   useFetchTaskDetail(task.identifier);
 
   const taskDetail = useTaskStore((s) => s.taskDetailMap[task.identifier]);
+  const { items: contextMenuItems, onContextMenu: handleContextMenuOpen } =
+    useTaskItemContextMenu(task);
   const navigate = useNavigate();
 
-  const time = formatTime(task.updatedAt || task.createdAt);
+  const time = formatTaskItemDate(task.updatedAt || task.createdAt, {
+    formatOtherYear: t('time.formatOtherYear'),
+    formatThisYear: t('time.formatThisYear'),
+    locale: i18n.language,
+  });
   const status = toTaskStatus(task.status);
-
-  // Prefer the task's own assignee so navigation works from the cross-agent `/tasks` page
-  // where `activeAgentId` is not scoped to any particular agent. Falls back to the
-  // currently active agent for unassigned tasks viewed from a per-agent page.
-  const targetAgentId = task.assigneeAgentId || activeAgentId;
+  const hasName = Boolean(task.name?.trim());
 
   const handleClick = useCallback(() => {
-    if (targetAgentId) navigate(`/agent/${targetAgentId}/tasks/${task.identifier}`);
-  }, [targetAgentId, navigate, task.identifier]);
+    navigate(taskDetailPath(task.identifier, task.assigneeAgentId ?? undefined));
+  }, [navigate, task.assigneeAgentId, task.identifier]);
+
+  const handleSubtaskClick = useCallback(
+    (identifier: string, assigneeAgentId?: string) => {
+      navigate(taskDetailPath(identifier, assigneeAgentId));
+    },
+    [navigate],
+  );
+
+  const scheduledBadge =
+    status === 'scheduled' ? (
+      <Block
+        horizontal
+        align={'center'}
+        flex={'none'}
+        height={20}
+        paddingInline={8}
+        style={{ borderRadius: 24 }}
+        variant={'outlined'}
+      >
+        <Text fontSize={12} type={'secondary'}>
+          {tChat('taskDetail.status.scheduled', { defaultValue: 'Scheduled' })}
+        </Text>
+      </Block>
+    ) : null;
+
+  const titleRow = (
+    <Flexbox horizontal align={'center'} gap={8} style={{ minWidth: 0 }}>
+      <TaskPriorityTag priority={task.priority} taskIdentifier={task.identifier} />
+      <TaskStatusTag status={status} taskIdentifier={task.identifier} />
+      {hasName ? (
+        <>
+          <Text style={{ flex: 'none' }} type={'secondary'}>
+            {task.identifier}
+          </Text>
+          <Text ellipsis style={{ minWidth: 0 }} weight={500}>
+            {task.name}
+          </Text>
+        </>
+      ) : (
+        <Text ellipsis style={{ minWidth: 0 }} weight={500}>
+          {task.identifier}
+        </Text>
+      )}
+      {scheduledBadge}
+      <TaskSubtaskProgressTag
+        currentIdentifier={task.identifier}
+        subtasks={taskDetail?.subtasks}
+        onSubtaskClick={handleSubtaskClick}
+      />
+    </Flexbox>
+  );
+
+  const assigneeNode = (
+    <AssigneeAgentSelector
+      currentAgentId={task.assigneeAgentId}
+      disabled={status === 'running'}
+      taskIdentifier={task.identifier}
+    >
+      <AssigneeAvatar agentId={task.assigneeAgentId} />
+    </AssigneeAgentSelector>
+  );
+
+  const scheduleNode = task.automationMode ? (
+    <TaskTriggerTag
+      automationMode={task.automationMode}
+      heartbeatInterval={taskDetail?.heartbeat?.interval}
+      schedulePattern={task.schedulePattern}
+      scheduleTimezone={task.scheduleTimezone}
+    />
+  ) : null;
+
+  const timeNode = time ? (
+    <Text
+      align={'right'}
+      fontSize={12}
+      style={{ whiteSpace: 'nowrap', width: variant === 'compact' ? undefined : 48 }}
+      type={'secondary'}
+    >
+      {time}
+    </Text>
+  ) : null;
+
+  if (variant === 'compact') {
+    return (
+      <ContextMenuTrigger items={contextMenuItems} onContextMenu={handleContextMenuOpen}>
+        <Block clickable gap={8} padding={12} variant={'borderless'} onClick={handleClick}>
+          <Flexbox horizontal align={'center'} gap={8} justify={'space-between'}>
+            <Text fontSize={12} style={{ flex: 'none' }} type={'secondary'}>
+              {task.identifier}
+            </Text>
+            {assigneeNode}
+          </Flexbox>
+          <Flexbox horizontal align={'center'} gap={8} style={{ minWidth: 0 }}>
+            <TaskStatusTag status={status} taskIdentifier={task.identifier} />
+            <Text ellipsis style={{ minWidth: 0 }} weight={500}>
+              {hasName ? task.name : task.identifier}
+            </Text>
+            {scheduledBadge}
+            <TaskSubtaskProgressTag
+              currentIdentifier={task.identifier}
+              subtasks={taskDetail?.subtasks}
+              onSubtaskClick={handleSubtaskClick}
+            />
+          </Flexbox>
+          <TaskLatestActivity activities={taskDetail?.activities} />
+          <Flexbox horizontal align={'center'} gap={8} style={FLEX_MIN_WIDTH_0}>
+            <TaskPriorityTag priority={task.priority} taskIdentifier={task.identifier} />
+            {scheduleNode}
+            {timeNode}
+          </Flexbox>
+        </Block>
+      </ContextMenuTrigger>
+    );
+  }
 
   return (
-    <Block clickable gap={4} padding={12} variant={'borderless'} onClick={handleClick}>
-      <Flexbox horizontal align={'center'} gap={4} justify={'space-between'}>
-        <Flexbox horizontal align="center" gap={8}>
-          <TaskPriorityTag priority={task.priority} taskIdentifier={task.identifier} />
-          <TaskStatusTag status={status} taskIdentifier={task.identifier} />
-          <Text ellipsis weight={500}>
-            {task.name || task.identifier}
-          </Text>
-          <TaskSubtaskProgressTag
-            currentIdentifier={task.identifier}
-            subtasks={taskDetail?.subtasks}
-            onSubtaskClick={(identifier) => {
-              if (targetAgentId) navigate(`/agent/${targetAgentId}/tasks/${identifier}`);
-            }}
-          />
+    <ContextMenuTrigger items={contextMenuItems} onContextMenu={handleContextMenuOpen}>
+      <Block clickable gap={4} padding={12} variant={'borderless'} onClick={handleClick}>
+        <Flexbox horizontal align={'center'} gap={4} justify={'space-between'}>
+          {titleRow}
+          <Flexbox horizontal align={'center'} flex={'none'} gap={8}>
+            {scheduleNode}
+            {assigneeNode}
+            {timeNode}
+          </Flexbox>
         </Flexbox>
-        <Flexbox horizontal align={'center'} flex={'none'} gap={8}>
-          <TaskScheduleConfig
-            currentInterval={taskDetail?.heartbeat?.interval ?? 0}
-            taskId={task.identifier}
-          >
-            <TaskTriggerTag
-              heartbeatInterval={taskDetail?.heartbeat?.interval}
-              schedulePattern={task.schedulePattern}
-              scheduleTimezone={task.scheduleTimezone}
-            />
-          </TaskScheduleConfig>
-          <AssigneeAgentSelector
-            currentAgentId={task.assigneeAgentId}
-            disabled={status === 'running'}
-            taskIdentifier={task.identifier}
-          >
-            <AssigneeAvatar agentId={task.assigneeAgentId} />
-          </AssigneeAgentSelector>
-          {time && (
-            <Text
-              align={'right'}
-              fontSize={12}
-              type={'secondary'}
-              style={{
-                whiteSpace: 'nowrap',
-                width: 76,
-              }}
-            >
-              {time}
-            </Text>
-          )}
-        </Flexbox>
-      </Flexbox>
-      <TaskLatestActivity activities={taskDetail?.activities} />
-    </Block>
+        <TaskLatestActivity activities={taskDetail?.activities} />
+      </Block>
+    </ContextMenuTrigger>
   );
 });
 

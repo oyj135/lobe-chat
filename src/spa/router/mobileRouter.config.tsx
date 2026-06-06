@@ -1,11 +1,16 @@
 'use client';
 
-import { type RouteObject } from 'react-router-dom';
+import type { RouteObject } from 'react-router-dom';
 
 import {
   BusinessMobileRoutesWithMainLayout,
   BusinessMobileRoutesWithoutMainLayout,
 } from '@/business/client/BusinessMobileRoutes';
+import {
+  mobileAgentSettingsRouteMeta,
+  shareTopicRouteMeta,
+} from '@/features/RouteMeta/mobileRouteMeta';
+import { agentRouteMeta } from '@/routes/(main)/agent/features/routeMeta';
 import { dynamicElement, dynamicLayout, ErrorBoundary, redirectElement } from '@/utils/router';
 
 // Mobile router configuration (declarative mode)
@@ -23,13 +28,23 @@ export const mobileRoutes: RouteObject[] = [
             children: [
               {
                 element: dynamicElement(() => import('@/routes/(mobile)/chat'), 'Mobile > Chat'),
+                handle: { meta: agentRouteMeta },
                 index: true,
+              },
+              {
+                element: dynamicElement(
+                  () => import('@/routes/(mobile)/chat'),
+                  'Mobile > Chat > Topic',
+                ),
+                handle: { meta: agentRouteMeta },
+                path: ':topicId',
               },
               {
                 element: dynamicElement(
                   () => import('@/routes/(mobile)/chat/settings'),
                   'Mobile > Chat > Settings',
                 ),
+                handle: { meta: mobileAgentSettingsRouteMeta },
                 path: 'settings',
               },
             ],
@@ -218,20 +233,50 @@ export const mobileRoutes: RouteObject[] = [
         path: 'settings',
       },
 
-      // Tasks routes (cross-agent)
+      // Task workspace routes (cross-agent)
       {
         children: [
           {
-            element: dynamicElement(() => import('@/routes/(main)/tasks'), 'Mobile > Tasks'),
-            index: true,
+            children: [
+              {
+                element: dynamicElement(() => import('@/routes/(main)/tasks'), 'Mobile > Tasks'),
+                index: true,
+              },
+            ],
+            errorElement: <ErrorBoundary resetPath="/" />,
+            path: 'tasks',
+          },
+          {
+            children: [
+              {
+                element: dynamicElement(
+                  () => import('@/routes/(main)/task/[taskId]'),
+                  'Mobile > Task Detail',
+                ),
+                path: ':taskId',
+              },
+            ],
+            errorElement: <ErrorBoundary resetPath="/tasks" />,
+            path: 'task',
+          },
+          {
+            children: [
+              {
+                element: dynamicElement(
+                  () => import('@/routes/(main)/agent/task/[taskId]'),
+                  'Mobile > Agent Task Detail',
+                ),
+                path: ':aid/task/:taskId',
+              },
+            ],
+            errorElement: <ErrorBoundary resetPath="/tasks" />,
+            path: 'agent',
           },
         ],
         element: dynamicLayout(
-          () => import('@/routes/(main)/tasks/_layout'),
-          'Mobile > Tasks > Layout',
+          () => import('@/routes/(main)/(task-workspace)/_layout'),
+          'Mobile > Task Workspace > Layout',
         ),
-        errorElement: <ErrorBoundary resetPath="/" />,
-        path: 'tasks',
       },
 
       ...BusinessMobileRoutesWithMainLayout,
@@ -342,6 +387,7 @@ export const mobileRoutes: RouteObject[] = [
     children: [
       {
         element: dynamicElement(() => import('@/routes/share/t/[id]'), 'Mobile > Share > Topic'),
+        handle: { meta: shareTopicRouteMeta },
         path: ':id',
       },
     ],
@@ -350,5 +396,16 @@ export const mobileRoutes: RouteObject[] = [
       'Mobile > Share > Topic > Layout',
     ),
     path: '/share/t',
+  },
+
+  // Share page route (outside main layout)
+  {
+    children: [
+      {
+        element: dynamicElement(() => import('@/routes/share/page/[id]'), 'Mobile > Share > Page'),
+        path: ':id',
+      },
+    ],
+    path: '/share/page',
   },
 ];

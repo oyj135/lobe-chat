@@ -126,14 +126,12 @@ vi.mock('@/store/page', () => ({
 
 vi.mock('@/store/user', () => ({
   useUserStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector({
-      enableHeterogeneousAgent: true,
-    }),
+    selector({ preference: { lab: {} } }),
 }));
 
 vi.mock('@/store/user/selectors', () => ({
   labPreferSelectors: {
-    enableHeterogeneousAgent: (state: Record<string, boolean>) => state.enableHeterogeneousAgent,
+    enablePlatformAgent: () => false,
   },
 }));
 

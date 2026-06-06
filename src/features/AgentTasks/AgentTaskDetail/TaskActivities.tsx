@@ -1,27 +1,27 @@
 import type { BriefType, TaskDetailActivity } from '@lobechat/types';
 import { Accordion, AccordionItem, Avatar, Empty, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
-import dayjs from 'dayjs';
 import type { TFunction } from 'i18next';
-import { BotMessageSquare, CirclePlus, MessageCircle, MessagesSquare } from 'lucide-react';
+import { BotMessageSquare, CircleDot, CirclePlus, MessageCircle } from 'lucide-react';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AgentProfilePopup from '@/features/AgentProfileCard/AgentProfilePopup';
-import BriefCard from '@/features/DailyBrief/BriefCard';
 import type { BriefItem } from '@/features/DailyBrief/types';
+import { useActivityTime } from '@/hooks/useActivityTime';
 import { useTaskStore } from '@/store/task';
 import { taskActivitySelectors, taskDetailSelectors } from '@/store/task/selectors';
 
 import { styles } from '../shared/style';
 import CommentCard from './CommentCard';
 import CommentInput from './CommentInput';
+import TaskBriefCard from './TaskBriefCard';
 import TopicCard from './TopicCard';
 
 const ROW_TYPE_ICON = {
   comment: MessageCircle,
   created: CirclePlus,
-  topic: MessagesSquare,
+  topic: CircleDot,
 } as const;
 
 /** Convert a brief-type activity to the BriefItem shape expected by BriefCard. */
@@ -29,14 +29,16 @@ const toBriefItem = (act: TaskDetailActivity): BriefItem | null => {
   if (!act.id || !act.briefType) return null;
   return {
     actions: (act.actions ?? null) as BriefItem['actions'],
+    agent: act.agent
+      ? {
+          avatar: act.agent.avatar,
+          backgroundColor: act.agent.backgroundColor,
+          id: act.agent.id,
+          title: act.agent.title,
+        }
+      : null,
     agentId: act.agentId ?? null,
-    agents: (act.agents ?? []).map((a) => ({
-      avatar: a.avatar,
-      backgroundColor: a.backgroundColor,
-      id: a.id,
-      title: a.title,
-    })),
-    artifacts: act.artifacts,
+    artifacts: act.artifacts ?? null,
     createdAt: act.createdAt ?? act.time ?? new Date().toISOString(),
     cronJobId: act.cronJobId ?? null,
     id: act.id,
@@ -65,7 +67,7 @@ const getRowText = (act: TaskDetailActivity, t: TFunction<'chat'>): string => {
 const ActivityRow = memo<{ activity: TaskDetailActivity }>(({ activity }) => {
   const { t } = useTranslation('chat');
   const TypeIcon = ROW_TYPE_ICON[activity.type as keyof typeof ROW_TYPE_ICON] ?? MessageCircle;
-  const relTime = activity.time ? dayjs(activity.time).fromNow() : '';
+  const { text: relTime, title: relTimeTitle } = useActivityTime(activity.time);
   const text = getRowText(activity, t);
 
   const isAgent = activity.author?.type === 'agent';
@@ -97,7 +99,7 @@ const ActivityRow = memo<{ activity: TaskDetailActivity }>(({ activity }) => {
   );
 
   return (
-    <Flexbox horizontal align={'center'} gap={8} paddingBlock={4}>
+    <Flexbox horizontal align={'center'} gap={8} paddingBlock={4} paddingInline={9}>
       {isAgent && activity.author?.id ? (
         <AgentProfilePopup
           agent={{ avatar: activity.author.avatar, title: activity.author.name }}
@@ -112,7 +114,10 @@ const ActivityRow = memo<{ activity: TaskDetailActivity }>(({ activity }) => {
       <Text ellipsis style={{ color: cssVar.colorTextSecondary, flex: 1, minWidth: 0 }}>
         {text}
         {relTime && (
-          <span style={{ color: cssVar.colorTextQuaternary, marginInlineStart: 4 }}>
+          <span
+            style={{ color: cssVar.colorTextQuaternary, marginInlineStart: 4 }}
+            title={relTimeTitle}
+          >
             · {relTime}
           </span>
         )}
@@ -133,11 +138,13 @@ const TaskActivities = memo(() => {
 
   const items = useMemo(
     () =>
-      activities.map((act, i) => ({
-        activity: act,
-        brief: act.type === 'brief' ? toBriefItem(act) : null,
-        key: act.id ?? `activity-${i}`,
-      })),
+      activities
+        .map((act, i) => ({
+          activity: act,
+          brief: act.type === 'brief' ? toBriefItem(act) : null,
+          key: act.id ?? `activity-${i}`,
+        }))
+        .reverse(),
     [activities],
   );
 
@@ -157,15 +164,16 @@ const TaskActivities = memo(() => {
         }
       >
         <Flexbox gap={12} paddingBlock={12} paddingInline={12}>
+          {activeTaskId && <CommentInput taskId={activeTaskId} />}
           {items.length > 0 ? (
             items.map(({ activity, brief, key }) => {
               if (brief) {
                 return (
-                  <BriefCard
+                  <TaskBriefCard
                     brief={brief}
-                    enableNavigation={false}
                     key={key}
                     onAfterAddComment={refreshActiveTask}
+                    onAfterDelete={refreshActiveTask}
                     onAfterResolve={refreshActiveTask}
                   />
                 );
@@ -185,7 +193,6 @@ const TaskActivities = memo(() => {
               style={{ marginTop: 8 }}
             />
           )}
-          {activeTaskId && <CommentInput taskId={activeTaskId} />}
         </Flexbox>
       </AccordionItem>
     </Accordion>

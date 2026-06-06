@@ -6,14 +6,12 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
+import { taskDetailPath } from '@/features/AgentTasks/shared/taskDetailPath';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import SideBarDrawer from '@/features/NavPanel/SideBarDrawer';
 import { useClientDataSWR } from '@/libs/swr';
 import { recentService } from '@/services/recent';
-import { useAgentStore } from '@/store/agent';
-import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { ALL_RECENTS_DRAWER_SWR_PREFIX } from '@/store/home/slices/recent/action';
-import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 
 import RecentListItem from './Item';
 
@@ -25,10 +23,6 @@ interface AllRecentsDrawerProps {
 const AllRecentsDrawer = memo<AllRecentsDrawerProps>(({ open, onClose }) => {
   const { t } = useTranslation('common');
   const [searchKeyword, setSearchKeyword] = useState('');
-  const activeAgentId = useAgentStore((s) => s.activeAgentId);
-  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
-
-  const { enableAgentTask } = useServerConfigStore(featureFlagsSelectors);
 
   const { data: recents, isLoading } = useClientDataSWR(
     open ? [ALL_RECENTS_DRAWER_SWR_PREFIX, open] : null,
@@ -37,24 +31,18 @@ const AllRecentsDrawer = memo<AllRecentsDrawerProps>(({ open, onClose }) => {
 
   const filteredRecents = useMemo(() => {
     if (!recents) return [];
-    const baseRecents = enableAgentTask ? recents : recents.filter((item) => item.type !== 'task');
     const keyword = searchKeyword.trim().toLowerCase();
-    if (!keyword) return baseRecents;
-    return baseRecents.filter((item) => item.title.toLowerCase().includes(keyword));
-  }, [recents, searchKeyword, enableAgentTask]);
+    if (!keyword) return recents;
+    return recents.filter((item) => item.title.toLowerCase().includes(keyword));
+  }, [recents, searchKeyword]);
 
-  const fallbackAgentId = activeAgentId || inboxAgentId;
-  const getRecentRoute = useCallback(
-    (item: (typeof filteredRecents)[number]) => {
-      if (item.type !== 'task') return item.routePath;
-      const targetAgentId = item.agentId || fallbackAgentId;
-      const taskId = item.id;
-      if (!targetAgentId || !taskId) return item.routePath;
+  const getRecentRoute = useCallback((item: (typeof filteredRecents)[number]) => {
+    if (item.type !== 'task') return item.routePath;
+    const taskId = item.id;
+    if (!taskId) return item.routePath;
 
-      return `/agent/${targetAgentId}/tasks/${taskId}`;
-    },
-    [fallbackAgentId],
-  );
+    return taskDetailPath(taskId, item.agentId ?? undefined);
+  }, []);
 
   return (
     <SideBarDrawer

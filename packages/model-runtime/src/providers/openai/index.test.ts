@@ -273,6 +273,20 @@ describe('LobeOpenAI', () => {
       expect(createCall.model).toBe('o1-pro');
     });
 
+    it('should use responses API for gpt-5.5', async () => {
+      const payload = {
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-5.5',
+        temperature: 0.7,
+      };
+
+      await instance.chat(payload);
+
+      expect(instance['client'].responses.create).toHaveBeenCalled();
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.model).toBe('gpt-5.5');
+    });
+
     it('should use responses API when enabledSearch is true', async () => {
       const payload = {
         enabledSearch: true,
@@ -415,6 +429,19 @@ describe('LobeOpenAI', () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],
         model: 'gpt-5-pro-2025-10-06',
+        temperature: 0.7,
+      };
+
+      await instance.chat(payload);
+
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.reasoning).toEqual({ effort: 'high', summary: 'auto' });
+    });
+
+    it('should set reasoning.effort to high for gpt-5.4-pro models', async () => {
+      const payload = {
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-5.4-pro',
         temperature: 0.7,
       };
 

@@ -1,3 +1,4 @@
+import { MARKET_AUTH_REQUIRED_MESSAGE } from '@lobechat/desktop-bridge';
 import { type CodeInterpreterToolName } from '@lobehub/market-sdk';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
@@ -21,6 +22,11 @@ import {
 } from '@/server/services/mcp/contentProcessor';
 
 import { scheduleToolCallReport } from './_helpers';
+import {
+  isMarketConnectionsTimeoutError,
+  listMarketConnectionsWithTimeout,
+  MARKET_CONNECTIONS_REQUEST_TIMEOUT_MS,
+} from './_helpers/marketConnections';
 
 const log = debug('lobe-server:tools:market');
 
@@ -229,8 +235,7 @@ const execInSandboxHandler = async ({
       ) {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
-          message:
-            'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
+          message: MARKET_AUTH_REQUIRED_MESSAGE,
         });
       }
 
@@ -268,8 +273,7 @@ const execInSandboxHandler = async ({
     ) {
       throw new TRPCError({
         code: 'UNAUTHORIZED',
-        message:
-          'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
+        message: MARKET_AUTH_REQUIRED_MESSAGE,
       });
     }
 
@@ -531,7 +535,7 @@ export const marketRouter = router({
     log('connectListConnections');
 
     try {
-      const response = await ctx.marketSDK.connect.listConnections();
+      const response = await listMarketConnectionsWithTimeout(ctx.marketSDK.connect);
       // Debug logging
       log('connectListConnections raw response: %O', response);
       log('connectListConnections connections: %O', response.connections);
@@ -540,7 +544,16 @@ export const marketRouter = router({
       };
     } catch (error) {
       log('connectListConnections error: %O', error);
+      if (isMarketConnectionsTimeoutError(error)) {
+        throw new TRPCError({
+          cause: error,
+          code: 'TIMEOUT',
+          message: `Market connections request timed out after ${MARKET_CONNECTIONS_REQUEST_TIMEOUT_MS / 1000}s`,
+        });
+      }
+
       throw new TRPCError({
+        cause: error,
         code: 'INTERNAL_SERVER_ERROR',
         message: `Failed to list connections: ${(error as Error).message}`,
       });

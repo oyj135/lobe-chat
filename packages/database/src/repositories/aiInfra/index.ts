@@ -1,4 +1,5 @@
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
+import { loadModels } from '@lobechat/business-model-bank/model-config';
 import type {
   AiProviderDetailItem,
   AiProviderListItem,
@@ -8,8 +9,7 @@ import type {
 } from '@lobechat/types';
 import { isEmpty } from 'es-toolkit/compat';
 import type { AIChatModelCard, AiProviderModelListItem, EnabledAiModel } from 'model-bank';
-import { AiModelSourceEnum } from 'model-bank';
-import * as modelBank from 'model-bank';
+import { AiModelSourceEnum, isAiModelVisible } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 import pMap from 'p-map';
 
@@ -127,6 +127,7 @@ export class AiInfraRepos {
   aiProviderModel: AiProviderModel;
   private readonly providerConfigs: Record<string, ProviderConfig>;
   aiModelModel: AiModelModel;
+  private modelBankModelsPromise?: ReturnType<typeof loadModels>;
 
   constructor(
     db: LobeChatDatabase,
@@ -424,6 +425,8 @@ export class AiInfraRepos {
       mergedModel = mergedModel.filter((m) => builtinIds.has(m.id));
     }
 
+    mergedModel = mergedModel.filter(isAiModelVisible);
+
     let list = mergedModel.map((m) =>
       injectSearchSettings(providerId, m),
     ) as AiProviderModelListItem[];
@@ -458,17 +461,20 @@ export class AiInfraRepos {
   /**
    * Fetch builtin models from config
    */
+  private getModelBankModels = () => {
+    this.modelBankModelsPromise ??= loadModels();
+    return this.modelBankModelsPromise;
+  };
+
   private fetchBuiltinModels = async (
     providerId: string,
   ): Promise<AiProviderModelListItem[] | undefined> => {
     try {
-      // TODO: when model-bank is a separate module, we will try import from model-bank/[prividerId] again
-      // @ts-expect-error providerId is string
-      const providerModels = modelBank[providerId];
-
       // use the serverModelLists as the defined server model list
       // fallback to empty array for custom provider
-      const presetList = this.providerConfigs[providerId]?.serverModelLists || providerModels || [];
+      const presetList =
+        this.providerConfigs[providerId]?.serverModelLists ||
+        (await this.getModelBankModels()).filter((model) => model.providerId === providerId);
 
       return (presetList as AIChatModelCard[]).map<AiProviderModelListItem>((m) => ({
         ...m,

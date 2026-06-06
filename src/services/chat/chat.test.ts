@@ -1,8 +1,11 @@
 import { AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
-import { type ChatStreamPayload, type LobeTool, type UIChatMessage } from '@lobechat/types';
-import { ChatErrorType } from '@lobechat/types';
+import { REQUEST_TRIGGER_HEADER } from '@lobechat/const';
+import { createVisualFileRef } from '@lobechat/const/visualRef';
+import type { ChatStreamPayload, LobeTool, UIChatMessage } from '@lobechat/types';
+import { ChatErrorType, RequestTrigger } from '@lobechat/types';
 import { act } from '@testing-library/react';
+import { type EnabledAiModel, ModelProvider } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
@@ -10,7 +13,7 @@ import * as toolEngineeringModule from '@/helpers/toolEngineering';
 import { agentDocumentService } from '@/services/agentDocument';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
-import { aiModelSelectors } from '@/store/aiInfra';
+import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
 import { useChatStore } from '@/store/chat';
 import { useToolStore } from '@/store/tool';
 import { settingsSelectors } from '@/store/user/selectors';
@@ -18,6 +21,32 @@ import { settingsSelectors } from '@/store/user/selectors';
 import { chatService } from './index';
 import * as mechaModule from './mecha';
 import { type ResolvedAgentConfig } from './mecha';
+
+vi.hoisted(() => {
+  const storage = new Map<string, string>();
+
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => storage.clear(),
+      getItem: (key: string) => storage.get(key) ?? null,
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size;
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+    },
+  });
+});
+
+const mockCreateHeaderWithAuth = vi.hoisted(() =>
+  vi.fn(async ({ headers }: { headers: Record<string, string> }) => headers),
+);
 
 // Helper to compute expected date content from SystemDateProvider
 const getCurrentDateContent = () => {
@@ -53,7 +82,6 @@ const createMockResolvedConfig = (overrides?: {
     },
     chatConfig: {
       searchMode: 'off',
-      autoCreateTopicThreshold: 2,
       ...overrides?.chatConfig,
     },
     enabledManifests: overrides?.enabledManifests ?? [],
@@ -118,12 +146,13 @@ beforeEach(async () => {
     () => ({ searchMode: 'off' }) as any,
   );
   useAgentStore.setState({ activeAgentId: undefined, agentDocumentsMap: {} } as any);
+  useAiInfraStore.setState({ enabledAiModels: [] });
   useChatStore.setState({ activeAgentId: undefined } as any);
 });
 
 // mock auth
 vi.mock('../_auth', () => ({
-  createHeaderWithAuth: vi.fn().mockResolvedValue({}),
+  createHeaderWithAuth: mockCreateHeaderWithAuth,
 }));
 
 // Mock isCanUseFC to control function calling behavior in tests
@@ -462,6 +491,69 @@ describe('ChatService', () => {
         );
       });
 
+      it('should map DeepSeek reasoning effort to enabled thinking', async () => {
+        const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
+        const messages = [
+          { content: 'Test DeepSeek reasoning effort', role: 'user' },
+        ] as UIChatMessage[];
+
+        vi.spyOn(aiModelSelectors, 'isModelHasExtendParams').mockReturnValue(() => true);
+        vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => [
+          'deepseekV4ReasoningEffort',
+        ]);
+
+        await chatService.createAssistantMessage({
+          messages,
+          model: 'deepseek-v4-pro',
+          provider: 'deepseek',
+          resolvedAgentConfig: createMockResolvedConfig({
+            agentConfig: { model: 'deepseek-v4-pro', provider: 'deepseek' },
+            chatConfig: { deepseekV4ReasoningEffort: 'max' },
+          }),
+        });
+
+        expect(getChatCompletionSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reasoning_effort: 'max',
+            thinking: {
+              type: 'enabled',
+            },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('should map DeepSeek reasoning effort none to disabled thinking', async () => {
+        const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
+        const messages = [
+          { content: 'Test DeepSeek reasoning disabled', role: 'user' },
+        ] as UIChatMessage[];
+
+        vi.spyOn(aiModelSelectors, 'isModelHasExtendParams').mockReturnValue(() => true);
+        vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => [
+          'deepseekV4ReasoningEffort',
+        ]);
+
+        await chatService.createAssistantMessage({
+          messages,
+          model: 'deepseek-v4-pro',
+          provider: 'deepseek',
+          resolvedAgentConfig: createMockResolvedConfig({
+            agentConfig: { model: 'deepseek-v4-pro', provider: 'deepseek' },
+            chatConfig: { deepseekV4ReasoningEffort: 'none' },
+          }),
+        });
+
+        expect(getChatCompletionSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            thinking: {
+              type: 'disabled',
+            },
+          }),
+          expect.anything(),
+        );
+      });
+
       it('should set thinkingBudget when model supports thinkingBudget and user configures it', async () => {
         const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
         const messages = [{ content: 'Test thinking budget', role: 'user' }] as UIChatMessage[];
@@ -541,7 +633,7 @@ describe('ChatService', () => {
                     // literal captured in contextEngineering.ts at import time, so the
                     // spy has no effect on the downstream pipeline. The effective
                     // behavior is therefore vision=disabled, and the image is
-                    // downgraded to a placeholder (see LOBE-7214).
+                    // downgraded to a placeholder (see ).
                     text: `Hello
 
 [image omitted: not supported by this model]
@@ -555,7 +647,7 @@ describe('ChatService', () => {
 <files_info>
 <images>
 <images_docstring>here are user upload images you can refer to</images_docstring>
-<image name="abc.png" url="http://example.com/image.jpg"></image>
+<image ref="image_1" name="abc.png"></image>
 </images>
 </files_info>
 <!-- END SYSTEM CONTEXT -->`,
@@ -607,6 +699,19 @@ describe('ChatService', () => {
     });
 
     describe('local image URL conversion', () => {
+      beforeEach(() => {
+        useAiInfraStore.setState({
+          enabledAiModels: [
+            {
+              abilities: { vision: true },
+              id: 'gpt-4-vision-preview',
+              providerId: ModelProvider.OpenAI,
+              type: 'chat',
+            } as EnabledAiModel,
+          ],
+        });
+      });
+
       it('should convert local image URLs to base64 and call processImageList', async () => {
         const { imageUrlToBase64 } = await import('@lobechat/utils/imageToBase64');
         const { parseDataUri } = await import('@lobechat/utils/uriParser');
@@ -619,9 +724,6 @@ describe('ChatService', () => {
           base64: 'converted-base64-content',
           mimeType: 'image/png',
         });
-
-        // Mock aiModelSelectors to return true for vision support
-        vi.spyOn(aiModelSelectors, 'isModelSupportVision').mockReturnValue(() => true);
 
         const messages = [
           {
@@ -647,6 +749,7 @@ describe('ChatService', () => {
         await chatService.createAssistantMessage({
           messages,
           model: 'gpt-4-vision-preview',
+          provider: ModelProvider.OpenAI,
           resolvedAgentConfig: createMockResolvedConfig({
             agentConfig: { model: 'gpt-4-vision-preview' },
           }),
@@ -658,6 +761,12 @@ describe('ChatService', () => {
           'http://127.0.0.1:3000/uploads/image.png',
         );
         expect(imageUrlToBase64).toHaveBeenCalledWith('http://127.0.0.1:3000/uploads/image.png');
+
+        const visualRef = createVisualFileRef({
+          index: 0,
+          messageId: 'test-id',
+          type: 'image',
+        });
 
         // Verify the final result contains base64 converted URL
         expect(getChatCompletionSpy).toHaveBeenCalledWith(
@@ -681,7 +790,7 @@ describe('ChatService', () => {
 <files_info>
 <images>
 <images_docstring>here are user upload images you can refer to</images_docstring>
-<image name="local-image.png" url="http://127.0.0.1:3000/uploads/image.png"></image>
+<image ref="${visualRef}" name="local-image.png"></image>
 </images>
 </files_info>
 <!-- END SYSTEM CONTEXT -->`,
@@ -699,6 +808,7 @@ describe('ChatService', () => {
               },
             ],
             model: 'gpt-4-vision-preview',
+            provider: ModelProvider.OpenAI,
             stream: true,
             enabledSearch: undefined,
             tools: undefined,
@@ -716,9 +826,6 @@ describe('ChatService', () => {
         vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
         vi.mocked(isDesktopLocalStaticServerUrl).mockReturnValue(false); // This is NOT a local URL
         vi.mocked(imageUrlToBase64).mockClear(); // Clear to ensure it's not called
-
-        // Mock aiModelSelectors to return true for vision support
-        vi.spyOn(aiModelSelectors, 'isModelSupportVision').mockReturnValue(() => true);
 
         const messages = [
           {
@@ -743,6 +850,7 @@ describe('ChatService', () => {
         await chatService.createAssistantMessage({
           messages,
           model: 'gpt-4-vision-preview',
+          provider: ModelProvider.OpenAI,
           resolvedAgentConfig: createMockResolvedConfig({
             agentConfig: { model: 'gpt-4-vision-preview' },
           }),
@@ -754,6 +862,12 @@ describe('ChatService', () => {
           'https://example.com/remote-image.jpg',
         );
         expect(imageUrlToBase64).not.toHaveBeenCalled(); // Should NOT be called for remote URLs
+
+        const visualRef = createVisualFileRef({
+          index: 0,
+          messageId: 'test-id-2',
+          type: 'image',
+        });
 
         // Verify the final result preserves original URL
         expect(getChatCompletionSpy).toHaveBeenCalledWith(
@@ -777,7 +891,7 @@ describe('ChatService', () => {
 <files_info>
 <images>
 <images_docstring>here are user upload images you can refer to</images_docstring>
-<image name="remote-image.jpg" url="https://example.com/remote-image.jpg"></image>
+<image ref="${visualRef}" name="remote-image.jpg"></image>
 </images>
 </files_info>
 <!-- END SYSTEM CONTEXT -->`,
@@ -792,6 +906,7 @@ describe('ChatService', () => {
               },
             ],
             model: 'gpt-4-vision-preview',
+            provider: ModelProvider.OpenAI,
             stream: true,
             enabledSearch: undefined,
             tools: undefined,
@@ -818,9 +933,6 @@ describe('ChatService', () => {
           base64: 'local-file-base64',
           mimeType: 'image/jpeg',
         });
-
-        // Mock aiModelSelectors to return true for vision support
-        vi.spyOn(aiModelSelectors, 'isModelSupportVision').mockReturnValue(() => true);
 
         const messages = [
           {
@@ -854,6 +966,7 @@ describe('ChatService', () => {
         await chatService.createAssistantMessage({
           messages,
           model: 'gpt-4-vision-preview',
+          provider: ModelProvider.OpenAI,
           resolvedAgentConfig: createMockResolvedConfig({
             agentConfig: { model: 'gpt-4-vision-preview' },
           }),
@@ -1471,7 +1584,7 @@ describe('ChatService', () => {
           .spyOn(mechaModule, 'contextEngineering')
           .mockResolvedValue([]);
         vi.spyOn(chatService, 'getChatCompletion').mockResolvedValue(new Response(''));
-        vi.spyOn(agentDocumentService, 'getDocuments').mockResolvedValue([
+        vi.spyOn(agentDocumentService, 'getContextDocuments').mockResolvedValue([
           {
             content: 'Project setup steps',
             filename: 'setup.md',
@@ -1491,7 +1604,9 @@ describe('ChatService', () => {
           resolvedAgentConfig: createMockResolvedConfig(),
         });
 
-        expect(agentDocumentService.getDocuments).toHaveBeenCalledWith({ agentId: 'agent-1' });
+        expect(agentDocumentService.getContextDocuments).toHaveBeenCalledWith({
+          agentId: 'agent-1',
+        });
         expect(contextEngineeringSpy).toHaveBeenCalledWith(
           expect.objectContaining({
             agentDocuments: [
@@ -1510,7 +1625,7 @@ describe('ChatService', () => {
           .spyOn(mechaModule, 'contextEngineering')
           .mockResolvedValue([]);
         vi.spyOn(chatService, 'getChatCompletion').mockResolvedValue(new Response(''));
-        vi.spyOn(agentDocumentService, 'getDocuments').mockResolvedValue([
+        vi.spyOn(agentDocumentService, 'getContextDocuments').mockResolvedValue([
           {
             content: 'Edited agent setup',
             filename: 'builder-target.md',
@@ -1534,7 +1649,9 @@ describe('ChatService', () => {
           }),
         });
 
-        expect(agentDocumentService.getDocuments).toHaveBeenCalledWith({ agentId: 'edited-agent' });
+        expect(agentDocumentService.getContextDocuments).toHaveBeenCalledWith({
+          agentId: 'edited-agent',
+        });
         expect(contextEngineeringSpy).toHaveBeenCalledWith(
           expect.objectContaining({
             agentDocuments: [
@@ -1556,6 +1673,7 @@ describe('ChatService', () => {
       const { fetchSSE } = await import('@lobechat/fetch-sse');
       mockFetchSSE = vi.fn().mockResolvedValue(new Response('mock response'));
       vi.mocked(fetchSSE).mockImplementation(mockFetchSSE);
+      mockCreateHeaderWithAuth.mockClear();
     });
 
     it('should make a POST request with the correct payload', async () => {
@@ -1584,6 +1702,30 @@ describe('ChatService', () => {
       );
     });
 
+    it('should send request trigger as a header without adding it to the model payload', async () => {
+      const params: Partial<ChatStreamPayload> = {
+        messages: [],
+        model: 'test-model',
+      };
+
+      await chatService.getChatCompletion(params, {
+        metadata: { trigger: RequestTrigger.VisualAnalysis },
+      });
+
+      expect(mockFetchSSE).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            [REQUEST_TRIGGER_HEADER]: RequestTrigger.VisualAnalysis,
+          }),
+        }),
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+      expect(payload).not.toHaveProperty('requestTrigger');
+      expect(payload).not.toHaveProperty('metadata');
+    });
+
     it('should make a POST request with chatCompletion apiMode in non-openai provider payload', async () => {
       const params: Partial<ChatStreamPayload> = {
         model: 'deepseek-reasoner',
@@ -1610,6 +1752,37 @@ describe('ChatService', () => {
           body: JSON.stringify(expectedPayload),
           headers: expect.any(Object),
           method: 'POST',
+        }),
+      );
+    });
+
+    it('should preserve Azure Responses-only logical model and pass deploymentName separately', async () => {
+      useAiInfraStore.setState({
+        enabledAiModels: [
+          {
+            config: { deploymentName: 'prod-gpt-54' },
+            id: 'gpt-5.4',
+            providerId: ModelProvider.Azure,
+          },
+        ],
+      } as any);
+
+      const params: Partial<ChatStreamPayload> = {
+        messages: [],
+        model: 'gpt-5.4',
+        provider: ModelProvider.Azure,
+      };
+
+      await chatService.getChatCompletion(params, {});
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+
+      expect(payload).toEqual(
+        expect.objectContaining({
+          apiMode: 'chatCompletion',
+          deploymentName: 'prod-gpt-54',
+          messages: [],
+          model: 'gpt-5.4',
         }),
       );
     });
@@ -1658,7 +1831,7 @@ describe('ChatService', () => {
   describe('fetchPresetTaskResult', () => {
     it('should not wait for agent documents on preset task chains', async () => {
       vi.spyOn(chatService, 'getChatCompletion').mockResolvedValue(new Response(''));
-      vi.spyOn(agentDocumentService, 'getDocuments').mockResolvedValue([]);
+      vi.spyOn(agentDocumentService, 'getContextDocuments').mockResolvedValue([]);
 
       await chatService.fetchPresetTaskResult({
         abortController: new AbortController(),
@@ -1669,28 +1842,26 @@ describe('ChatService', () => {
         },
       });
 
-      expect(agentDocumentService.getDocuments).not.toHaveBeenCalled();
+      expect(agentDocumentService.getContextDocuments).not.toHaveBeenCalled();
     });
 
     it('should handle successful chat completion response', async () => {
       // Mock getChatCompletion to simulate successful completion
-      const getChatCompletionSpy = vi
-        .spyOn(chatService, 'getChatCompletion')
-        .mockImplementation(async (params, options) => {
-          // Simulate successful response
-          if (options?.onFinish) {
-            options.onFinish('AI response', {
-              type: 'done',
-              observationId: null,
-              toolCalls: undefined,
-              traceId: null,
-            });
-          }
-          if (options?.onMessageHandle) {
-            options.onMessageHandle({ type: 'text', text: 'AI response' });
-          }
-          return new Response('');
-        });
+      vi.spyOn(chatService, 'getChatCompletion').mockImplementation(async (params, options) => {
+        // Simulate successful response
+        if (options?.onFinish) {
+          options.onFinish('AI response', {
+            type: 'done',
+            observationId: null,
+            toolCalls: undefined,
+            traceId: null,
+          });
+        }
+        if (options?.onMessageHandle) {
+          options.onMessageHandle({ type: 'text', text: 'AI response' });
+        }
+        return new Response('');
+      });
 
       const params = {
         messages: [{ content: 'Hello', role: 'user' as const }],
@@ -1729,15 +1900,13 @@ describe('ChatService', () => {
 
     it('should handle error in chat completion', async () => {
       // Mock getChatCompletion to simulate error
-      const getChatCompletionSpy = vi
-        .spyOn(chatService, 'getChatCompletion')
-        .mockImplementation(async (params, options) => {
-          // Simulate error response
-          if (options?.onErrorHandle) {
-            options.onErrorHandle({ message: 'translated_response.404', type: 404 });
-          }
-          return new Response('');
-        });
+      vi.spyOn(chatService, 'getChatCompletion').mockImplementation(async (params, options) => {
+        // Simulate error response
+        if (options?.onErrorHandle) {
+          options.onErrorHandle({ message: 'translated_response.404', type: 404 });
+        }
+        return new Response('');
+      });
 
       const params = {
         messages: [{ content: 'Hello', role: 'user' as const }],

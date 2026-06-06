@@ -1,7 +1,9 @@
+import { CUSTOM_DOCUMENT_FILE_TYPE } from '@lobechat/const';
 import { type SWRResponse } from 'swr';
 
 import { useClientDataSWRWithSync } from '@/libs/swr';
 import { documentService } from '@/services/document';
+import { documentSWRKeys } from '@/services/document/swrKeys';
 import { type StoreSetter } from '@/store/types';
 import { type LobeDocument } from '@/types/document';
 import { DocumentSourceType } from '@/types/document';
@@ -12,7 +14,7 @@ import { type PageStore } from '../../store';
 
 const n = setNamespace('page/crud');
 
-const EDITOR_PAGE_FILE_TYPE = 'custom/document';
+const EDITOR_PAGE_FILE_TYPE = CUSTOM_DOCUMENT_FILE_TYPE;
 
 /**
  * Page update parameters - flattened for easier use
@@ -55,7 +57,7 @@ export class CrudActionImpl {
           typeof newPage.editorData === 'string'
             ? JSON.parse(newPage.editorData)
             : newPage.editorData || null,
-        fileType: 'custom/document',
+        fileType: CUSTOM_DOCUMENT_FILE_TYPE,
         filename: newPage.title || title,
         id: newPage.id,
         metadata: newPage.metadata || {},
@@ -325,11 +327,6 @@ export class CrudActionImpl {
     // Queue background sync to DB
     try {
       await documentService.updateDocument({
-        content: updatedPage.content || '',
-        editorData:
-          typeof updatedPage.editorData === 'string'
-            ? updatedPage.editorData
-            : JSON.stringify(updatedPage.editorData || {}),
         id: pageId,
         metadata: updatedPage.metadata || {},
         parentId: updatedPage.parentId || undefined,
@@ -350,7 +347,7 @@ export class CrudActionImpl {
   };
 
   useFetchPageDetail = (pageId: string | undefined): SWRResponse<LobeDocument | null> => {
-    const swrKey = pageId ? ['pageDetail', pageId] : null;
+    const swrKey = pageId ? documentSWRKeys.pageDetail(pageId) : null;
 
     return useClientDataSWRWithSync<LobeDocument | null>(
       swrKey,

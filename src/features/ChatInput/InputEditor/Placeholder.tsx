@@ -3,6 +3,9 @@ import { combineKeys, Flexbox, Hotkey } from '@lobehub/ui';
 import { memo } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
+import { useAgentId } from '@/features/ChatInput/hooks/useAgentId';
+import { useAgentStore } from '@/store/agent';
+import { agentByIdSelectors } from '@/store/agent/selectors';
 import { useUserStore } from '@/store/user';
 import { preferenceSelectors } from '@/store/user/selectors';
 
@@ -22,16 +25,28 @@ const Placeholder = memo<PlaceholderProps>(
       : combineKeys([KeyEnum.Mod, KeyEnum.Enter]);
     const { t } = useTranslation('chat');
 
-    if (variant === 'followUp') {
-      return <span>{t('followUpPlaceholder')}</span>;
-    }
+    const agentId = useAgentId();
+    const enableAgentMode = useAgentStore(agentByIdSelectors.getAgentEnableModeById(agentId));
 
     const isHeterogeneous = !!heterogeneousName;
+
+    if (variant === 'followUp') {
+      return (
+        <span>
+          {t(isHeterogeneous ? 'followUpPlaceholderHeterogeneous' : 'followUpPlaceholder')}
+        </span>
+      );
+    }
+
     const i18nKey = isHeterogeneous
       ? 'sendPlaceholderHeterogeneous'
-      : showAgentAssignmentHint
-        ? 'sendPlaceholderWithAgentAssignment'
-        : 'sendPlaceholder';
+      : enableAgentMode
+        ? showAgentAssignmentHint
+          ? 'sendPlaceholderWithAgentAssignment'
+          : 'sendPlaceholder'
+        : showAgentAssignmentHint
+          ? 'sendPlaceholderChatWithAgentAssignment'
+          : 'sendPlaceholderChat';
 
     return (
       <Flexbox horizontal align={'center'} as={'span'} gap={4} wrap={'wrap'}>

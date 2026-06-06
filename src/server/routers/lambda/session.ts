@@ -138,7 +138,7 @@ export const sessionRouter = router({
     .input(
       z.object({
         current: z.number().optional(),
-        pageSize: z.number().optional(),
+        pageSize: z.number().max(100).optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -146,10 +146,6 @@ export const sessionRouter = router({
 
       return ctx.sessionModel.query({ current, pageSize });
     }),
-
-  rankSessions: sessionProcedure.input(z.number().optional()).query(async ({ ctx, input }) => {
-    return ctx.sessionModel.rank(input);
-  }),
 
   removeAllSessions: sessionProcedure.mutation(async ({ ctx }) => {
     return ctx.sessionModel.deleteAll();

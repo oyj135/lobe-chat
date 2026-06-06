@@ -1,13 +1,17 @@
+import { CUSTOM_DOCUMENT_FILE_TYPE, CUSTOM_FOLDER_FILE_TYPE } from '@lobechat/const';
 import { type LobeChatDatabase } from '@lobechat/database';
 import { type DocumentItem } from '@lobechat/database/schemas';
 import { documents, files } from '@lobechat/database/schemas';
-import { loadFile } from '@lobechat/file-loaders';
+import { loadFile, UnsupportedFileTypeError } from '@lobechat/file-loaders';
+import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 import { and, eq } from 'drizzle-orm';
 import isEqual from 'fast-deep-equal';
 
 import { DocumentModel } from '@/database/models/document';
 import { FileModel } from '@/database/models/file';
+import { isValidEditorData } from '@/libs/editor/isValidEditorData';
+import { normalizeEditorDataDiffNodes } from '@/libs/editor/normalizeDiffNodes';
 import { type LobeDocument } from '@/types/document';
 
 import { FileService } from '../file';
@@ -26,6 +30,18 @@ import type {
 } from './types';
 
 const log = debug('lobe-chat:service:document');
+
+const normalizeParseFileError = (error: unknown) => {
+  if (error instanceof UnsupportedFileTypeError) {
+    return new TRPCError({
+      cause: error,
+      code: 'BAD_REQUEST',
+      message: error.message,
+    });
+  }
+
+  return error;
+};
 
 export class DocumentService {
   userId: string;
@@ -54,6 +70,13 @@ export class DocumentService {
     return this.documentHistoryServiceInstance;
   }
 
+  private async deleteFileRecordAndStorage(fileId: string) {
+    const file = await this.fileModel.delete(fileId);
+    if (!file?.url || file.url.startsWith('internal://')) return;
+
+    await this.fileService.deleteFile(file.url);
+  }
+
   /**
    * Create a document
    */
@@ -72,7 +95,7 @@ export class DocumentService {
       content,
       editorData,
       title,
-      fileType = 'custom/document',
+      fileType = CUSTOM_DOCUMENT_FILE_TYPE,
       metadata,
       knowledgeBaseId,
       parentId,
@@ -87,7 +110,7 @@ export class DocumentService {
 
     // If creating in a knowledge base, create a corresponding file record
     // BUT skip for folders - folders should only exist in the documents table
-    if (knowledgeBaseId && fileType !== 'custom/folder') {
+    if (knowledgeBaseId && fileType !== CUSTOM_FOLDER_FILE_TYPE) {
       const file = await this.fileModel.create(
         {
           fileType,
@@ -105,7 +128,9 @@ export class DocumentService {
 
     // Store knowledgeBaseId in metadata for folders (which don't have fileId)
     const finalMetadata =
-      knowledgeBaseId && fileType === 'custom/folder' ? { ...metadata, knowledgeBaseId } : metadata;
+      knowledgeBaseId && fileType === CUSTOM_FOLDER_FILE_TYPE
+        ? { ...metadata, knowledgeBaseId }
+        : metadata;
 
     const document = await this.documentModel.create({
       content,
@@ -203,15 +228,44 @@ export class DocumentService {
       throw new Error(`Document not found: ${documentId}`);
     }
 
+    const normalizedEditorData = normalizeEditorDataDiffNodes(editorData);
     const savedAt = new Date();
     await this.documentHistoryService.createHistory({
       documentId,
-      editorData,
+      editorData: normalizedEditorData,
       saveSource,
       savedAt,
     });
 
     return { savedAt };
+  }
+
+  /**
+   * Best-effort snapshot of the current document editor state before an automated mutation.
+   */
+  async trySaveCurrentDocumentHistory(
+    documentId: string,
+    saveSource: DocumentHistorySaveSource,
+  ): Promise<SaveDocumentHistoryResult | undefined> {
+    try {
+      const currentDocument = await this.documentModel.findById(documentId);
+      const editorData = currentDocument?.editorData;
+      if (!isValidEditorData(editorData)) return undefined;
+
+      const normalizedEditorData = normalizeEditorDataDiffNodes(editorData);
+      const savedAt = new Date();
+      await this.documentHistoryService.createHistory({
+        documentId,
+        editorData: normalizedEditorData,
+        saveSource,
+        savedAt,
+      });
+
+      return { savedAt };
+    } catch (error) {
+      console.error('[DocumentService] Failed to save current document history:', error);
+      return undefined;
+    }
   }
 
   /**
@@ -222,7 +276,7 @@ export class DocumentService {
     if (!document) return;
 
     // If it's a folder, recursively delete all children first
-    if (document.fileType === 'custom/folder') {
+    if (document.fileType === CUSTOM_FOLDER_FILE_TYPE) {
       const children = await this.db.query.documents.findMany({
         where: eq(documents.parentId, id),
       });
@@ -238,13 +292,13 @@ export class DocumentService {
       });
 
       for (const file of childFiles) {
-        await this.fileModel.delete(file.id);
+        await this.deleteFileRecordAndStorage(file.id);
       }
     }
 
     // Delete the associated file record if it exists
     if (document.fileId) {
-      await this.fileModel.delete(document.fileId);
+      await this.deleteFileRecordAndStorage(document.fileId);
     }
 
     // Finally delete the document itself
@@ -274,10 +328,20 @@ export class DocumentService {
         throw new Error(`Document not found: ${id}`);
       }
 
-      const currentEditorData = (currentDocument.editorData ?? {}) as Record<string, any>;
-      const nextEditorData = params.editorData;
+      // Accepted-view projections used only for historyAppended comparison and
+      // for the "before" snapshot written into history. The persisted editorData
+      // keeps any pending diff nodes — they're only normalized when the user
+      // explicitly accepts/rejects via DiffAllToolbar.
+      const currentEditorDataAccepted = normalizeEditorDataDiffNodes(
+        (currentDocument.editorData ?? {}) as Record<string, any>,
+      );
+      const nextEditorDataAccepted =
+        params.editorData === undefined
+          ? undefined
+          : normalizeEditorDataDiffNodes(params.editorData);
       const historyAppended =
-        nextEditorData !== undefined && !isEqual(nextEditorData, currentEditorData);
+        nextEditorDataAccepted !== undefined &&
+        !isEqual(nextEditorDataAccepted, currentEditorDataAccepted);
 
       const updates: Record<string, unknown> = {};
 
@@ -314,7 +378,7 @@ export class DocumentService {
         savedAt = new Date();
         await documentHistoryService.createHistory({
           documentId: id,
-          editorData: currentEditorData,
+          editorData: currentEditorDataAccepted,
           saveSource: params.saveSource ?? 'autosave',
           savedAt,
         });
@@ -372,7 +436,7 @@ export class DocumentService {
       const document = await this.documentModel.create({
         content: cleanContent,
         fileId,
-        fileType: 'custom/document',
+        fileType: CUSTOM_DOCUMENT_FILE_TYPE,
         filename: title,
         metadata: fileDocument.metadata,
         parentId: file.parentId,
@@ -385,8 +449,9 @@ export class DocumentService {
 
       return document as LobeDocument;
     } catch (error) {
-      console.error(`${logPrefix} File parsing failed:`, error);
-      throw error;
+      const parseError = normalizeParseFileError(error);
+      console.error(`${logPrefix} File parsing failed:`, parseError);
+      throw parseError;
     } finally {
       cleanup();
     }
@@ -424,7 +489,7 @@ export class DocumentService {
       const document = await this.documentModel.create({
         content: fileDocument.content,
         fileId,
-        fileType: 'custom/document', // Use custom/document for all parsed files
+        fileType: CUSTOM_DOCUMENT_FILE_TYPE, // Use custom/document for all parsed files
         filename: title,
         metadata: fileDocument.metadata,
         pages: fileDocument.pages,
@@ -438,8 +503,9 @@ export class DocumentService {
 
       return document as LobeDocument;
     } catch (error) {
-      console.error(`${logPrefix} File parsing failed:`, error);
-      throw error;
+      const parseError = normalizeParseFileError(error);
+      console.error(`${logPrefix} File parsing failed:`, parseError);
+      throw parseError;
     } finally {
       cleanup();
     }

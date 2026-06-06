@@ -35,6 +35,8 @@
   "navigation.recentView": "Zuletzt angesehen",
   "navigation.resources": "Ressourcen",
   "navigation.settings": "Einstellungen",
+  "navigation.task": "Aufgabe",
+  "navigation.tasks": "Aufgaben",
   "navigation.unpin": "Loslösen",
   "notification.finishChatGeneration": "KI-Nachrichtenerstellung abgeschlossen",
   "proxy.auth": "Authentifizierung erforderlich",

@@ -91,7 +91,7 @@ const createMockResponseWithMultipleTools = (roundNum: number) => {
       item: {
         type: 'function_call',
         call_id: toolCallId1,
-        name: 'lobe-web-browsing____search____builtin',
+        name: 'lobe-web-browsing____search',
         arguments: JSON.stringify({ query: `query_round${roundNum}` }),
       },
     },
@@ -101,7 +101,7 @@ const createMockResponseWithMultipleTools = (roundNum: number) => {
       item: {
         type: 'function_call',
         call_id: toolCallId2,
-        name: 'lobe-web-browsing____crawl____builtin',
+        name: 'lobe-web-browsing____crawl',
         arguments: JSON.stringify({ url: `https://example.com/page${roundNum}` }),
       },
     },
@@ -129,13 +129,13 @@ const createMockResponseWithMultipleTools = (roundNum: number) => {
           {
             type: 'function_call',
             call_id: toolCallId1,
-            name: 'lobe-web-browsing____search____builtin',
+            name: 'lobe-web-browsing____search',
             arguments: JSON.stringify({ query: `query_round${roundNum}` }),
           },
           {
             type: 'function_call',
             call_id: toolCallId2,
-            name: 'lobe-web-browsing____crawl____builtin',
+            name: 'lobe-web-browsing____crawl',
             arguments: JSON.stringify({ url: `https://example.com/page${roundNum}` }),
           },
         ],
@@ -215,7 +215,7 @@ beforeEach(async () => {
   const [agentWithTools] = await serverDB
     .insert(agents)
     .values({
-      chatConfig: { autoCreateTopicThreshold: 2, searchMode: 'auto' },
+      chatConfig: { searchMode: 'auto' },
       model: 'gpt-5-pro',
       plugins: [],
       provider: 'openai',
@@ -372,12 +372,12 @@ describe('Multi-Round Tool Execution', () => {
 
     expect(finalState.status).toBe('done');
 
-    // After LOBE-5143: state.messages stores parse()-processed UIChatMessage[]
+    // After state.messages stores parse-processed UIChatMessage[]
     // Tool messages are wrapped in virtual 'assistantGroup' nodes by conversation-flow parse()
     // The chain detector combines consecutive assistant+tool rounds into a single assistantGroup
     expect(finalState.messages.length).toBeGreaterThan(0);
 
-    // After LOBE-5143: state.messages stores parse()-processed UIChatMessage[]
+    // After state.messages stores parse-processed UIChatMessage[]
     // Tool messages are wrapped in virtual 'assistantGroup' nodes by conversation-flow parse()
     // The chain detector combines consecutive assistant+tool rounds into a single assistantGroup
     expect(finalState.messages.length).toBeGreaterThan(0);

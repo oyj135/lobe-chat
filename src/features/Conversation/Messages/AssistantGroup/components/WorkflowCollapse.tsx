@@ -3,7 +3,7 @@ import { Accordion, AccordionItem, ActionIcon, Block, Flexbox, Icon, Text } from
 import { cssVar } from 'antd-style';
 import { AlertTriangle, Check, HandIcon, Maximize2, Minimize2, X } from 'lucide-react';
 import { AnimatePresence, m as motion } from 'motion/react';
-import { type Key, memo, useEffect, useMemo, useRef, useState } from 'react';
+import { type Key, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
@@ -39,15 +39,38 @@ const WORKFLOW_EXPAND_TOGGLE_TRANSITION = {
   ease: [0.4, 0, 0.2, 1],
 } as const;
 
+export type WorkflowExpandLevel = 'collapsed' | 'semi' | 'full';
+
+/** Per-phase initial level. Pass an object when streaming and completion
+ *  should differ — e.g. heterogeneous agents want full while streaming but
+ *  still collapse once a turn finishes. A plain string applies to both. */
+export type WorkflowExpandLevelDefault =
+  | WorkflowExpandLevel
+  | { completion?: WorkflowExpandLevel; streaming?: WorkflowExpandLevel };
+
 interface WorkflowCollapseProps {
   /** Assistant group message id (for generation state) */
   assistantMessageId: string;
   blocks: RenderableAssistantContentBlock[];
-  /** Default expansion state while the workflow is still streaming. Pending intervention always expands. */
-  defaultStreamingExpanded?: boolean;
+  /**
+   * Fixed default expand level. When set, overrides the built-in auto
+   * behavior (expand while streaming, collapse after completion) for the
+   * initial state and resets. Users can still toggle locally.
+   * Pass an object to override only one phase (e.g. `{ streaming: 'full' }`).
+   * Undefined = legacy auto behavior. Pending intervention still forces open.
+   */
+  defaultWorkflowExpandLevel?: WorkflowExpandLevelDefault;
   disableEditing?: boolean;
   workflowChromeComplete?: boolean;
 }
+
+const resolveExpandDefaults = (
+  raw: WorkflowExpandLevelDefault | undefined,
+): { completion?: WorkflowExpandLevel; streaming?: WorkflowExpandLevel } => {
+  if (raw === undefined) return {};
+  if (typeof raw === 'string') return { completion: raw, streaming: raw };
+  return raw;
+};
 
 const collectTools = (blocks: RenderableAssistantContentBlock[]): ChatToolPayloadWithResult[] => {
   return blocks.flatMap((b) => b.tools ?? []);
@@ -115,7 +138,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
   ({
     assistantMessageId,
     blocks,
-    defaultStreamingExpanded = true,
+    defaultWorkflowExpandLevel,
     disableEditing,
     workflowChromeComplete = false,
   }) => {
@@ -125,7 +148,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
     const toolsPhaseComplete = areWorkflowToolsComplete(allTools);
     const pendingInterventionPresent = useMemo(() => hasPendingIntervention(allTools), [allTools]);
     const isGenerating = useConversationStore(
-      messageStateSelectors.isMessageGenerating(assistantMessageId),
+      messageStateSelectors.isAssistantGroupItemGenerating(assistantMessageId),
     );
     /** Earliest op startTime for this message — anchors the working timer so
      *  it reflects wall-clock since the op began, not since the component mounted. */
@@ -145,10 +168,21 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       [blocks],
     );
     const durationText = totalWorkflowMs > 0 ? formatReasoningDuration(totalWorkflowMs) : undefined;
-    const streamingDefaultExpanded = defaultStreamingExpanded || pendingInterventionPresent;
+    const { streaming: streamingDefault, completion: completionDefault } = useMemo(
+      () => resolveExpandDefaults(defaultWorkflowExpandLevel),
+      [defaultWorkflowExpandLevel],
+    );
+    const streamingInitialLevel: WorkflowExpandLevel = streamingDefault ?? 'semi';
+    const completionInitialLevel: WorkflowExpandLevel = completionDefault ?? 'collapsed';
+    /** When a consumer opts any phase into `full`, treat the workflow as a
+     *  "fully expanded" experience — manual expands from collapsed go to
+     *  `full` instead of the legacy `semi` cap. Heterogeneous agents rely on
+     *  this so all 40+ tool calls stay visible after the user re-expands. */
+    const manualExpandLevel: WorkflowExpandLevel =
+      streamingDefault === 'full' || completionDefault === 'full' ? 'full' : 'semi';
 
-    const [expandLevel, setExpandLevel] = useState<'collapsed' | 'semi' | 'full'>(() =>
-      !allComplete && streamingDefaultExpanded ? 'semi' : 'collapsed',
+    const [expandLevel, setExpandLevel] = useState<WorkflowExpandLevel>(() =>
+      allComplete ? completionInitialLevel : streamingInitialLevel,
     );
     const userOpenedRef = useRef(false);
     const prevCompleteRef = useRef(allComplete);
@@ -159,14 +193,14 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
 
       if (!allComplete && wasComplete) {
         userOpenedRef.current = false;
-        setExpandLevel(streamingDefaultExpanded ? 'semi' : 'collapsed');
+        setExpandLevel(streamingInitialLevel);
         return;
       }
 
       if (allComplete && !wasComplete && !userOpenedRef.current && allTools.length > 0) {
-        setExpandLevel('collapsed');
+        setExpandLevel(completionInitialLevel);
       }
-    }, [allComplete, allTools.length, streamingDefaultExpanded]);
+    }, [allComplete, allTools.length, streamingInitialLevel, completionInitialLevel]);
 
     const streaming = !allComplete;
     const forceExpanded = streaming && pendingInterventionPresent;
@@ -270,17 +304,25 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       !pendingInterventionPresent &&
       workingElapsedSeconds >= WORKFLOW_WORKING_ELAPSED_SHOW_AFTER_MS / TIME_MS_PER_SECOND;
 
-    const handleExpandedChange = (keys: Key[]) => {
-      const nowExpanded = keys.includes('workflow');
-      if (forceExpanded && !nowExpanded) return;
+    // Stable refs so the underlying Accordion's memoized contextValue can
+    // remain reference-stable across WorkflowCollapse re-renders — otherwise
+    // every nested AccordionItem (each GroupTool) re-renders due to "context
+    // changed" on every streaming chunk.
+    const handleExpandedChange = useCallback(
+      (keys: Key[]) => {
+        const nowExpanded = keys.includes('workflow');
+        if (forceExpanded && !nowExpanded) return;
 
-      if (nowExpanded) {
-        setExpandLevel('semi');
-        userOpenedRef.current = true;
-      } else {
-        setExpandLevel('collapsed');
-      }
-    };
+        if (nowExpanded) {
+          setExpandLevel(manualExpandLevel);
+          userOpenedRef.current = true;
+        } else {
+          setExpandLevel('collapsed');
+        }
+      },
+      [forceExpanded, manualExpandLevel],
+    );
+    const expandedKeys = useMemo(() => (isExpanded ? ['workflow'] : []), [isExpanded]);
     const constrained = expandLevel === 'semi';
 
     const { ref: scrollRef, handleScroll: handleAutoScroll } = useAutoScroll<HTMLDivElement>({
@@ -289,24 +331,64 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
       threshold: WORKFLOW_EXPANDED_SCROLL_THRESHOLD_PX,
     });
 
-    const getStatusIcon = (): React.ReactNode => {
+    const renderStatusBlock = (): React.ReactNode => {
+      const wrapInBlock = (inner: React.ReactNode) => (
+        <Block
+          horizontal
+          align="center"
+          flex="none"
+          height={24}
+          justify="center"
+          style={{ fontSize: 12 }}
+          variant="outlined"
+          width={24}
+        >
+          {inner}
+        </Block>
+      );
+
       if (streaming) {
-        return pendingInterventionPresent ? (
-          <Icon color={cssVar.colorInfo} icon={HandIcon} />
-        ) : (
-          <NeuralNetworkLoading size={16} />
+        return wrapInBlock(
+          pendingInterventionPresent ? (
+            <Icon color={cssVar.colorInfo} icon={HandIcon} />
+          ) : (
+            <NeuralNetworkLoading size={16} />
+          ),
         );
       }
 
       switch (completionStatus) {
         case 'error': {
-          return <Icon color={cssVar.colorError} icon={X} />;
+          return wrapInBlock(<Icon color={cssVar.colorError} icon={X} />);
         }
         case 'partial': {
-          return <Icon color={cssVar.colorWarning} icon={AlertTriangle} />;
+          // Mix of success + failure: show success as the primary state and
+          // surface a small warning badge at the bottom-right so the overall
+          // turn still reads as "done" rather than "broken".
+          return (
+            <div style={{ flex: 'none', position: 'relative' }}>
+              {wrapInBlock(<Icon color={cssVar.colorSuccess} icon={Check} />)}
+              <div
+                style={{
+                  alignItems: 'center',
+                  background: cssVar.colorBgContainer,
+                  borderRadius: '50%',
+                  bottom: 0,
+                  display: 'flex',
+                  height: 10,
+                  justifyContent: 'center',
+                  position: 'absolute',
+                  right: 0,
+                  width: 10,
+                }}
+              >
+                <Icon color={cssVar.colorWarning} icon={AlertTriangle} size={8} />
+              </div>
+            </div>
+          );
         }
         default: {
-          return <Icon color={cssVar.colorSuccess} icon={Check} />;
+          return wrapInBlock(<Icon color={cssVar.colorSuccess} icon={Check} />);
         }
       }
     };
@@ -349,18 +431,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
 
     const title = (
       <Flexbox horizontal align="center" gap={6} style={{ minWidth: 0 }}>
-        <Block
-          horizontal
-          align="center"
-          flex="none"
-          height={24}
-          justify="center"
-          style={{ fontSize: 12 }}
-          variant="outlined"
-          width={24}
-        >
-          {getStatusIcon()}
-        </Block>
+        {renderStatusBlock()}
         {streaming ? (
           <Flexbox
             horizontal
@@ -373,7 +444,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
             }}
           >
             <div style={{ minWidth: 0, overflow: 'hidden' }}>
-              <AnimatePresence initial={false} mode="wait">
+              <AnimatePresence initial={false} mode="popLayout">
                 <motion.div
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -432,7 +503,7 @@ const WorkflowCollapse = memo<WorkflowCollapseProps>(
 
     return (
       <Accordion
-        expandedKeys={isExpanded ? ['workflow'] : []}
+        expandedKeys={expandedKeys}
         variant="borderless"
         onExpandedChange={handleExpandedChange}
       >

@@ -1,7 +1,7 @@
 'use client';
 
 import { isDesktop } from '@lobechat/const';
-import { type FormGroupItemType } from '@lobehub/ui';
+import { type FormGroupItemType, type FormItemProps } from '@lobehub/ui';
 import { Form, Icon, Skeleton } from '@lobehub/ui';
 import { Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
@@ -37,15 +37,21 @@ const Page = memo(() => {
 
   const [
     isPreferenceInit,
+    enableAgentDocumentFloatingChatPanel,
     enableInputMarkdown,
     enableGatewayMode,
-    enableHeterogeneousAgent,
+    enablePlatformAgent,
+    enableExecutionDeviceSwitcher,
+    enableImessage,
     updateLab,
   ] = useUserStore((s) => [
     preferenceSelectors.isPreferenceInit(s),
+    labPreferSelectors.enableAgentDocumentFloatingChatPanel(s),
     labPreferSelectors.enableInputMarkdown(s),
     labPreferSelectors.enableGatewayMode(s),
-    labPreferSelectors.enableHeterogeneousAgent(s),
+    labPreferSelectors.enablePlatformAgent(s),
+    labPreferSelectors.enableExecutionDeviceSwitcher(s),
+    labPreferSelectors.enableImessage(s),
     s.updateLab,
   ]);
 
@@ -80,7 +86,7 @@ const Page = memo(() => {
       },
     ],
     extra: loading && <Icon spin icon={Loader2Icon} size={16} style={{ opacity: 0.5 }} />,
-    title: t('tab.advanced'),
+    title: t('tab.advanced.toolsAndDiagnostics.title'),
   };
 
   const channelOptions = [
@@ -98,66 +104,100 @@ const Page = memo(() => {
         label: t('tab.advanced.updateChannel.title'),
       },
     ],
-    title: t('tab.advanced.updateChannel.title'),
+    title: t('tab.advanced.appUpdates.title'),
   };
 
+  const labItems: FormItemProps[] = [
+    {
+      children: (
+        <Switch
+          checked={enableAgentDocumentFloatingChatPanel}
+          loading={!isPreferenceInit}
+          onChange={(checked) => updateLab({ enableAgentDocumentFloatingChatPanel: checked })}
+        />
+      ),
+      className: styles.labItem,
+      desc: tLabs('features.agentDocumentFloatingChatPanel.desc'),
+      label: tLabs('features.agentDocumentFloatingChatPanel.title'),
+      minWidth: undefined,
+    },
+    {
+      children: (
+        <Switch
+          checked={enableInputMarkdown}
+          loading={!isPreferenceInit}
+          onChange={(checked) => updateLab({ enableInputMarkdown: checked })}
+        />
+      ),
+      className: styles.labItem,
+      desc: tLabs('features.inputMarkdown.desc'),
+      label: tLabs('features.inputMarkdown.title'),
+      minWidth: undefined,
+    },
+    {
+      children: (
+        <Switch
+          checked={enableExecutionDeviceSwitcher}
+          loading={!isPreferenceInit}
+          onChange={(checked) => updateLab({ enableExecutionDeviceSwitcher: checked })}
+        />
+      ),
+      className: styles.labItem,
+      desc: tLabs('features.executionDeviceSwitcher.desc'),
+      label: tLabs('features.executionDeviceSwitcher.title'),
+      minWidth: undefined,
+    },
+    ...(isDesktop
+      ? [
+          {
+            children: (
+              <Switch
+                checked={enableImessage}
+                loading={!isPreferenceInit}
+                onChange={(checked: boolean) => updateLab({ enableImessage: checked })}
+              />
+            ),
+            className: styles.labItem,
+            desc: tLabs('features.imessage.desc'),
+            label: tLabs('features.imessage.title'),
+            minWidth: undefined,
+          } satisfies FormItemProps,
+        ]
+      : []),
+    ...(hasGatewayUrl
+      ? [
+          {
+            children: (
+              <Switch
+                checked={enableGatewayMode}
+                loading={!isPreferenceInit}
+                onChange={(checked: boolean) => updateLab({ enableGatewayMode: checked })}
+              />
+            ),
+            className: styles.labItem,
+            desc: tLabs('features.gatewayMode.desc'),
+            label: tLabs('features.gatewayMode.title'),
+            minWidth: undefined,
+          } satisfies FormItemProps,
+          {
+            children: (
+              <Switch
+                checked={enablePlatformAgent}
+                loading={!isPreferenceInit}
+                onChange={(checked: boolean) => updateLab({ enablePlatformAgent: checked })}
+              />
+            ),
+            className: styles.labItem,
+            desc: tLabs('features.platformAgent.desc'),
+            label: tLabs('features.platformAgent.title'),
+            minWidth: undefined,
+          } satisfies FormItemProps,
+        ]
+      : []),
+  ];
+
   const labsGroup: FormGroupItemType = {
-    children: [
-      {
-        avatar: (
-          <img
-            alt={tLabs('features.inputMarkdown.title')}
-            src="https://github.com/user-attachments/assets/0527a966-3d95-46b4-b880-c0f3fca18f02"
-            style={{ borderRadius: 8, height: 72, marginRight: 12, objectFit: 'cover', width: 120 }}
-          />
-        ),
-        children: (
-          <Switch
-            checked={enableInputMarkdown}
-            loading={!isPreferenceInit}
-            onChange={(checked) => updateLab({ enableInputMarkdown: checked })}
-          />
-        ),
-        className: styles.labItem,
-        desc: tLabs('features.inputMarkdown.desc'),
-        label: tLabs('features.inputMarkdown.title'),
-        minWidth: undefined,
-      },
-      ...(isDesktop
-        ? [
-            {
-              children: (
-                <Switch
-                  checked={enableHeterogeneousAgent}
-                  loading={!isPreferenceInit}
-                  onChange={(checked: boolean) => updateLab({ enableHeterogeneousAgent: checked })}
-                />
-              ),
-              className: styles.labItem,
-              desc: tLabs('features.heterogeneousAgent.desc'),
-              label: tLabs('features.heterogeneousAgent.title'),
-              minWidth: undefined,
-            },
-          ]
-        : []),
-      ...(hasGatewayUrl
-        ? [
-            {
-              children: (
-                <Switch
-                  checked={enableGatewayMode}
-                  loading={!isPreferenceInit}
-                  onChange={(checked: boolean) => updateLab({ enableGatewayMode: checked })}
-                />
-              ),
-              className: styles.labItem,
-              desc: tLabs('features.gatewayMode.desc'),
-              label: tLabs('features.gatewayMode.title'),
-              minWidth: undefined,
-            },
-          ]
-        : []),
-    ],
+    children: labItems,
     title: tLabs('title'),
   };
 

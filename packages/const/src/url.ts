@@ -47,6 +47,16 @@ export const SESSION_CHAT_URL = (agentId: string, mobile?: boolean) => {
   return `/agent/${agentId}`;
 };
 
+export const SESSION_CHAT_TOPIC_URL = (agentId: string, topicId: string, mobile?: boolean) => {
+  if (mobile) return urlJoin('/agent', agentId, topicId);
+  return urlJoin('/agent', agentId, topicId);
+};
+
+export const SESSION_CHAT_TOPIC_PAGE_URL = (agentId: string, topicId: string, mobile?: boolean) => {
+  if (mobile) return urlJoin('/agent', agentId, topicId, 'page');
+  return urlJoin('/agent', agentId, topicId, 'page');
+};
+
 export const AGENT_PROFILE_URL = (agentId: string) => `/agent/${agentId}/profile`;
 
 export const GROUP_CHAT_URL = (groupId: string) => `/group/${groupId}`;
@@ -64,7 +74,7 @@ export const mailTo = (email: string) => `mailto:${email}`;
 export const AES_GCM_URL = 'https://datatracker.ietf.org/doc/html/draft-ietf-avt-srtp-aes-gcm-01';
 export const BASE_PROVIDER_DOC_URL = 'https://lobehub.com/docs/usage/providers';
 export const SITEMAP_BASE_URL = isDev ? '/sitemap.xml/' : 'sitemap';
-export const CHANGELOG_URL = urlJoin(OFFICIAL_SITE, 'changelog/versions');
+export const CHANGELOG_URL = urlJoin(OFFICIAL_SITE, 'changelog');
 
 export const DOWNLOAD_URL = {
   android: 'https://play.google.com/store/apps/details?id=com.lobehub.app',

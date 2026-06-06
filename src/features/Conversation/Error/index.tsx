@@ -1,4 +1,4 @@
-import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
+import type { HeterogeneousAgentSessionError } from '@lobechat/electron-client-ipc';
 import { HeterogeneousAgentSessionErrorCode } from '@lobechat/electron-client-ipc';
 import { type ILobeAgentRuntimeErrorType } from '@lobechat/model-runtime';
 import { AgentRuntimeErrorType } from '@lobechat/model-runtime';
@@ -6,7 +6,7 @@ import { type ChatMessageError, type ErrorType, type IToolErrorType } from '@lob
 import { ChatErrorType } from '@lobechat/types';
 import { type AlertProps } from '@lobehub/ui';
 import { Block, Highlighter, Skeleton } from '@lobehub/ui';
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
@@ -14,9 +14,12 @@ import useBusinessErrorAlertConfig from '@/business/client/hooks/useBusinessErro
 import useBusinessErrorContent from '@/business/client/hooks/useBusinessErrorContent';
 import useRenderBusinessChatErrorMessageExtra from '@/business/client/hooks/useRenderBusinessChatErrorMessageExtra';
 import ErrorContent from '@/features/Conversation/ChatItem/components/ErrorContent';
+import { useConversationStore } from '@/features/Conversation/store';
 import HeterogeneousAgentStatusGuide from '@/features/Electron/HeterogeneousAgent/StatusGuide';
 import { useProviderName } from '@/hooks/useProviderName';
 import dynamic from '@/libs/next/dynamic';
+import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
+import { getRuntimeErrorMessage } from '@/utils/locale/runtimeErrorMessage';
 
 import ChatInvalidAPIKey from './ChatInvalidApiKey';
 
@@ -72,6 +75,27 @@ const OllamaSetupGuide = dynamic(() => import('./OllamaSetupGuide'), {
   ssr: false,
 });
 
+const HETEROGENEOUS_AGENT_STATUS_GUIDE_ERROR_CODES = new Set<string>([
+  HeterogeneousAgentSessionErrorCode.AuthRequired,
+  HeterogeneousAgentSessionErrorCode.CliNotFound,
+  HeterogeneousAgentSessionErrorCode.Overloaded,
+  HeterogeneousAgentSessionErrorCode.RateLimit,
+]);
+
+const isHeterogeneousAgentStatusGuideError = (
+  value: unknown,
+): value is HeterogeneousAgentSessionError => {
+  if (!value || typeof value !== 'object') return false;
+
+  const { agentType, code } = value as Partial<HeterogeneousAgentSessionError>;
+
+  return (
+    (agentType === 'claude-code' || agentType === 'codex') &&
+    typeof code === 'string' &&
+    HETEROGENEOUS_AGENT_STATUS_GUIDE_ERROR_CODES.has(code)
+  );
+};
+
 // Config for the errorMessage display
 const getErrorAlertConfig = (
   errorType?: IToolErrorType | ILobeAgentRuntimeErrorType | ErrorType,
@@ -112,7 +136,7 @@ const getErrorAlertConfig = (
 };
 
 export const useErrorContent = (error: any) => {
-  const { t } = useTranslation('error');
+  const { t } = useTranslation(['error', 'modelRuntime']);
   const providerName = useProviderName(error?.body?.provider || '');
   const businessAlertConfig = useBusinessErrorAlertConfig(error?.type);
   const { errorType: businessErrorType, hideMessage } = useBusinessErrorContent(error?.type);
@@ -138,7 +162,7 @@ export const useErrorContent = (error: any) => {
     const finalErrorType = businessErrorType ?? messageError.type;
     const translatedMessage = hideMessage
       ? undefined
-      : t(`response.${finalErrorType}` as any, { provider: providerName });
+      : getRuntimeErrorMessage(t, finalErrorType, { provider: providerName });
 
     return {
       message: translatedMessage || rawErrorMessage,
@@ -150,36 +174,40 @@ export const useErrorContent = (error: any) => {
 interface ErrorExtraProps {
   data: ErrorMessageData;
   error?: AlertProps;
+  onRegenerate?: () => void;
 }
 
-const ErrorMessageExtra = memo<ErrorExtraProps>(({ error: alertError, data }) => {
+const ErrorMessageExtra = memo<ErrorExtraProps>(({ error: alertError, data, onRegenerate }) => {
   const error = data.error;
   const navigate = useNavigate();
   const businessChatErrorMessageExtra = useRenderBusinessChatErrorMessageExtra(error, data.id);
-  const sessionErrorCode = error?.body?.code;
-  const sessionAgentType = error?.body?.agentType;
+  const enableBusinessFeatures = useServerConfigStore(serverConfigSelectors.enableBusinessFeatures);
   const sessionErrorBody = error?.body;
   const rawErrorMessage = getRawErrorMessage(error) || alertError?.message;
 
-  if (ENABLE_BUSINESS_FEATURES && businessChatErrorMessageExtra)
-    return businessChatErrorMessageExtra;
+  const regenerateAssistantMessage = useConversationStore((s) => s.regenerateAssistantMessage);
+  const deleteMessage = useConversationStore((s) => s.deleteMessage);
+  const handleRetryAgentMessage = useCallback(() => {
+    if (onRegenerate) {
+      onRegenerate();
+      return;
+    }
+    regenerateAssistantMessage(data.id);
+    if (data.error) deleteMessage(data.id);
+  }, [data.error, data.id, deleteMessage, onRegenerate, regenerateAssistantMessage]);
 
-  if (
-    (error?.type === AgentRuntimeErrorType.AgentRuntimeError || !error?.type) &&
-    !!sessionErrorBody &&
-    (sessionErrorCode === HeterogeneousAgentSessionErrorCode.AuthRequired ||
-      sessionErrorCode === HeterogeneousAgentSessionErrorCode.CliNotFound ||
-      sessionErrorCode === HeterogeneousAgentSessionErrorCode.RateLimit) &&
-    (sessionAgentType === 'claude-code' || sessionAgentType === 'codex')
-  ) {
+  if (isHeterogeneousAgentStatusGuideError(sessionErrorBody)) {
     return (
       <HeterogeneousAgentStatusGuide
-        agentType={sessionAgentType}
+        agentType={sessionErrorBody.agentType}
         error={sessionErrorBody}
         onOpenSystemTools={() => navigate('/settings/system-tools')}
+        onRetry={handleRetryAgentMessage}
       />
     );
   }
+
+  if (enableBusinessFeatures && businessChatErrorMessageExtra) return businessChatErrorMessageExtra;
 
   switch (error?.type) {
     case AgentRuntimeErrorType.OllamaServiceUnavailable: {
@@ -222,6 +250,7 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(({ error: alertError, data }) =>
           </Highlighter>
         ) : undefined,
       }}
+      onRegenerate={onRegenerate}
     />
   );
 });

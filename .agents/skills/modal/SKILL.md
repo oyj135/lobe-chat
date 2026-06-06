@@ -1,6 +1,6 @@
 ---
 name: modal
-description: MUST use when creating, editing, or writing modal dialogs or imperative modals. Prefer createModal / useModalContext / confirmModal from @lobehub/ui/base-ui; root @lobehub/ui is legacy (antd Modal). Covers patterns, ModalHost, and migration notes.
+description: 'LobeHub imperative modal conventions. Use when creating or migrating modals, dialogs, popups, confirm flows, ModalHost wiring, createModal, confirmModal, useModalContext, or base-ui modal APIs.'
 user-invocable: false
 ---
 

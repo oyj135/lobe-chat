@@ -1,6 +1,7 @@
 ---
 name: hotkey
-description: Guide for adding keyboard shortcuts. Use when implementing new hotkeys, registering shortcuts, or working with keyboard interactions. Triggers on hotkey implementation or keyboard shortcut tasks.
+description: 'Add or edit LobeHub keyboard shortcuts. Use for HotkeyEnum, HOTKEYS_REGISTRATION, combineKeys, useHotkeyById, tooltip hotkeys, shortcut scope, conflicts, or Cmd/Ctrl key combos.'
+user-invocable: false
 ---
 
 # Adding Keyboard Shortcuts Guide

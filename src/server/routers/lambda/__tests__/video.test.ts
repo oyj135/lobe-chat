@@ -9,7 +9,9 @@ import { AsyncTaskStatus } from '@/types/asyncTask';
 const {
   mockAfter,
   mockCreateVideo,
+  mockLoadModels,
   mockProcessBackgroundVideoPolling,
+  mockResolveBusinessModelMapping,
   mockServerDB,
   mockTransaction,
 } = vi.hoisted(() => {
@@ -17,11 +19,15 @@ const {
   const mockServerDB = { transaction: mockTransaction };
   const mockCreateVideo = vi.fn();
   const mockAfter = vi.fn((cb: () => void) => cb());
+  const mockLoadModels = vi.fn();
   const mockProcessBackgroundVideoPolling = vi.fn().mockResolvedValue(undefined);
+  const mockResolveBusinessModelMapping = vi.fn();
   return {
     mockAfter,
     mockCreateVideo,
+    mockLoadModels,
     mockProcessBackgroundVideoPolling,
+    mockResolveBusinessModelMapping,
     mockServerDB,
     mockTransaction,
   };
@@ -46,6 +52,14 @@ vi.mock('@/business/server/video-generation/chargeBeforeGenerate', () => ({
 }));
 vi.mock('@/business/server/video-generation/chargeAfterGenerate', () => ({
   chargeAfterGenerate: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@lobechat/business-model-runtime', async (importOriginal) => ({
+  ...((await importOriginal()) as any),
+  resolveBusinessModelMapping: (...args: [string, string]) =>
+    mockResolveBusinessModelMapping(...args),
+}));
+vi.mock('@lobechat/business-model-bank/model-config', () => ({
+  loadModels: mockLoadModels,
 }));
 vi.mock('@/business/server/video-generation/getVideoFreeQuota', () => ({
   getVideoFreeQuota: vi.fn().mockResolvedValue({ remaining: 10 }),
@@ -127,6 +141,20 @@ describe('videoRouter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveBusinessModelMapping.mockImplementation(
+      async (_provider: string, model: string) => ({
+        resolvedModelId: model,
+      }),
+    );
+    mockLoadModels.mockResolvedValue([
+      {
+        abilities: {},
+        enabled: true,
+        id: 'dreamina-seedance-2-0-260128',
+        providerId: 'lobehub',
+        type: 'video',
+      },
+    ]);
   });
 
   describe('createVideo - async strategy routing', () => {
@@ -144,6 +172,29 @@ describe('videoRouter', () => {
       });
       // Webhook: should NOT trigger background polling
       expect(mockAfter).not.toHaveBeenCalled();
+    });
+
+    it('should validate mapped model id before rejecting deprecated lobehub video models', async () => {
+      setupMocks();
+      mockResolveBusinessModelMapping.mockResolvedValue({
+        requestedModelId: 'onboarding-video',
+        resolvedModelId: 'dreamina-seedance-2-0-260128',
+      });
+      mockCreateVideo.mockResolvedValue({ inferenceId: 'inf-mapped', useWebhook: true });
+
+      const caller = videoRouter.createCaller(mockCtx);
+      const result = await caller.createVideo({
+        ...defaultInput,
+        model: 'onboarding-video',
+        provider: 'lobehub',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockResolveBusinessModelMapping).toHaveBeenCalledWith('lobehub', 'onboarding-video');
+      expect(mockCreateVideo).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'dreamina-seedance-2-0-260128' }),
+        expect.any(Object),
+      );
     });
 
     it('should use polling path when response contains only inferenceId', async () => {

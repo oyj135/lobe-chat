@@ -6,12 +6,15 @@ import { type StateCreator } from 'zustand/vanilla';
 
 import { useClientDataSWRWithSync } from '@/libs/swr';
 import { messageService } from '@/services/message';
+import { getChatStoreState } from '@/store/chat';
+import { operationSelectors } from '@/store/chat/selectors';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
 import { type Store as ConversationStore } from '../../action';
 import { type MessageDispatch } from './reducer';
 import { messagesReducer } from './reducer';
 import { dataSelectors } from './selectors';
+import { stabilizeReferences } from './stabilizeReferences';
 
 const log = debug('lobe-render:features:Conversation');
 
@@ -66,14 +69,17 @@ export interface DataAction {
   switchMessageBranch: (messageId: string, branchIndex: number) => Promise<void>;
 
   /**
-   * Fetch messages for this conversation using SWR
+   * Fetch messages for this conversation using SWR.
    *
    * @param context - Conversation context with sessionId and topicId
-   * @param skipFetch - When true, SWR key is null and no fetch occurs
+   * @param options.skipFetch - When true, SWR key is null and no fetch occurs
+   * @param options.revalidateOnFocus - Override SWR's default focus revalidate.
+   *   Pass `false` while a streaming flow owns the in-memory message state so
+   *   a focus refetch doesn't clobber it with a stale DB snapshot.
    */
   useFetchMessages: (
     context: ConversationContext,
-    skipFetch?: boolean,
+    options?: { revalidateOnFocus?: boolean; skipFetch?: boolean },
   ) => SWRResponse<UIChatMessage[]>;
 }
 
@@ -106,7 +112,7 @@ export const dataSlice: StateCreator<
         metadata: { ...newDisplayMessages[index].metadata, ...payload.value },
       };
 
-      set({ displayMessages: newDisplayMessages }, false, {
+      set({ displayMessages: stabilizeReferences(displayMessages, newDisplayMessages) }, false, {
         payload,
         type: `dispatchMessage/${payload.type}`,
       });
@@ -126,16 +132,19 @@ export const dataSlice: StateCreator<
 
     // Re-parse for display order and grouping
     const { flatList } = parse(newDbMessages);
+    // parse() rebuilds every message/block/tool reference, so pin unchanged
+    // subtrees back to their previous identity to preserve memo bailouts.
+    const stableFlatList = stabilizeReferences(get().displayMessages, flatList);
 
     log(
       '[dispatchMessage] updated | contextKey=%s | prevCount=%d | newCount=%d | displayCount=%d',
       contextKey,
       dbMessages.length,
       newDbMessages.length,
-      flatList.length,
+      stableFlatList.length,
     );
 
-    set({ dbMessages: newDbMessages, displayMessages: flatList }, false, {
+    set({ dbMessages: newDbMessages, displayMessages: stableFlatList }, false, {
       payload,
       type: `dispatchMessage/${payload.type}`,
     });
@@ -150,17 +159,18 @@ export const dataSlice: StateCreator<
 
     // Parse messages using conversation-flow
     const { flatList } = parse(messages);
+    const stableFlatList = stabilizeReferences(get().displayMessages, flatList);
 
     log(
       '[replaceMessages] | contextKey=%s | prevCount=%d | newCount=%d | displayCount=%d | messageIds=%o',
       contextKey,
       prevDbMessages.length,
       messages.length,
-      flatList.length,
+      stableFlatList.length,
       messages.slice(0, 5).map((m) => m.id),
     );
 
-    set({ dbMessages: messages, displayMessages: flatList }, false, 'replaceMessages');
+    set({ dbMessages: messages, displayMessages: stableFlatList }, false, 'replaceMessages');
 
     // Sync changes to external store (ChatStore)
     get().onMessagesChange?.(messages, get().context);
@@ -179,7 +189,8 @@ export const dataSlice: StateCreator<
     await state.updateMessageMetadata(message.parentId, { activeBranchIndex: branchIndex });
   },
 
-  useFetchMessages: (context, skipFetch) => {
+  useFetchMessages: (context, options) => {
+    const { skipFetch, revalidateOnFocus } = options ?? {};
     // When skipFetch is true, SWR key is null - no fetch occurs
     // This is used when external messages are provided (e.g., creating new thread)
     // Also skip fetch when topicId is null (new conversation state) - there's no server data,
@@ -201,9 +212,26 @@ export const dataSlice: StateCreator<
 
       () => messageService.getMessages(context),
       {
+        ...(revalidateOnFocus !== undefined && { revalidateOnFocus }),
         onData: (data) => {
           if (!data) return;
           if (!context.topicId) return;
+
+          // Defense-in-depth gate: drop any SWR onData while the
+          // topic is streaming. DB fan-out for chunk writes is async and lags
+          // the WS push by anywhere from 100ms to several seconds; an SWR
+          // refetch that lands inside that window returns the assistant row
+          // as the LOADING_FLAT placeholder (cLen=3) and would collapse the
+          // in-memory streamed content. SWR's own cache still receives the
+          // value, so once streaming ends a normal revalidate writes through.
+          //
+          // This is the catch-all backstop sitting BELOW the SoT consumption
+          // in gatewayEventHandler — `mergeFetchedMessagesWithLocalState`'s
+          // updatedAt tie-breaker handles most cases on its own, but the
+          // updatedAt comparison degenerates when server's pushed snapshot
+          // carries a DB updatedAt equal to a later stale fetch's row.
+          if (operationSelectors.isAgentRuntimeRunningByContext(context)(getChatStoreState()))
+            return;
 
           const prevDbMessages = get().dbMessages;
           const mergedMessages = mergeFetchedMessagesWithLocalState(data, prevDbMessages);
@@ -211,6 +239,7 @@ export const dataSlice: StateCreator<
 
           // Parse messages using conversation-flow
           const { flatList } = parse(mergedMessages);
+          const stableFlatList = stabilizeReferences(get().displayMessages, flatList);
 
           log(
             '[useFetchMessages] onData | requestContextKey=%s | storeContextKey=%s | prevCount=%d | fetchedCount=%d | displayCount=%d | messageIds=%o',
@@ -218,13 +247,13 @@ export const dataSlice: StateCreator<
             storeContextKey,
             prevDbMessages.length,
             mergedMessages.length,
-            flatList.length,
+            stableFlatList.length,
             mergedMessages.slice(0, 5).map((m) => m.id),
           );
 
           set({
             dbMessages: mergedMessages,
-            displayMessages: flatList,
+            displayMessages: stableFlatList,
             messagesInit: true,
           });
 

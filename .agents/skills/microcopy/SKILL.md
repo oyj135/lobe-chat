@@ -1,9 +1,15 @@
 ---
 name: microcopy
-description: UI copy and microcopy guidelines. Use when writing UI text, buttons, error messages, empty states, onboarding, or any user-facing copy. Triggers on i18n translation, UI text writing, or copy improvement tasks. Supports both Chinese and English.
+description: 'UI copy and microcopy guidelines. Use for user-facing copy, buttons, errors, empty states, onboarding, i18n wording, translation, or copy improvements in Chinese or English.'
+user-invocable: false
 ---
 
 # LobeHub UI Microcopy Guidelines
+
+This file is the quick-reference summary. For full prompt-style guidelines with extensive examples (anti-patterns, tone matrices, scenario walk-throughs), load the language-specific reference:
+
+- **中文文案** — [`references/zh.md`](./references/zh.md)
+- **English copy** — [`references/en.md`](./references/en.md)
 
 Brand: **Where Agents Collaborate** - Focus on collaborative agent system, not just "generation".
 
